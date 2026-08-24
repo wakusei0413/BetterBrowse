@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BetterBrowse</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- 头部栏 -->
+    <header class="header">
+      <div class="brand">
+        <img src="../icons/icon32.png" alt="BetterBrowse Logo" class="logo" />
+        <span class="title">BetterBrowse</span>
+      </div>
+      <button id="btnOpenOptions" class="icon-btn" title="打开管理中心与设置" aria-label="打开管理中心与设置" type="button">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </header>
+
+    <!-- 核心功能 1：链接跳转控制（分段滑动胶囊控制器：左-当前标签 / 中-自动模式 / 右-新标签页） -->
+    <section class="card" id="cardLinkMode">
+      <div class="card-header">
+        <span class="card-label">链接跳转控制</span>
+        <span id="domainBadge" class="domain-badge" title="当前访问域名">检测中...</span>
+      </div>
+
+      <!-- 现代分段滑动控制器 (Segmented Pill Control) -->
+      <div class="segmented-control-wrapper">
+        <div class="segmented-control" id="segmentedControl" role="radiogroup" aria-label="链接跳转模式选择">
+          <!-- 丝滑滑动高亮胶囊 (Pill Indicator) -->
+          <div class="segmented-indicator" id="segmentedIndicator"></div>
+
+          <!-- 3 个离散单选项 -->
+          <button type="button" class="segmented-item" role="radio" aria-checked="false" data-mode="current" id="btnModeCurrent" tabindex="-1">
+            <svg class="segmented-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+            </svg>
+            <span class="segmented-text">当前标签</span>
+          </button>
+
+          <button type="button" class="segmented-item active" role="radio" aria-checked="true" data-mode="auto" id="btnModeAuto" tabindex="0">
+            <svg class="segmented-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+            </svg>
+            <span class="segmented-text">自动模式</span>
+          </button>
+
+          <button type="button" class="segmented-item" role="radio" aria-checked="false" data-mode="new" id="btnModeNew" tabindex="-1">
+            <svg class="segmented-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            <span class="segmented-text">新标签页</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 核心功能 2：标签页收纳（首位常驻固定小标签页） -->
+    <section class="card">
+      <div class="card-header">
+        <span class="card-label">标签页收纳</span>
+        <div class="tab-counter" id="tabCounterContainer" title="当前窗口标签页数量及阈值">
+          <span id="tabCountText">标签: 0 / 15</span>
+        </div>
+      </div>
+
+      <div class="stash-desc">
+        全量收纳当前窗口所有标签页至首位常驻收纳箱，释放内存保持清爽。
+      </div>
+
+      <div class="stash-action-row">
+        <button type="button" class="primary-btn" id="btnExecuteStash">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path>
+            <path d="m3.3 7 8.7 5 8.7-5"></path>
+            <path d="M12 22V12"></path>
+          </svg>
+          <span id="btnExecuteStashText">立即收纳当前窗口</span>
+        </button>
+        <button type="button" class="secondary-btn" id="btnViewStash" title="打开/激活最左侧第1位固定收纳标签页">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect>
+            <line x1="3" y1="9" x2="21" y2="9"></line>
+            <line x1="9" y1="21" x2="9" y2="9"></line>
+          </svg>
+          <span>查看收纳箱</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 提示与状态条 -->
+    <footer class="footer">
+      <div class="status-wrapper">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusMessage" class="status-text" role="status" aria-live="polite">就绪</span>
+      </div>
+    </footer>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BetterBrowse 管理中心</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- 侧边导航栏 -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <img src="../icons/icon32.png" alt="BetterBrowse Logo" class="sidebar-logo">
+        <div class="sidebar-brand">
+          <h1 class="brand-title">BetterBrowse</h1>
+          <span class="brand-subtitle">智能浏览增强</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="管理中心导航">
+        <button class="nav-item active" data-tab="stash" type="button" id="navTabStash">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path>
+            <path d="m3.3 7 8.7 5 8.7-5"></path>
+            <path d="M12 22V12"></path>
+          </svg>
+          <span class="nav-label">标签收纳箱</span>
+          <span class="nav-badge" id="stashCountBadge">0</span>
+        </button>
+
+        <button class="nav-item" data-tab="rules" type="button" id="navTabRules">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="4" y1="21" x2="4" y2="14"></line>
+            <line x1="4" y1="10" x2="4" y2="3"></line>
+            <line x1="12" y1="21" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12" y2="3"></line>
+            <line x1="20" y1="21" x2="20" y2="16"></line>
+            <line x1="20" y1="12" x2="20" y2="3"></line>
+            <line x1="1" y1="14" x2="7" y2="14"></line>
+            <line x1="9" y1="8" x2="15" y2="8"></line>
+            <line x1="17" y1="16" x2="23" y2="16"></line>
+          </svg>
+          <span class="nav-label">智能收纳规则</span>
+        </button>
+
+        <button class="nav-item" data-tab="links" type="button" id="navTabLinks">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+          </svg>
+          <span class="nav-label">域名跳转规则</span>
+        </button>
+
+        <button class="nav-item" data-tab="backup" type="button" id="navTabBackup">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+          <span class="nav-label">数据备份与迁移</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="version-tag">BetterBrowse v0.0.1</span>
+      </div>
+    </aside>
+
+    <!-- 主工作区 -->
+    <main class="main-content">
+      <!-- Tab 1: 标签收纳箱 (OneTab 增强版中枢) -->
+      <section id="tab-stash" class="tab-panel active" aria-labelledby="navTabStash">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">标签收纳箱</h2>
+            <p class="panel-desc">常驻首位小标签，智能保护活跃内容，支持即地命名、星标置顶、锁定保护与一键恢复</p>
+          </div>
+          <div class="panel-actions">
+            <div class="search-box-wrapper">
+              <svg class="search-box-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+              <input type="text" id="stashSearchInput" class="search-input" placeholder="搜索已收纳的标题或链接..." aria-label="搜索已收纳的标题或链接" />
+              <button id="btnStashSearchClear" class="search-clear-btn hidden" title="清空搜索" type="button" aria-label="清空搜索">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+            <button id="btnStashNowFromOptions" class="btn btn-primary" type="button">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path>
+                <path d="m3.3 7 8.7 5 8.7-5"></path>
+                <path d="M12 22V12"></path>
+              </svg>
+              <span>立即收纳当前窗口</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="stashGroupsContainer" class="stash-groups-container">
+          <!-- 动态渲染收纳组 -->
+          <div class="empty-state" id="stashEmptyState">
+            <svg class="empty-icon-svg" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <span class="empty-title">收纳箱目前是空的</span>
+            <span class="empty-desc">当您在右上角点击「立即收纳」或标签页数量超出阈值时，未活跃标签将自动保存于此处。</span>
+          </div>
+        </div>
+        <div id="stashScrollSentinel" class="stash-scroll-sentinel"></div>
+        <div id="stashLoadingIndicator" class="stash-loading-indicator hidden">
+          <svg class="spinner-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="12"></circle>
+          </svg>
+          <span>正在加载更多标签组...</span>
+        </div>
+      </section>
+
+      <!-- Tab 2: 智能收纳规则设置 -->
+      <section id="tab-rules" class="tab-panel" aria-labelledby="navTabRules">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">智能收纳规则配置</h2>
+            <p class="panel-desc">自定义标签页保留优先级与自动收纳触发阈值（修改即刻自动保存）</p>
+          </div>
+          <div class="autosave-badge" id="rulesAutoSaveIndicator">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <span>配置已自动同步</span>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <!-- 阈值与时间设置 -->
+          <div class="card">
+            <h3 class="card-title">触发与时间参数</h3>
+            
+            <div class="setting-item">
+              <div class="setting-info" id="infoTabThreshold">
+                <span class="setting-label">标签页数量阈值</span>
+                <span class="setting-hint">当当前窗口标签页总数达到此数值时，将触发收纳提示</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTabThreshold" class="num-input" min="5" max="100" value="15" aria-labelledby="infoTabThreshold" />
+                <span class="unit-text">个</span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info" id="infoRecentMinutes">
+                <span class="setting-label">“最近访问”保留窗口</span>
+                <span class="setting-hint">在此时间段内激活浏览过的标签页将被视为活跃并予以保留</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputRecentMinutes" class="num-input" min="1" max="60" value="5" aria-labelledby="infoRecentMinutes" />
+                <span class="unit-text">分钟</span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info" id="infoAutoStash">
+                <span class="setting-label">超出阈值自动智能收纳</span>
+                <span class="setting-hint">当标签达到阈值时，在前台弹出倒计时悬浮卡片并自动收纳闲置标签（可随时点击取消）</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkAutoStash" aria-labelledby="infoAutoStash">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info" id="infoCountdownSeconds">
+                <span class="setting-label">自动收纳倒计时时长</span>
+                <span class="setting-hint">触发自动收纳前的倒数缓冲时长（秒）</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputCountdownSeconds" class="num-input" min="3" max="60" value="15" aria-labelledby="infoCountdownSeconds" />
+                <span class="unit-text">秒</span>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info" id="infoAutoNotify">
+                <span class="setting-label">桌面通知备用提醒</span>
+                <span class="setting-hint">在无法展示网页倒计时卡片时（如特殊系统页）弹出系统通知</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkAutoNotify" aria-labelledby="infoAutoNotify">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 优先级保留规则链开关 -->
+          <div class="card">
+            <h3 class="card-title">优先级保护规则链 (P0 ~ P3)</h3>
+            
+            <div class="rule-row">
+              <div class="rule-priority p0">P0</div>
+              <div class="rule-info" id="infoRuleAudible">
+                <span class="rule-name">媒体播放保护</span>
+                <span class="rule-desc">正在播放音频或视频的标签页绝不收纳 (tab.audible)</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkRuleAudible" aria-labelledby="infoRuleAudible">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="rule-row">
+              <div class="rule-priority p0">P0</div>
+              <div class="rule-info" id="infoRuleFormGuard">
+                <span class="rule-name">表单输入保护</span>
+                <span class="rule-desc">包含正在编辑的 input/textarea 或未提交内容的标签页不收纳</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkRuleFormGuard" aria-labelledby="infoRuleFormGuard">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="rule-row">
+              <div class="rule-priority p1">P1</div>
+              <div class="rule-info" id="infoRuleRecentActive">
+                <span class="rule-name">最近访问与前台活跃保护</span>
+                <span class="rule-desc">当前浏览的前台标签及最近窗口内访问过的标签保留</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkRuleRecentActive" aria-labelledby="infoRuleRecentActive">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="rule-row">
+              <div class="rule-priority p2">P2</div>
+              <div class="rule-info" id="infoRuleHighFrequency">
+                <span class="rule-name">高频使用标签保护</span>
+                <span class="rule-desc">近 1 小时内切换频次排名前 20% 的活跃标签保留</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkRuleHighFrequency" aria-labelledby="infoRuleHighFrequency">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="rule-row">
+              <div class="rule-priority p3">P3</div>
+              <div class="rule-info" id="infoRulePinned">
+                <span class="rule-name">固定标签页保护</span>
+                <span class="rule-desc">固定在浏览器左侧的标签保留 (tab.pinned)</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkRulePinned" aria-labelledby="infoRulePinned">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 3: 域名跳转规则管理 -->
+      <section id="tab-links" class="tab-panel" aria-labelledby="navTabLinks">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">域名链接跳转规则</h2>
+            <p class="panel-desc">管理全局跳转覆盖行为及已配置的独立网站跳转偏好列表</p>
+          </div>
+          <button id="btnClearAllDomainRules" class="btn btn-danger" type="button">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+            <span>清空所有域名规则</span>
+          </button>
+        </div>
+
+        <!-- 全局跳转覆盖配置卡片 -->
+        <div class="card global-override-card">
+          <div class="global-override-inner">
+            <div class="global-override-info">
+              <div class="global-override-title-row">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="global-icon" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="2" y1="12" x2="22" y2="12"></line>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                </svg>
+                <h3 class="card-title" style="border: none; padding: 0; margin: 0;">全局跳转规则覆盖</h3>
+              </div>
+              <p class="setting-hint" style="margin: 0;">对所有网站启用统一的强制跳转行为（开启后将优先于下方各网站独立偏好）</p>
+            </div>
+            <div class="global-override-controls">
+              <select id="selectGlobalLinkMode" class="form-select" aria-label="全局跳转模式">
+                <option value="new">强制新标签页打开</option>
+                <option value="current">强制当前标签打开</option>
+                <option value="auto">自动模式 (遵循网页)</option>
+              </select>
+              <label class="switch" title="开启/关闭全局覆盖">
+                <input type="checkbox" id="chkGlobalLinkRule" aria-label="开启或关闭全局跳转规则覆盖">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- 全局覆盖生效时的提示横幅 -->
+        <div id="globalOverrideNoticeBanner" class="alert-banner hidden">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+          <span>全局跳转规则正在生效中，下方各域名的独立规则已被全局策略覆盖。</span>
+        </div>
+
+        <div class="card">
+          <!-- 手动添加规则 -->
+          <div class="add-rule-form">
+            <div class="domain-input-wrapper">
+              <input type="text" id="inputNewDomain" class="text-input" placeholder="输入域名，例如 github.com 或 linux.do（自动清洗协议与路径）" aria-label="输入网站域名" />
+            </div>
+            <select id="selectNewDomainMode" class="form-select" aria-label="选择跳转行为">
+              <option value="new">新标签页打开 (new)</option>
+              <option value="current">当前标签打开 (current)</option>
+              <option value="auto">自动模式 (auto)</option>
+            </select>
+            <button id="btnAddDomainRule" class="btn btn-primary" type="button">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              <span>添加规则</span>
+            </button>
+          </div>
+
+          <!-- 域名规则表格 -->
+          <div class="table-container">
+            <table class="data-table" id="domainRulesTable">
+              <thead>
+                <tr>
+                  <th>网站域名</th>
+                  <th>跳转行为</th>
+                  <th style="width: 120px; text-align: right;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="domainRulesTbody">
+                <!-- 动态渲染 -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 4: 数据备份与迁移 -->
+      <section id="tab-backup" class="tab-panel" aria-labelledby="navTabBackup">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">数据备份与迁移</h2>
+            <p class="panel-desc">完整备份/恢复插件所有数据与配置（支持跨设备无缝迁移），以及从 OneTab 等第三方工具导入标签页</p>
+          </div>
+        </div>
+
+        <div class="backup-grid">
+          <!-- 1. 恢复数据 -->
+          <div class="card">
+            <h3 class="card-title">1. 恢复全量数据（多设备迁移）</h3>
+            <p class="card-desc">
+              从 BetterBrowse 官方备份文件（<code>.json</code>）还原。将完整恢复<strong>所有收纳标签组</strong>、<strong>智能收纳规则与阈值配置</strong>以及<strong>各域名链接跳转偏好</strong>，使新设备与原电脑保持 100% 一致。
+            </p>
+            <textarea id="restoreJSONTextarea" class="code-textarea" placeholder="在此粘贴 BetterBrowse 导出的完整 JSON 备份数据..." aria-label="粘贴备份 JSON 数据"></textarea>
+            <div class="btn-group">
+              <label class="btn btn-primary file-upload-btn">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span>选择备份文件恢复 (.json)</span>
+                <input type="file" id="fileRestoreJSON" accept=".json" style="display: none;">
+              </label>
+              <button id="btnRestoreFromText" class="btn btn-secondary" type="button">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                </svg>
+                <span>解析文本内容恢复</span>
+              </button>
+            </div>
+            <div class="tip-box">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tip-icon" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+              </svg>
+              <div><strong>全量恢复说明</strong>：支持导入当前及历史版本的 BetterBrowse JSON 备份文件。系统会自动解析并同步更新收纳箱与全部设置项。</div>
+            </div>
+          </div>
+
+          <!-- 2. 备份数据 -->
+          <div class="card">
+            <h3 class="card-title">2. 备份全量数据（导出备份）</h3>
+            <p class="card-desc">
+              将当前收纳箱中所有标签组，以及当前的<strong>全部插件设置</strong>（智能收纳规则、阈值）与<strong>域名跳转偏好规则</strong>整体打包备份，方便长期归档或迁移到其他电脑。
+            </p>
+            <div class="btn-group">
+              <button id="btnExportFullJSON" class="btn btn-primary" type="button">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                <span>导出完整 JSON 备份文件</span>
+              </button>
+              <button id="btnCopyFullJSON" class="btn btn-secondary" type="button">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+                  <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+                </svg>
+                <span>复制完整备份 JSON 数据</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 3. 从第三方导入数据 -->
+          <div class="card">
+            <h3 class="card-title">3. 从第三方导入数据（如 OneTab）</h3>
+            <p class="card-desc">
+              从 <strong>OneTab 纯文本</strong>（<code>URL | 网页标题</code>，空行分界）、<strong>OneTab 内部数据</strong> 或 <strong>网址列表</strong> 快速迁入标签页。<strong>注意：此操作仅导入收纳网页，不会修改插件原有的任何设置。</strong>
+            </p>
+            <textarea id="importThirdPartyTextarea" class="code-textarea" placeholder="在此粘贴 OneTab 导出的文本（每行 URL | 标题）或网页链接列表..." aria-label="粘贴第三方数据"></textarea>
+            <div class="btn-group">
+              <button id="btnImportThirdPartyText" class="btn btn-primary" type="button">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                </svg>
+                <span>一键智能解析导入</span>
+              </button>
+              <label class="btn btn-secondary file-upload-btn">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span>选择第三方文件导入 (.txt / .json)</span>
+                <input type="file" id="fileImportThirdParty" accept=".txt,.json" style="display: none;">
+              </label>
+            </div>
+            <div class="tip-box">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tip-icon" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+              </svg>
+              <div>
+                <strong>OneTab 导出互操作</strong>：如需将收纳箱数据导出为 OneTab 格式纯文本，可使用下方工具：
+                <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+                  <button id="btnExportOneTabText" class="btn btn-secondary btn-sm" type="button">导出 OneTab 格式文本 (.txt)</button>
+                  <button id="btnCopyOneTabText" class="btn btn-secondary btn-sm" type="button">复制 OneTab 格式文本</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 4. 危险操作区 -->
+          <div class="card danger-zone">
+            <div class="danger-header">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="danger-icon" aria-hidden="true">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+              <h3 class="card-title" style="border: none; padding: 0; margin: 0; color: var(--danger-color);">危险操作区</h3>
+            </div>
+            <p class="card-desc">清空所有历史收纳数据（锁定组除外）。此操作不可撤销，请提前做好备份。</p>
+            <div>
+              <button id="btnClearAllStash" class="btn btn-danger" type="button">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                <span>清空收纳箱非锁定数据</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 全局 Toast 提示通知浮层（支持 Action 按钮，如撤销） -->
+  <div id="toastNotification" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <!-- 自定义网页项右键二级菜单 -->
+  <div id="stashContextMenu" class="context-menu hidden" role="menu">
+    <button class="context-menu-item" data-action="open" type="button" role="menuitem">
+      <svg class="menu-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+        <polyline points="15 3 21 3 21 9"></polyline>
+        <line x1="10" y1="14" x2="21" y2="3"></line>
+      </svg>
+      <span>在新标签页打开</span>
+    </button>
+    <button class="context-menu-item" data-action="copy-url" type="button" role="menuitem">
+      <svg class="menu-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+      </svg>
+      <span>复制链接地址</span>
+    </button>
+    <button class="context-menu-item" data-action="copy-all" type="button" role="menuitem">
+      <svg class="menu-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+        <line x1="16" y1="13" x2="8" y2="13"></line>
+        <line x1="16" y1="17" x2="8" y2="17"></line>
+        <polyline points="10 9 9 9 8 9"></polyline>
+      </svg>
+      <span>复制标题与链接</span>
+    </button>
+    <div class="context-menu-divider"></div>
+    <button class="context-menu-item context-menu-danger" data-action="delete" type="button" role="menuitem">
+      <svg class="menu-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3 6 5 6 21 6"></polyline>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+      </svg>
+      <span>从收纳箱删除</span>
+    </button>
+  </div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>
