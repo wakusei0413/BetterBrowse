@@ -1,0 +1,11 @@
+{
+  "name": "better-browse-workspace",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run --prefix BetterBrowse build",
+    "verify": "npm run --prefix BetterBrowse verify"
+  }
+}
+

@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <!-- 眼睛晶粉渐变 -->
+    <linearGradient id="eye-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff7597" />
+      <stop offset="50%" stop-color="#ff3366" />
+      <stop offset="100%" stop-color="#b80042" />
+    </linearGradient>
+
+    <!-- 眼睛顶部高光切面渐变 -->
+    <linearGradient id="facet-top" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffa3b8" />
+      <stop offset="100%" stop-color="#ff668c" />
+    </linearGradient>
+
+    <!-- 眼睛下部深邃切面渐变 -->
+    <linearGradient id="facet-bot" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e60050" />
+      <stop offset="100%" stop-color="#8a002e" />
+    </linearGradient>
+
+    <!-- 主体立体柔和投影 -->
+    <filter id="soft-shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#000000" flood-opacity="0.25" />
+    </filter>
+  </defs>
+
+  <!-- 🐱 核心不规则主体：二次元猫耳 + 浏览器标签融合剪影 (纯透明底，无死板外框) -->
+  <g filter="url(#soft-shadow)">
+    <!-- 白色主猫耳标签轮廓 -->
+    <path d="
+      M 16 104 
+      L 16 46 
+      L 24 16 
+      L 48 38 
+      L 80 38 
+      L 104 16 
+      L 112 46 
+      L 112 104 
+      C 112 112 106 118 98 118 
+      L 30 118 
+      C 22 118 16 112 16 104 Z" 
+      fill="#ffffff" 
+      stroke="#18181b" 
+      stroke-width="3" 
+      stroke-linejoin="round" />
+
+    <!-- 标签顶部流线折痕 / 浏览器顶栏分割线 (极简二次元折纸感) -->
+    <path d="M 16 46 L 44 46 M 84 46 L 112 46" stroke="#e4e4e7" stroke-width="2.5" stroke-linecap="round" />
+
+    <!-- 左猫耳内侧粉色几何三角 -->
+    <polygon points="27,24 23,40 40,36" fill="#ffccd8" />
+    
+    <!-- 右猫耳内侧粉色几何三角 -->
+    <polygon points="101,24 88,36 105,40" fill="#ffccd8" />
+
+    <!-- 左眼：晶粉钻石眼 (精密切面结构) -->
+    <g transform="translate(42, 74)">
+      <!-- 钻石底色 -->
+      <polygon points="0,-18 13,0 0,18 -13,0" fill="url(#eye-grad)" stroke="#9f0739" stroke-width="0.8" />
+      <!-- 上半切面高光 -->
+      <polygon points="0,-18 13,0 0,-3 -13,0" fill="url(#facet-top)" />
+      <!-- 下半阴影切面 -->
+      <polygon points="0,18 13,0 0,3 -13,0" fill="url(#facet-bot)" />
+      <!-- 中心晶核菱形 -->
+      <polygon points="0,-8 6,0 0,8 -6,0" fill="#ff2a6d" />
+      
+      <!-- 主纯白十字星芒高光 -->
+      <path d="M -3 -4 Q -1 -4 -1 -8 Q -1 -4 3 -4 Q -1 -4 -1 0 Q -1 -4 -3 -4 Z" fill="#ffffff" />
+      <circle cx="-1" cy="-4" r="1.5" fill="#ffffff" />
+      <!-- 次级小闪光点 -->
+      <circle cx="4" cy="5" r="1.5" fill="#ffffff" />
+    </g>
+
+    <!-- 右眼：晶粉钻石眼 (精密切面结构) -->
+    <g transform="translate(86, 74)">
+      <!-- 钻石底色 -->
+      <polygon points="0,-18 13,0 0,18 -13,0" fill="url(#eye-grad)" stroke="#9f0739" stroke-width="0.8" />
+      <!-- 上半切面高光 -->
+      <polygon points="0,-18 13,0 0,-3 -13,0" fill="url(#facet-top)" />
+      <!-- 下半阴影切面 -->
+      <polygon points="0,18 13,0 0,3 -13,0" fill="url(#facet-bot)" />
+      <!-- 中心晶核菱形 -->
+      <polygon points="0,-8 6,0 0,8 -6,0" fill="#ff2a6d" />
+      
+      <!-- 主纯白十字星芒高光 -->
+      <path d="M -3 -4 Q -1 -4 -1 -8 Q -1 -4 3 -4 Q -1 -4 -1 0 Q -1 -4 -3 -4 Z" fill="#ffffff" />
+      <circle cx="-1" cy="-4" r="1.5" fill="#ffffff" />
+      <!-- 次级小闪光点 -->
+      <circle cx="4" cy="5" r="1.5" fill="#ffffff" />
+    </g>
+
+    <!-- 软萌腮红点 -->
+    <ellipse cx="27" cy="82" rx="4" ry="2.2" fill="#ffb3c6" />
+    <ellipse cx="101" cy="82" rx="4" ry="2.2" fill="#ffb3c6" />
+
+    <!-- 可爱猫咪嘴 (ω 弧线) -->
+    <path d="M 58 87 Q 64 92 64 87 Q 64 92 70 87" fill="none" stroke="#27272a" stroke-width="2.2" stroke-linecap="round" />
+  </g>
+</svg>
+
+
+

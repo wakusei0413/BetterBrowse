@@ -1,0 +1,20 @@
+{
+  "name": "betterbrowse",
+  "version": "0.0.1",
+  "description": "BetterBrowse Chrome 扩展插件",
+  "type": "module",
+  "scripts": {
+    "build:icons": "node scripts/generate-icons.mjs",
+    "build:content": "node scripts/build-content.mjs",
+    "build": "node scripts/generate-icons.mjs && node scripts/build-content.mjs",
+    "verify": "node scripts/verify-code.mjs"
+  },
+  "keywords": [
+    "chrome-extension",
+    "browser-enhancement",
+    "tab-manager",
+    "link-redirect"
+  ],
+  "author": "",
+  "license": "MIT"
+}
