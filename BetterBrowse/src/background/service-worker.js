@@ -15,11 +15,13 @@ import { MessageBus } from '../core/bus/message-bus.js';
 import { TabActivityTracker } from './activity-tracker.js';
 import { ThresholdMonitor } from './threshold-monitor.js';
 import { PinnedTabGuard } from './pinned-tab-guard.js';
+import { ContextMenuManager } from './context-menu-manager.js';
 
 // 初始化模块实例
 const activityTracker = new TabActivityTracker();
 const stashService = new StashService();
 const pinnedTabGuard = new PinnedTabGuard();
+ContextMenuManager.init();
 
 const thresholdMonitor = new ThresholdMonitor({
   onStashRequested: async (targetWindowId = null) => {
@@ -29,7 +31,18 @@ const thresholdMonitor = new ThresholdMonitor({
     });
   },
   onOpenOptions: async () => {
-    chrome.runtime.openOptionsPage();
+    const targetUrl = chrome.runtime.getURL('src/options/options.html#stash-settings');
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    const existingOptionsTab = tabs.find((t) => t.url && t.url.includes('src/options/options.html'));
+    if (existingOptionsTab) {
+      await chrome.tabs.update(existingOptionsTab.id, { url: targetUrl, active: true });
+      chrome.tabs.sendMessage(existingOptionsTab.id, {
+        action: 'SWITCH_OPTIONS_TAB',
+        payload: { tab: 'stash-settings' }
+      }).catch(() => {});
+    } else {
+      await chrome.tabs.create({ url: targetUrl, active: true });
+    }
   }
 });
 
@@ -253,8 +266,31 @@ MessageBus.registerListener({
     return await LocalStashRepository.updateGroup(groupId, updates);
   },
 
-  [ActionTypes.OPEN_OPTIONS_PAGE]: async () => {
-    chrome.runtime.openOptionsPage();
+  [ActionTypes.OPEN_OPTIONS_PAGE]: async (payload) => {
+    const targetTab = payload?.tab || 'stash-settings';
+    const targetUrl = chrome.runtime.getURL(`src/options/options.html#${targetTab}`);
+    try {
+      const tabs = await chrome.tabs.query({ currentWindow: true });
+      const existingOptionsTab = tabs.find((t) => t.url && t.url.includes('src/options/options.html'));
+
+      if (existingOptionsTab) {
+        await chrome.tabs.update(existingOptionsTab.id, {
+          url: targetUrl,
+          active: true
+        });
+        chrome.tabs.sendMessage(existingOptionsTab.id, {
+          action: 'SWITCH_OPTIONS_TAB',
+          payload: { tab: targetTab }
+        }).catch(() => {});
+      } else {
+        await chrome.tabs.create({
+          url: targetUrl,
+          active: true
+        });
+      }
+    } catch {
+      chrome.runtime.openOptionsPage();
+    }
     return true;
   },
 

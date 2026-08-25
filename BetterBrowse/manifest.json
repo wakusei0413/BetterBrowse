@@ -19,7 +19,10 @@
       "128": "src/icons/icon128.png"
     }
   },
-  "options_page": "src/options/options.html",
+  "options_ui": {
+    "page": "src/options/options.html",
+    "open_in_tab": true
+  },
   "background": {
     "service_worker": "src/background/service-worker.js",
     "type": "module"
@@ -60,7 +63,8 @@
     "storage",
     "notifications",
     "activeTab",
-    "scripting"
+    "scripting",
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"

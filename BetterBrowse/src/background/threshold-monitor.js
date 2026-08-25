@@ -9,11 +9,11 @@ import { StorageAdapter } from '../core/storage/storage-adapter.js';
 
 export class ThresholdMonitor {
   /**
-   * @param {Object} options
-   * @param {(windowId?: number) => Promise<any>} options.onStashRequested - 触发智能收纳的回调函数
-   * @param {() => Promise<any>} options.onOpenOptions - 打开选项页的回调函数
+   * @param {Object} [options={}]
+   * @param {(windowId?: number) => Promise<any>} [options.onStashRequested] - 触发智能收纳的回调函数
+   * @param {() => Promise<any>} [options.onOpenOptions] - 打开选项页的回调函数
    */
-  constructor({ onStashRequested, onOpenOptions }) {
+  constructor({ onStashRequested = () => {}, onOpenOptions = () => {} } = {}) {
     this.onStashRequested = onStashRequested;
     this.onOpenOptions = onOpenOptions;
     this.notificationId = 'better_browse_threshold_notify';
