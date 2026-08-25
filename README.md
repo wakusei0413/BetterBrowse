@@ -1,6 +1,6 @@
 # Better Browse - 智能浏览增强插件
 
-**Better Browse** 是一款遵循 Chrome Extensions **Manifest V3** 规范的现代化智能浏览增强扩展。它采用现代简约扁平化（Flat Minimalist）设计与高可扩展的分层模块化架构，致力于为用户提供清爽、高效的链接跳转控制与基于优先级规则的智能标签页收纳体验。
+**Better Browse** 是一款遵循 Chrome Extensions **Manifest V3** 规范的现代化智能浏览增强扩展。它采用现代简约扁平化（Flat Minimalist）设计与基于 **原生 ESM JavaScript + Deno 2.x** 的极简高效架构，提供**零构建心智负担、所见即所得**的开发与使用体验，致力于为用户提供清爽、高效的链接跳转控制与基于优先级规则的智能标签页收纳体验。
 
 ---
 
@@ -14,7 +14,7 @@
 - **作用域与灵活覆盖**：
   - **单域名独立记忆**：为特定网站（如 GitHub、知乎、微博、掘金等）单独配置偏好模式。
   - **“对所有网站生效”全局覆盖**：一键开启全局覆盖，所有网页均统一应用指定的跳转策略。
-- **全动态捕获**：基于事件捕获阶段（Capture Phase）进行事件委托拦截，无缝支持 SPA 单页应用与 AJAX 异步渲染节点。
+- **双层防御拦截体系**：基于主页面世界（Main World）与隔离世界（Isolated World）双层协同，100% 免疫 SPA（Discourse / Vue Router / React / Angular）的原地路由劫持。
 
 ---
 
@@ -24,7 +24,7 @@
 | 优先级 | 规则类型 | 触发判断条件 | 动作与处理 |
 | :--- | :--- | :--- | :--- |
 | **P0（最高）** | **正在播放媒体** | 标签页正播放音频或视频（`tab.audible === true`） | **跳过收纳（安全保留）** |
-| **P0（最高）** | **表单输入保护** | 页面内存在获得焦点的输入框或已输入未提交内容（`textarea`/`input`/富文本） | **跳过收纳（安全保留）** |
+| **P0（最高）** | **表单输入保护** | 页面内存在获得焦点的输入框或已输入未提交内容（`textarea`/`input`/富文本/Shadow DOM/同源 iframe） | **跳过收纳（安全保留）** |
 | **P1（高）** | **最近访问与活跃** | 处于当前浏览前台或在最近 5 分钟（可自定义）内被激活过 | **跳过收纳（安全保留）** |
 | **P2（中）** | **高频访问标签** | 统计最近 1 小时内切换激活的频次，排名前 20% 的常用标签 | **跳过收纳（安全保留）** |
 | **P3（低）** | **固定标签页** | 固定在浏览器左侧的标签页（`tab.pinned === true`） | **跳过收纳（安全保留）** |
@@ -33,11 +33,20 @@
 ---
 
 ### 3. 收纳箱与数据恢复中心
-- **内置独立收纳库（默认/推荐）**：无需安装第三方插件，本地安全持久化存储。
+- **内置独立收纳库（默认/推荐）**：无需依赖第三方服务，本地安全持久化存储。
   - 支持**一键恢复整组**、**单个标签恢复**。
-  - 支持**标签搜索过滤**、**一键复制全部 URL**、**分组删除**。
-- **OneTab 外部协同模式（进阶）**：支持自动探测本地 OneTab 扩展，实现跨扩展协同导入。
-- **完整备份与迁移**：支持将所有收纳数据一键导出为标准 JSON 备份文件，并支持从文件或剪贴板文本导入恢复。
+  - 支持**标签实时搜索过滤**、**一键复制全部 URL**、**分组星标/锁定/重命名/删除**。
+  - **恢复与清理策略**：可灵活配置恢复标签后是否自动从列表中删除或保留，锁定组享有永久防删保护。
+- **首位常驻收纳箱与防误关保护**：自动将收纳箱固定在浏览器窗口首位（Pinned Tab 模式），防止误关最后一个标签页导致浏览器窗口意外关闭。
+- **右键上下文菜单快捷操作**：
+  - 一键打开 BetterBrowse 收纳箱。
+  - 收纳当前窗口全部标签页。
+  - 定向收纳当前标签页左侧/右侧所有标签页。
+- **OneTab 双向兼容与智能容错导入**：
+  - 支持与 OneTab 纯文本（`URL | Title`）及 OneTab 内部数据无缝互导。
+  - **智能协议补齐**：自动补齐 `https://`，支持 `http:`, `https:`, `chrome:`, `edge:`, `about:`, `file:` 等多种协议。
+  - **脏数据容错过滤**：单项格式异常自动安全跳过，确保成百上千个合法标签 100% 成功导入。
+- **全量配置与数据备份**：支持将所有收纳数据与插件配置一键导出为标准 JSON 备份文件，并支持平滑还原。
 
 ---
 
@@ -47,145 +56,69 @@
 
 ---
 
-## 🛠️ 模块化与可扩展架构说明
+## 🛠️ 技术栈与目录架构
 
-项目采用高内聚、低耦合的分层架构，便于未来持续增加新 Feature：
+- **语言标准**：**现代原生 JavaScript (ES2022+ / 原生 ESM 模块体系)**
+- **开发与测试运行时**：**Deno 2.x**（100% 纯粹驱动，彻底告别 Node.js 与 `package.json` / `node_modules`）
+- **测试框架**：**Deno.test** 原生测试驱动
 
 ```
 BetterBrowse/
-├── manifest.json                  # 扩展清单配置（Manifest V3，UTF-8）
-├── package.json                   # 脚本与工程配置
-├── scripts/                       # 工具脚本
-│   ├── generate-icons.mjs        # 矢量与像素图标生成脚本
-│   └── build-content.mjs         # 内容脚本自包含打包器
-│
-├── src/
-│   ├── constants/                 # 全局契约与常量定义
-│   │   ├── action-types.js       # 跨端通信 ActionTypes 契约常量
-│   │   ├── config.js             # 默认配置、优先级与枚举定义
-│   │   └── storage-keys.js       # Storage 键名命名空间
-│   │
-│   ├── core/                      # 核心领域逻辑层（纯 JS，无 DOM 强耦合）
-│   │   ├── bus/
-│   │   │   └── message-bus.js    # 统一跨端消息通讯总线
-│   │   ├── storage/
-│   │   │   ├── storage-adapter.js# Chrome Storage 统一适配器（含监听与合并）
-│   │   │   └── migration.js      # 数据架构版本平滑迁移管理器
-│   │   ├── rules/                # 智能收纳规则引擎（策略模式与责任链）
-│   │   │   ├── base-rule.js      # 规则基类
-│   │   │   ├── audible-rule.js   # P0 媒体播放保护规则
-│   │   │   ├── form-guard-rule.js# P0 表单输入保护规则
-│   │   │   ├── recent-active-rule.js # P1 最近访问保护规则
-│   │   │   ├── frequency-rule.js # P2 高频访问保护规则
-│   │   │   ├── pinned-rule.js    # P3 固定标签保护规则
-│   │   │   └── rule-engine.js    # 规则编排与评估器
-│   │   ├── stash/                # 收纳仓储与协同适配
-│   │   │   ├── stash-service.js  # 收纳与恢复服务调度
-│   │   │   ├── local-stash-repo.js # 本地收纳仓储（CRUD与导入导出）
-│   │   │   └── onetab-adapter.js # OneTab 外部协同适配器
-│   │   └── link/                 # 链接决策与域名匹配
-│   │       ├── link-matcher.js   # 域名解析与跳转模式计算
-│   │       └── link-service.js   # 域名跳转规则业务服务
-│   │
-│   ├── background/               # 后台工作线程（Service Worker）
-│   │   ├── activity-tracker.js   # 标签页激活时间与频次滑动跟踪
-│   │   ├── threshold-monitor.js  # 标签页数量阈值监控与系统通知
-│   │   └── service-worker.js     # 后台主入口
-│   │
-│   ├── content/                  # 页面内容注入脚本
-│   │   ├── link-interceptor.js   # 链接点击拦截器
-│   │   ├── form-detector.js      # 表单状态与 Dirty 探测器
-│   │   ├── content-bundle.js     # 生产环境自包含内容脚本
-│   │   └── index.js              # 内容脚本源码入口
-│   │
-│   ├── popup/                    # 弹出控制台（极简扁平化）
-│   │   ├── popup.html
-│   │   ├── popup.css
-│   │   └── popup.js
-│   │
-│   ├── options/                  # 选项与收纳管理中心仪表盘
-│   │   ├── options.html
-│   │   ├── options.css
-│   │   └── options.js
-│   │
-│   └── icons/                    # 高清图标资源 (16/32/48/128)
-│       ├── icon.svg
-│       ├── icon16.png
-│       ├── icon32.png
-│       ├── icon48.png
-│       └── icon128.png
-└── README.md
+├── .gitignore                     # Git 忽略配置
+├── deno.json                      # 根工作区 Deno 配置文件
+└── BetterBrowse/
+    ├── deno.json                  # 核心 Deno 任务与标准库依赖配置
+    ├── manifest.json              # Chrome Manifest V3 清单配置
+    ├── scripts/                   # Deno 驱动工具脚本
+    │   ├── build-content.js      # 内容脚本单文件打包器
+    │   ├── generate-icons.js     # 矢量图标生成器
+    │   └── verify-code.js        # 静态规范自检器
+    ├── src/                       # 🎯 纯原生 JavaScript 源码 (Chrome 直接加载)
+    │   ├── constants/             # 全局常量契约层
+    │   ├── core/                  # 核心业务领域层 (存储、规则引擎、收纳仓储、链接匹配)
+    │   ├── background/            # 后台 Service Worker 模块 (原生 ESM、活跃度追踪、右键菜单、常驻守护)
+    │   ├── content/               # 网页端双层拦截与表单探测源码
+    │   ├── popup/                 # 弹出控制台 UI (JS/HTML/CSS)
+    │   ├── options/               # 选项与收纳管理中心 UI (JS/HTML/CSS)
+    │   └── icons/                 # 高清图标资源 (16~512px)
+    └── tests/                     # 自动化单元与集成测试套件 (Deno.test)
 ```
 
 ---
 
-## 🚀 未来扩展 Feature 指南
+## 🔧 Deno 驱动指令
 
-### 1. 新增一条标签页收纳规则
-在 `src/core/rules/` 目录下新建规则类，继承 `BaseRule` 并实现 `evaluate(context)` 方法：
-```javascript
-import { BaseRule } from './base-rule.js';
-import { RulePriorities } from '../../constants/config.js';
+本项目完全由 **Deno 原生驱动**，无需安装 Node.js：
 
-export class DomainWhitelistRule extends BaseRule {
-  constructor() {
-    super({
-      id: 'domainWhitelist',
-      name: '白名单域名保护',
-      priority: RulePriorities.P1,
-      description: '保护用户特别指定的白名单域名不被收纳'
-    });
-  }
+```bash
+# 1. 运行自动化测试套件
+deno task test
 
-  async evaluate({ tab, config }) {
-    if (tab.url.includes('work.corp.com')) {
-      return { retain: true, reason: '处于工作白名单中', matchedRuleId: this.id };
-    }
-    return { retain: false };
-  }
-}
+# 2. 运行静态规范、UTF-8 编码与文件完整性校验
+deno task verify
+
+# 3. 重新打包内容脚本 (修改 src/content/ 后执行)
+deno task bundle
+
+# 4. 生成全尺寸抗锯齿高清图标 (16px ~ 512px)
+deno task icons
 ```
-然后在 `src/core/rules/rule-engine.js` 中调用 `this.registerRule(new DomainWhitelistRule())` 即可立即生效，**原有其他规则代码零修改**。
-
-### 2. 接入新的收纳同步后端（如 Notion / Obsidian / 书签栏）
-在 `src/core/stash/` 目录下实现相应的适配器类，并在 `stash-service.js` 的 `executeStash` 中根据配置进行派发即可。
-
-### 3. 数据 Schema 升级
-当修改了存储字段时，只需在 `src/core/storage/migration.js` 中增加对应版本迁移逻辑，即可确保老用户配置无缝升级，永不丢失历史数据。
 
 ---
 
-## 📦 安装与使用方法
+## 📦 安装与加载方法
 
 1. **打开 Chrome 扩展管理界面**：
    在浏览器地址栏输入并打开：`chrome://extensions/`
 2. **开启“开发者模式”**：
    勾选右上角的“开发者模式”（Developer mode）开关。
 3. **加载扩展**：
-   点击左上角“**加载已解压的扩展程序**”（Load unpacked），选择本项目根目录（即包含 `manifest.json` 的 `BetterBrowse` 文件夹）。
+   点击左上角“**加载已解压的扩展程序**”（Load unpacked），直接选择 **`BetterBrowse/BetterBrowse`** 目录（包含 `manifest.json` 的文件夹）。
 4. **固定到工具栏**：
-   点击 Chrome 右上角拼图图标，将 **Better Browse** 固定到浏览器工具栏，即可随时点击弹出控制台使用！
-
----
-
-## 🔧 开发与构建指令
-
-本项目可在开发环境下直接运行，如需重新生成图标或打包自包含内容脚本，可运行以下命令：
-
-```bash
-# 生成所有分辨率图标 (16/32/48/128)
-node scripts/generate-icons.mjs
-
-# 打包自包含内容脚本
-node scripts/build-content.mjs
-
-# 或执行完整构建
-npm run build
-```
+   点击 Chrome 右上角拼图图标，将 **Better Browse** 固定到浏览器工具栏，即可随时使用！
 
 ---
 
 ## 📄 许可协议
 
 本项目基于 [MIT 许可证](LICENSE) 开源。
-
