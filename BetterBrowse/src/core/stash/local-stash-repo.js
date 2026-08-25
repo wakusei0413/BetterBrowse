@@ -261,6 +261,56 @@ export class LocalStashRepository {
   }
 
   /**
+   * 校验并清洗导入的 URL（支持智能补齐 http/https，兼容 chrome/edge/file/about 等安全协议，剔除非法伪协议）
+   * @param {unknown} rawUrl
+   * @returns {string | null}
+   */
+  static sanitizeImportUrl(rawUrl) {
+    if (typeof rawUrl !== 'string') return null;
+    let url = rawUrl.trim();
+    if (!url || url.length > 8192) return null;
+
+    // 过滤危险伪协议
+    const lower = url.toLowerCase();
+    if (
+      lower.startsWith('javascript:') ||
+      lower.startsWith('data:text/html') ||
+      lower.startsWith('vbscript:')
+    ) {
+      return null;
+    }
+
+    // 智能补齐缺省协议头
+    if (url.startsWith('//')) {
+      url = 'https:' + url;
+    } else if (/^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z0-9]/.test(url) && !url.includes('://')) {
+      url = 'https://' + url;
+    }
+
+    try {
+      const parsed = new URL(url);
+      const allowedProtocols = [
+        'http:',
+        'https:',
+        'chrome:',
+        'edge:',
+        'about:',
+        'file:',
+        'ftp:',
+        'view-source:',
+        'brave:',
+        'vivaldi:'
+      ];
+      if (allowedProtocols.includes(parsed.protocol)) {
+        return url;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 智能导入收纳数据（自动识别 OneTab 文本、OneTab 内部数据与 Better Browse JSON）
    * @param {string} rawInputString - 文本或 JSON
    * @returns {Promise<{ success: boolean, importedCount: number, groupCount: number, formatName: string, error?: string }>}
@@ -294,28 +344,50 @@ export class LocalStashRepository {
           minute: '2-digit',
           hour12: false
         }).format(new Date(createdAt));
+
+        const validTabs = [];
+        for (const t of grp.tabs) {
+          if (!t) continue;
+          const cleanUrl = this.sanitizeImportUrl(t.url);
+          if (!cleanUrl) continue;
+
+          validTabs.push({
+            id: t.id || `tab_item_${Math.random().toString(36).substring(2, 9)}`,
+            url: cleanUrl,
+            title: typeof t.title === 'string' && t.title.trim() ? t.title.slice(0, 4096) : cleanUrl,
+            favIconUrl: this.sanitizeImportUrl(t.favIconUrl) || '',
+            pinned: Boolean(t.pinned),
+            archived: Boolean(t.archived)
+          });
+        }
+
+        if (validTabs.length === 0) continue;
+
         const validGroup = {
           id: grp.id || `stash_grp_${createdAt}_${Math.random().toString(36).substring(2, 7)}`,
           createdAt: createdAt,
-          title: grp.title || `${dateStr} 收纳 (${grp.tabs.length} 个标签页)`,
+          title: grp.title || `${dateStr} 收纳 (${validTabs.length} 个标签页)`,
           locked: Boolean(grp.locked),
           starred: Boolean(grp.starred),
-          tabs: grp.tabs.map((t) => ({
-            id: t.id || `tab_item_${Math.random().toString(36).substring(2, 9)}`,
-            url: t.url || '',
-            title: t.title || t.url || '无标题页面',
-            favIconUrl: t.favIconUrl || '',
-            pinned: Boolean(t.pinned)
-          }))
+          tabs: validTabs
         };
         validImportedGroups.push(validGroup);
         importedCount += validGroup.tabs.length;
       }
     }
 
-    // 保持导入组本身的先后顺序（正向拼接在现有组之前，彻底解决 unshift 导致的方向倒置）
-    const mergedGroups = [...validImportedGroups, ...currentGroups];
+    if (validImportedGroups.length === 0) {
+      return {
+        success: false,
+        importedCount: 0,
+        groupCount: 0,
+        formatName: result.formatName,
+        error: '未能从输入中提取出有效的网页链接'
+      };
+    }
 
+    // 保持导入组本身的先后顺序（正向拼接在现有组之前）
+    const mergedGroups = [...validImportedGroups, ...currentGroups];
     await StorageAdapter.set(StorageKeys.STASH_GROUPS, mergedGroups);
 
     return {

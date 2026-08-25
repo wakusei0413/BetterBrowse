@@ -96,6 +96,20 @@ export class StashService {
   }
 
   /**
+   * 统一收纳调度入口
+   * @param {Record<number, { lastActivated: number, activationTimestamps: number[] }>} [activityStats={}]
+   * @param {{ forceAll?: boolean, windowId?: number }} [options={}]
+   * @returns {Promise<{ success: boolean, stashedCount: number, keptCount?: number, error?: string }>}
+   */
+  async executeStash(activityStats = {}, options = {}) {
+    const { forceAll = false, windowId = null } = options;
+    if (forceAll) {
+      return await this.executeAllTabsStash(windowId);
+    }
+    return await this.executeSmartStash(activityStats, windowId);
+  }
+
+  /**
    * 全量无条件收纳指定窗口（或当前窗口）的所有标签页（手动点击收纳按钮或关闭窗口时执行）
    * @param {number} [targetWindowId=null]
    * @returns {Promise<{ success: boolean, stashedCount: number, error?: string }>}
@@ -133,7 +147,10 @@ export class StashService {
       }));
 
       // 1. 全量写入本地收纳仓储
-      await LocalStashRepository.createGroup(itemsToSave);
+      const createRes = await LocalStashRepository.createGroup(itemsToSave);
+      if (!createRes || !createRes.success) {
+        return { success: false, stashedCount: 0, error: createRes?.error || '写入本地收纳仓储失败' };
+      }
 
       // 2. 唤起并置顶第 1 个位置的常驻固定小标签页（Pinned Tab）
       await StashService.ensurePinnedStashTab(true, windowId);
@@ -226,32 +243,17 @@ export class StashService {
   }
 
   /**
-   * 执行收纳（根据 forceAll 参数分支：手动/关闭窗口 -> 全量收纳；阈值自动触发 -> 智能规则收纳）
-   * @param {Record<number, { lastActivated: number, activationTimestamps: number[] }>} [activityStats={}]
-   * @param {Object} [options={}]
-   * @param {boolean} [options.forceAll=false] - 是否全量收纳
-   * @param {number} [options.windowId=null]
-   * @returns {Promise<{ success: boolean, stashedCount: number, keptCount?: number, error?: string }>}
-   */
-  async executeStash(activityStats = {}, { forceAll = false, windowId = null } = {}) {
-    if (forceAll) {
-      return await this.executeAllTabsStash(windowId);
-    }
-    return await this.executeSmartStash(activityStats, windowId);
-  }
-
-  /**
-   * 恢复指定的整个收纳组
+   * 恢复指定收纳组的所有标签页
    * @param {string} groupId - 组 ID
-   * @param {boolean} [removeAfterRestore=true] - 恢复后是否从收纳箱移除该组
+   * @param {boolean} [removeAfterRestore=true] - 恢复后是否删除该组（若被锁定则自动跳过删除）
    * @returns {Promise<boolean>}
    */
   static async restoreGroup(groupId, removeAfterRestore = true) {
     const groups = await LocalStashRepository.getAllGroups();
     const targetGroup = groups.find((g) => g.id === groupId);
-    if (!targetGroup || !targetGroup.tabs || targetGroup.tabs.length === 0) {
-      return false;
-    }
+    if (!targetGroup || !targetGroup.tabs) return false;
+
+    let restoredCount = 0;
 
     // 批量在当前窗口打开标签页（使用休眠挂起 discarded: true，避免海量标签并发下载网页拖垮内存）
     for (const item of targetGroup.tabs) {
@@ -264,6 +266,7 @@ export class StashService {
             active: false,
             discarded: true
           });
+          restoredCount++;
         } catch {
           // 若部分环境不支持 discarded 属性创建，则降级为常规后台标签
           try {
@@ -272,11 +275,16 @@ export class StashService {
               pinned: Boolean(item.pinned),
               active: false
             });
+            restoredCount++;
           } catch (e) {
             console.warn('[StashService] 恢复标签页异常:', e);
           }
         }
       }
+    }
+
+    if (restoredCount === 0 && targetGroup.tabs.length > 0) {
+      return false;
     }
 
     // 若非锁定组，恢复后默认删除该组

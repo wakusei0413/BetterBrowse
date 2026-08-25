@@ -39,8 +39,19 @@ export class MigrationManager {
       }
     }
 
-    // 未来如果发布 v2, v3 可以在此处追加针对性转换逻辑：
-    // if (currentVersion < 2) { ... }
+    if (currentVersion < 3) {
+      // 迁移 v1/v2 到 v3：平滑补齐 stashSettings 缺失字段
+      const existingConfig = await StorageAdapter.get(StorageKeys.USER_CONFIG, {});
+      const mergedConfig = {
+        ...DefaultConfig,
+        ...existingConfig,
+        stashSettings: {
+          ...DefaultConfig.stashSettings,
+          ...(existingConfig.stashSettings || {})
+        }
+      };
+      await StorageAdapter.set(StorageKeys.USER_CONFIG, mergedConfig);
+    }
 
     // 记录最新版本号
     await StorageAdapter.set(StorageKeys.SCHEMA_VERSION, CURRENT_SCHEMA_VERSION);

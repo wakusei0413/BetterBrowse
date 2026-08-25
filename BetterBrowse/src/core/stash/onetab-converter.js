@@ -6,6 +6,54 @@
 
 export class OneTabConverter {
   /**
+   * 校验并清洗 URL，支持智能补齐缺省协议头并兼容常见安全协议
+   * @param {unknown} rawUrl
+   * @returns {string | null}
+   */
+  static sanitizeUrl(rawUrl) {
+    if (typeof rawUrl !== 'string') return null;
+    let url = rawUrl.trim();
+    if (!url || url.length > 8192) return null;
+
+    const lower = url.toLowerCase();
+    if (
+      lower.startsWith('javascript:') ||
+      lower.startsWith('data:text/html') ||
+      lower.startsWith('vbscript:')
+    ) {
+      return null;
+    }
+
+    if (url.startsWith('//')) {
+      url = 'https:' + url;
+    } else if (/^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z0-9]/.test(url) && !url.includes('://')) {
+      url = 'https://' + url;
+    }
+
+    try {
+      const parsed = new URL(url);
+      const allowedProtocols = [
+        'http:',
+        'https:',
+        'chrome:',
+        'edge:',
+        'about:',
+        'file:',
+        'ftp:',
+        'view-source:',
+        'brave:',
+        'vivaldi:'
+      ];
+      if (allowedProtocols.includes(parsed.protocol)) {
+        return url;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 将 OneTab 导出的纯文本（每行 "URL | Title"，空行分隔不同组）解析为 Better Browse 标签组结构
    * @param {string} rawText - OneTab 导出文本
    * @returns {Array<{ id: string, createdAt: number, title: string, locked: boolean, starred: boolean, tabs: Array<{ id: string, url: string, title: string, favIconUrl: string, pinned: boolean }> }>}
@@ -42,26 +90,20 @@ export class OneTabConverter {
         title = line;
       }
 
-      if (url) {
-        if (url.startsWith('//')) {
-          url = 'https:' + url;
-        } else if (url.startsWith('www.')) {
-          url = 'https://' + url;
-        }
-      }
+      const cleanUrl = this.sanitizeUrl(url);
 
-      if (url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('ftp://') || url.startsWith('file://'))) {
+      if (cleanUrl) {
         let domain = '';
         try {
-          domain = new URL(url).hostname;
+          domain = new URL(cleanUrl).hostname;
         } catch {
           domain = '';
         }
 
         currentGroupTabs.push({
           id: `tab_item_${Math.random().toString(36).substring(2, 9)}`,
-          url: url,
-          title: title || url,
+          url: cleanUrl,
+          title: title || cleanUrl,
           favIconUrl: domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=32` : '',
           pinned: false
         });
