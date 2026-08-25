@@ -339,7 +339,7 @@ class PopupController {
   }
 
   openOptionsPage() {
-    MessageBus.sendToBackground(ActionTypes.OPEN_OPTIONS_PAGE);
+    MessageBus.sendToBackground(ActionTypes.OPEN_OPTIONS_PAGE, { tab: 'stash-settings' });
   }
 }
 
