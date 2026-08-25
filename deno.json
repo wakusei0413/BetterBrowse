@@ -1,0 +1,8 @@
+{
+  "tasks": {
+    "test": "deno task --cwd BetterBrowse test",
+    "verify": "deno task --cwd BetterBrowse verify",
+    "bundle": "deno task --cwd BetterBrowse bundle",
+    "icons": "deno task --cwd BetterBrowse icons"
+  }
+}

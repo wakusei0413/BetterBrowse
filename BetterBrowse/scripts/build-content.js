@@ -1,14 +1,15 @@
 /**
- * @file build-content.mjs
- * @description 构建内容脚本单文件（将模块化源码打包为自包含的 content-bundle.js，确保 100% 站点兼容性）
+ * @file build-content.js
+ * @description 构建内容脚本单文件（将模块化源码合并为自包含的 content-bundle.js，确保 100% 站点兼容性）
  * @encoding UTF-8
  */
 
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 
 const banner = `/**
@@ -40,7 +41,7 @@ let combinedCode = banner;
 
 for (const relPath of filesToBundle) {
   const fullPath = path.resolve(projectRoot, relPath);
-  let content = fs.readFileSync(fullPath, 'utf-8');
+  let content = await fs.readFile(fullPath, 'utf8');
 
   // 移除 import 和 export 语句以适配自包含 IIFE
   content = content
@@ -53,6 +54,5 @@ for (const relPath of filesToBundle) {
 combinedCode += footer;
 
 const outputPath = path.resolve(projectRoot, 'src/content/content-bundle.js');
-fs.writeFileSync(outputPath, combinedCode, 'utf-8');
-console.log(`Successfully built content-bundle.js at ${outputPath} (${combinedCode.length} bytes)`);
-
+await fs.writeFile(outputPath, combinedCode, 'utf8');
+console.log(`✅ 已成功打包内容脚本: ${outputPath} (${combinedCode.length} 字符)`);
