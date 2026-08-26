@@ -19,6 +19,10 @@ const ActionTypes = {
   SET_LINK_RULE: 'SET_LINK_RULE',             // 设置指定域名的链接跳转规则
   GET_GLOBAL_LINK_RULE: 'GET_GLOBAL_LINK_RULE', // 获取全局链接跳转规则
   SET_GLOBAL_LINK_RULE: 'SET_GLOBAL_LINK_RULE', // 设置全局链接跳转规则
+  GET_DOMAIN_RULES: 'GET_DOMAIN_RULES',         // 获取全部域名跳转规则
+  SET_DOMAIN_RULE: 'SET_DOMAIN_RULE',           // 设置指定域名跳转规则
+  REMOVE_DOMAIN_RULE: 'REMOVE_DOMAIN_RULE',     // 删除指定域名跳转规则
+  CLEAR_DOMAIN_RULES: 'CLEAR_DOMAIN_RULES',     // 清空全部域名跳转规则
   OPEN_TAB_BACKGROUND: 'OPEN_TAB_BACKGROUND', // 后台打开新标签页
 
   // === 智能收纳与规则相关 ===
@@ -40,6 +44,7 @@ const ActionTypes = {
   DELETE_STASH_GROUP: 'DELETE_STASH_GROUP',   // 删除指定的收纳标签组
   DELETE_STASH_ITEM: 'DELETE_STASH_ITEM',     // 删除单个收纳标签项
   CLEAR_ALL_STASH: 'CLEAR_ALL_STASH',         // 清空所有收纳数据
+  DEDUPLICATE_STASH_DATA: 'DEDUPLICATE_STASH_DATA', // 清理重复收纳组
   IMPORT_STASH_DATA: 'IMPORT_STASH_DATA',     // 导入收纳数据（智能支持 OneTab 文本与 JSON）
   EXPORT_STASH_DATA: 'EXPORT_STASH_DATA',     // 导出收纳数据 (JSON)
   EXPORT_FULL_BACKUP: 'EXPORT_FULL_BACKUP',   // 导出全量备份 (含标签页 + 插件全局配置 + 域名规则)
@@ -76,7 +81,9 @@ const StorageKeys = {
   LINK_RULES: 'bb_link_rules',               // 各域名链接跳转偏好字典 { [domain]: 'auto' | 'current' | 'new' }
   GLOBAL_LINK_RULE: 'bb_global_link_rule',   // 全局跳转规则配置 { enabled: boolean, mode: 'auto' | 'current' | 'new' }
   STASH_GROUPS: 'bb_stash_groups',           // 本地存储的收纳标签组列表
-  ACTIVITY_STATS: 'bb_activity_stats'        // 标签页活跃度统计缓存
+  ACTIVITY_STATS: 'bb_activity_stats',       // 标签页活跃度统计缓存
+  THRESHOLD_STATE: 'bb_threshold_state',     // 阈值倒计时与冷却状态
+  AUTO_BACKUPS: 'bb_auto_backups'            // 自动备份快照
 };
 
 
@@ -128,35 +135,21 @@ const DefaultConfig = {
     mode: LinkModes.AUTO        // 全局默认跳转模式
   },
 
-  // === 🎯 收纳箱精细化设置（14 项设置） ===
+  // === 收纳箱精细化设置 ===
   stashSettings: {
-    // 1. 恢复行为策略：'remove' (恢复后删除) | 'keep' (恢复后保留) | 'archive' (恢复后标记归档)
     restoreBehavior: 'remove',
-    // 2. 恢复打开位置：'currentWindow' (当前窗口) | 'newWindow' (新建独立窗口)
     restorePosition: 'currentWindow',
-    // 3. 是否允许重复收纳相同的 URL
     allowDuplicates: true,
-    // 4. 重复收纳时标题策略：'useOriginal' (保留初次收纳标题) | 'useLatest' (更新为最新标题)
     existingTabTitleBehavior: 'useOriginal',
-    // 5. 点击收纳按钮后是否自动切换激活收纳箱标签
     autoOpenStashTab: true,
-    // 6. 是否在首位死死常驻固定收纳小标签（Pinned Tab Guard）
     pinnedTabGuard: true,
-    // 7. 删除收纳组/标签前是否弹出二次确认框
     deleteConfirmation: true,
-    // 8. 扩展图标 Badge 上是否实时显示收纳标签总数
     showTabCountBadge: true,
-    // 9. 智能收纳时是否跳过固定标签页
     excludePinnedTabs: true,
-    // 10. 智能收纳时是否跳过正在播放媒体的标签页
     excludeAudibleTabs: true,
-    // 11. 智能收纳时是否跳过表单编辑中页面
     excludeFormDirtyTabs: true,
-    // 12. 是否开启每日自动定时备份导出
     autoBackupEnabled: true,
-    // 13. 自动备份保留天数 (默认 30 天)
     backupRetentionDays: 30,
-    // 14. 页面显示风格：'comfortable' (舒适模式) | 'compact' (紧凑模式)
     displayDensity: 'comfortable'
   }
 };
@@ -204,21 +197,10 @@ class LinkMatcher {
    */
   static isInterceptionAllowed(url) {
     if (!url || typeof url !== 'string') return false;
-    const trimmed = url.trim().toLowerCase();
-    // 忽略空链接、锚点、JavaScript伪协议、邮件、电话等
-    if (
-      !trimmed ||
-      trimmed === '#' ||
-      trimmed.startsWith('#') ||
-      trimmed.startsWith('javascript:') ||
-      trimmed.startsWith('mailto:') ||
-      trimmed.startsWith('tel:') ||
-      trimmed.startsWith('blob:') ||
-      trimmed.startsWith('data:')
-    ) {
-      return false;
-    }
-    return true;
+    const trimmed = url.trim();
+    if (!trimmed || trimmed === '#' || trimmed.startsWith('#') || /[\u0000-\u001f\u007f]/.test(trimmed)) return false;
+    const protocolMatch = trimmed.match(/^([a-z][a-z0-9+.-]*):/i);
+    return !protocolMatch || /^https?:$/i.test(`${protocolMatch[1]}:`);
   }
 
   /**
@@ -768,11 +750,10 @@ class CountdownBanner {
         progressBar.style.width = `${percent}%`;
       }
 
-      // 倒计时结束，触发自动智能收纳
+      // 倒计时仅负责展示，自动收纳由后台唯一计时器触发，避免重复执行
       if (this.remainingSeconds <= 0) {
         clearInterval(this.timer);
         this.timer = null;
-        this.confirmAutoStash();
       }
     }, 1000);
   }
@@ -941,7 +922,7 @@ class LinkInterceptor {
   initMainWorldEvents() {
     window.addEventListener('__BETTER_BROWSE_OPEN_NEW_TAB__', (event) => {
       const url = event?.detail?.url;
-      if (url) {
+      if (this.isSafeHttpUrl(url)) {
         // 记录已由主世界拦截并处理的时间戳与 URL，彻底杜绝隔离世界二次重复发送消息
         this.lastHandledUrl = url;
         this.lastHandledTime = Date.now();
@@ -955,6 +936,21 @@ class LinkInterceptor {
         });
       }
     });
+  }
+
+  /**
+   * 主世界事件属于公开页面 API，必须再次校验协议，防止页面脚本伪造特权 URL。
+   * @param {unknown} rawUrl
+   * @returns {boolean}
+   */
+  isSafeHttpUrl(rawUrl) {
+    if (typeof rawUrl !== 'string' || !LinkMatcher.isInterceptionAllowed(rawUrl)) return false;
+    try {
+      const parsed = new URL(rawUrl, window.location.href);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
   }
 
   /**

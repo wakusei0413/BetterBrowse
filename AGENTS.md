@@ -8,7 +8,7 @@
 
 - **项目名称**：Better Browse（智能浏览增强插件）
 - **规范标准**：Chrome Extensions **Manifest V3**
-- **当前版本**：`0.0.1`
+- **当前版本**：`Milestone 1`
 - **开发运行时与工具链**：**纯 JavaScript (原生 ESM) + Deno 2.x 原生驱动**（彻底告别 Node.js/npm 体系）
 - **零构建与所见即所得原则**（⚠️ **核心开发手感**）：
   - 源码直接在 `src/` 中以纯原生 JavaScript 编写（`.js`、`.html`、`.css`）。
@@ -71,7 +71,6 @@ BetterBrowse/
     │   │   ├── activity-tracker.js   # 标签页激活时间与 1 小时滑动窗口频次统计
     │   │   ├── threshold-monitor.js  # 标签页数量阈值监控与冷却防打扰
     │   │   ├── pinned-tab-guard.js   # 首位常驻收纳箱守护与防误关保护
-    │   │   ├── context-menu-manager.js # 右键上下文菜单管理器 (定向/全局收纳)
     │   │   └── service-worker.js     # 后台总入口 (装配模块、监听事件)
     │   │
     │   ├── content/               # 网页端内容脚本 (双层世界防御体系)
@@ -97,7 +96,6 @@ BetterBrowse/
     └── tests/                     # Deno.test 原生自动化集成测试套件
         ├── critical-flows.test.js # 核心收纳恢复流程与 URL 容错导入测试
         ├── rules-engine.test.js   # P0~P3 智能规则多级优先级测试
-        ├── stash-settings.test.js # 收纳箱高级设置与版本平滑迁移测试
         └── threshold-monitor.test.js # 阈值监控与冷却防打扰测试
 ```
 

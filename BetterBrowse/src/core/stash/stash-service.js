@@ -7,6 +7,7 @@
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { RuleEngine } from '../rules/rule-engine.js';
 import { LocalStashRepository } from './local-stash-repo.js';
+import { isExcludedFromTabCounting, isOwnOptionsUrl } from '../extension-url.js';
 
 export class StashService {
   /**
@@ -45,7 +46,7 @@ export class StashService {
       if (!tabs || tabs.length === 0) return null;
 
       const windowId = targetWindowId || tabs[0].windowId;
-      let existingStashTab = tabs.find((t) => t.url && t.url.includes('src/options/options.html'));
+      let existingStashTab = tabs.find((t) => isOwnOptionsUrl(t.url));
 
       if (existingStashTab) {
         // 若已存在，确保其被死死固定在 index 0
@@ -120,7 +121,8 @@ export class StashService {
       const tabs = await chrome.tabs.query(queryOptions);
 
       if (!tabs || tabs.length === 0) {
-        await StashService.ensurePinnedStashTab(true, targetWindowId);
+        const settings = (await StorageAdapter.getUserConfig()).stashSettings || {};
+        await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, targetWindowId);
         return { success: true, stashedCount: 0 };
       }
 
@@ -129,13 +131,13 @@ export class StashService {
       // 过滤出需要收纳的网页（排除插件自身的 options 页面及无意义空白页）
       const tabsToStash = tabs.filter((tab) => {
         if (!tab.url) return false;
-        if (tab.url.includes('src/options/options.html')) return false;
-        if (tab.url === 'chrome://newtab/' || tab.url === 'edge://newtab/' || tab.url === 'about:blank') return false;
+        if (isExcludedFromTabCounting(tab)) return false;
         return true;
       });
 
       if (tabsToStash.length === 0) {
-        await StashService.ensurePinnedStashTab(true, windowId);
+        const settings = (await StorageAdapter.getUserConfig()).stashSettings || {};
+        await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
         return { success: true, stashedCount: 0 };
       }
 
@@ -153,7 +155,8 @@ export class StashService {
       }
 
       // 2. 唤起并置顶第 1 个位置的常驻固定小标签页（Pinned Tab）
-      await StashService.ensurePinnedStashTab(true, windowId);
+      const settings = (await StorageAdapter.getUserConfig()).stashSettings || {};
+      await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
 
       // 3. 关闭所有被收纳的标签页
       const tabIdsToClose = tabsToStash
@@ -213,11 +216,20 @@ export class StashService {
       pinned: tab.pinned
     }));
 
-    // 1. 写入本地收纳仓储
-    await LocalStashRepository.createGroup(itemsToSave);
+    // 1. 写入本地收纳仓储，持久化失败时绝不关闭原标签页
+    const createRes = await LocalStashRepository.createGroup(itemsToSave);
+    if (!createRes?.success) {
+      return {
+        success: false,
+        stashedCount: 0,
+        keptCount: tabsToKeep.length,
+        error: createRes?.error || '写入本地收纳仓储失败'
+      };
+    }
 
     // 2. 确保首位常驻固定小标签存在（静默后台处理，activate: false 绝不抢占用户焦点）
-    await StashService.ensurePinnedStashTab(false, windowId);
+    const settings = config.stashSettings || {};
+    await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
 
     // 3. 安全关闭所有被收纳的闲置标签页
     const tabIdsToClose = tabsToStash
@@ -248,12 +260,19 @@ export class StashService {
    * @param {boolean} [removeAfterRestore=true] - 恢复后是否删除该组（若被锁定则自动跳过删除）
    * @returns {Promise<boolean>}
    */
-  static async restoreGroup(groupId, removeAfterRestore = true) {
+  static async restoreGroup(groupId, removeAfterRestore = undefined) {
+    const config = await StorageAdapter.getUserConfig();
+    const settings = config.stashSettings || {};
     const groups = await LocalStashRepository.getAllGroups();
     const targetGroup = groups.find((g) => g.id === groupId);
     if (!targetGroup || !targetGroup.tabs) return false;
 
+    const shouldRemove = removeAfterRestore === undefined ? settings.restoreBehavior === 'remove' : removeAfterRestore;
     let restoredCount = 0;
+    let targetWindowId = null;
+    if (settings.restorePosition === 'newWindow' && chrome.windows?.create) {
+      try { targetWindowId = (await chrome.windows.create({ focused: true, type: 'normal' }))?.id || null; } catch {}
+    }
 
     // 批量在当前窗口打开标签页（使用休眠挂起 discarded: true，避免海量标签并发下载网页拖垮内存）
     for (const item of targetGroup.tabs) {
@@ -262,6 +281,7 @@ export class StashService {
           // Chrome MV3 支持在创建非活跃标签时标记 discarded: true，挂起不加载，直到用户点击
           await chrome.tabs.create({
             url: item.url,
+            ...(targetWindowId ? { windowId: targetWindowId } : {}),
             pinned: Boolean(item.pinned),
             active: false,
             discarded: true
@@ -272,6 +292,7 @@ export class StashService {
           try {
             await chrome.tabs.create({
               url: item.url,
+              ...(targetWindowId ? { windowId: targetWindowId } : {}),
               pinned: Boolean(item.pinned),
               active: false
             });
@@ -288,8 +309,10 @@ export class StashService {
     }
 
     // 若非锁定组，恢复后默认删除该组
-    if (removeAfterRestore && !targetGroup.locked) {
+    if (shouldRemove && !targetGroup.locked) {
       await LocalStashRepository.deleteGroup(groupId);
+    } else if (settings.restoreBehavior === 'archive' && !targetGroup.locked) {
+      await LocalStashRepository.markGroupArchived?.(groupId);
     }
 
     return true;
@@ -302,7 +325,9 @@ export class StashService {
    * @param {boolean} [removeAfterRestore=true]
    * @returns {Promise<boolean>}
    */
-  static async restoreItem(groupId, itemId, removeAfterRestore = true) {
+  static async restoreItem(groupId, itemId, removeAfterRestore = undefined) {
+    const config = await StorageAdapter.getUserConfig();
+    const settings = config.stashSettings || {};
     const groups = await LocalStashRepository.getAllGroups();
     const targetGroup = groups.find((g) => g.id === groupId);
     if (!targetGroup) return false;
@@ -316,8 +341,11 @@ export class StashService {
       active: true
     });
 
-    if (removeAfterRestore && !targetGroup.locked) {
+    const shouldRemove = removeAfterRestore === undefined ? settings.restoreBehavior === 'remove' : removeAfterRestore;
+    if (shouldRemove && !targetGroup.locked) {
       await LocalStashRepository.deleteTabItem(groupId, itemId);
+    } else if (settings.restoreBehavior === 'archive' && !targetGroup.locked) {
+      await LocalStashRepository.markGroupArchived?.(groupId);
     }
 
     return true;

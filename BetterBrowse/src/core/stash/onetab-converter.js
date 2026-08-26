@@ -93,18 +93,11 @@ export class OneTabConverter {
       const cleanUrl = this.sanitizeUrl(url);
 
       if (cleanUrl) {
-        let domain = '';
-        try {
-          domain = new URL(cleanUrl).hostname;
-        } catch {
-          domain = '';
-        }
-
         currentGroupTabs.push({
           id: `tab_item_${Math.random().toString(36).substring(2, 9)}`,
           url: cleanUrl,
           title: title || cleanUrl,
-          favIconUrl: domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=32` : '',
+          favIconUrl: '',
           pinned: false
         });
       }

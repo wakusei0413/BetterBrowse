@@ -34,6 +34,7 @@ export class LinkService {
    * @returns {Promise<boolean>}
    */
   static async setGlobalRule(enabled, mode) {
+    if (!Object.values(LinkModes).includes(mode)) return false;
     return await StorageAdapter.updateUserConfig({
       globalLinkRule: { enabled, mode }
     });
@@ -72,8 +73,12 @@ export class LinkService {
    * @returns {Promise<boolean>}
    */
   static async setDomainRule(domain, mode) {
-    if (!domain) return false;
-    const cleanDomain = domain.toLowerCase().trim();
+    if (typeof domain !== 'string' || !domain.trim() || !Object.values(LinkModes).includes(mode)) return false;
+    const candidate = domain.trim();
+    const cleanDomain = LinkMatcher.extractDomain(
+      candidate.includes('://') ? candidate : `https://${candidate}`
+    );
+    if (!cleanDomain) return false;
     const rules = await this.getAllRules();
 
     if (mode === LinkModes.AUTO) {

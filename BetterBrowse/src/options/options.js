@@ -921,12 +921,6 @@ class StashTabComponent {
     for (const tab of visibleTabs) {
       const safeTabId = this.escapeHTML(tab.id);
       let faviconSrc = tab.favIconUrl;
-      if (!faviconSrc && tab.url) {
-        try {
-          const domain = new URL(tab.url).hostname;
-          if (domain) faviconSrc = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
-        } catch {}
-      }
 
       itemsHtml += `
         <li class="stash-item-row" data-group-id="${safeGroupId}" data-item-id="${safeTabId}">
@@ -1128,11 +1122,11 @@ class StashTabComponent {
         onClick: async () => {
           const cached = this.recentlyDeletedGroups.get(groupId);
           if (cached) {
-            await MessageBus.sendToBackground(ActionTypes.RESTORE_BACKUP_DATA, {
-              backupData: {
+            await MessageBus.sendToBackground(ActionTypes.RESTORE_FULL_BACKUP, {
+              jsonString: JSON.stringify({
                 version: 1,
                 groups: [cached.group, ...this.groups]
-              }
+              })
             });
             this.recentlyDeletedGroups.delete(groupId);
             await this.loadData();
@@ -1345,6 +1339,7 @@ class StashSettingsComponent {
     const configRes = await MessageBus.sendToBackground(ActionTypes.GET_CONFIG);
     const config = configRes.success && configRes.data ? configRes.data : {};
     const settings = config.stashSettings || {};
+    document.documentElement.dataset.displayDensity = settings.displayDensity || 'comfortable';
 
     if (this.dom.selectRestoreBehavior) {
       this.dom.selectRestoreBehavior.value = settings.restoreBehavior || 'remove';
@@ -1424,6 +1419,7 @@ class StashSettingsComponent {
       });
 
       if (res.success) {
+        document.documentElement.dataset.displayDensity = stashSettings.displayDensity;
         this.flashSaveIndicator();
       }
     }, 150);
@@ -1472,16 +1468,16 @@ class RulesConfigComponent {
 
     const config = res.data;
     if (this.dom.inputThreshold) this.dom.inputThreshold.value = config.tabThreshold || 15;
-    if (this.dom.inputRecent) this.dom.inputRecent.value = config.recentActiveThresholdMinutes || 5;
+    if (this.dom.inputRecent) this.dom.inputRecent.value = config.recentActiveMinutes || 5;
     if (this.dom.chkAutoStash) this.dom.chkAutoStash.checked = Boolean(config.autoStashOnThreshold);
-    if (this.dom.inputCountdown) this.dom.inputCountdown.value = config.autoStashCountdownSeconds || 15;
-    if (this.dom.chkAutoNotify) this.dom.chkAutoNotify.checked = Boolean(config.notifyOnThreshold);
+    if (this.dom.inputCountdown) this.dom.inputCountdown.value = config.countdownSeconds || 15;
+    if (this.dom.chkAutoNotify) this.dom.chkAutoNotify.checked = Boolean(config.autoThresholdNotify);
 
     const rules = config.rulesEnabled || {};
     if (this.dom.chkAudible) this.dom.chkAudible.checked = rules.audible !== false;
     if (this.dom.chkFormGuard) this.dom.chkFormGuard.checked = rules.formGuard !== false;
     if (this.dom.chkRecentActive) this.dom.chkRecentActive.checked = rules.recentActive !== false;
-    if (this.dom.chkHighFrequency) this.dom.chkHighFrequency.checked = rules.frequency !== false;
+    if (this.dom.chkHighFrequency) this.dom.chkHighFrequency.checked = rules.highFrequency !== false;
     if (this.dom.chkPinned) this.dom.chkPinned.checked = rules.pinned !== false;
   }
 
@@ -1512,25 +1508,25 @@ class RulesConfigComponent {
     clearTimeout(this.saveDebounceTimer);
     this.saveDebounceTimer = setTimeout(async () => {
       const tabThreshold = parseInt(this.dom.inputThreshold?.value, 10) || 15;
-      const recentActiveThresholdMinutes = parseInt(this.dom.inputRecent?.value, 10) || 5;
+      const recentActiveMinutes = parseInt(this.dom.inputRecent?.value, 10) || 5;
       const autoStashOnThreshold = Boolean(this.dom.chkAutoStash?.checked);
-      const autoStashCountdownSeconds = parseInt(this.dom.inputCountdown?.value, 10) || 15;
-      const notifyOnThreshold = Boolean(this.dom.chkAutoNotify?.checked);
+      const countdownSeconds = parseInt(this.dom.inputCountdown?.value, 10) || 15;
+      const autoThresholdNotify = Boolean(this.dom.chkAutoNotify?.checked);
 
       const rulesEnabled = {
         audible: Boolean(this.dom.chkAudible?.checked),
         formGuard: Boolean(this.dom.chkFormGuard?.checked),
         recentActive: Boolean(this.dom.chkRecentActive?.checked),
-        frequency: Boolean(this.dom.chkHighFrequency?.checked),
+        highFrequency: Boolean(this.dom.chkHighFrequency?.checked),
         pinned: Boolean(this.dom.chkPinned?.checked)
       };
 
       const res = await MessageBus.sendToBackground(ActionTypes.UPDATE_CONFIG, {
         tabThreshold,
-        recentActiveThresholdMinutes,
+        recentActiveMinutes,
         autoStashOnThreshold,
-        autoStashCountdownSeconds,
-        notifyOnThreshold,
+        countdownSeconds,
+        autoThresholdNotify,
         rulesEnabled
       });
 
@@ -1588,9 +1584,13 @@ class DomainRulesComponent {
         return;
       }
       if (confirm('确定要清空所有已配置的独立网站跳转规则吗？')) {
-        await MessageBus.sendToBackground(ActionTypes.CLEAR_DOMAIN_RULES);
-        Toast.show('已清空全部域名规则');
-        await this.loadRules();
+        const res = await MessageBus.sendToBackground(ActionTypes.CLEAR_DOMAIN_RULES);
+        if (res.success) {
+          Toast.show('已清空全部域名规则');
+          await this.loadRules();
+        } else {
+          Toast.show(res.error || '清空域名规则失败');
+        }
       }
     });
 
@@ -1599,9 +1599,13 @@ class DomainRulesComponent {
       const btnDelete = e.target.closest('.btn-delete-rule');
       if (btnDelete) {
         const domain = btnDelete.dataset.domain;
-        await MessageBus.sendToBackground(ActionTypes.REMOVE_DOMAIN_RULE, { domain });
-        Toast.show(`已删除 ${domain} 的跳转规则`);
-        await this.loadRules();
+        const res = await MessageBus.sendToBackground(ActionTypes.REMOVE_DOMAIN_RULE, { domain });
+        if (res.success) {
+          Toast.show(`已删除 ${domain} 的跳转规则`);
+          await this.loadRules();
+        } else {
+          Toast.show(res.error || `删除 ${domain} 的跳转规则失败`);
+        }
       }
     });
 
@@ -1610,9 +1614,13 @@ class DomainRulesComponent {
       if (select) {
         const domain = select.dataset.domain;
         const mode = select.value;
-        await MessageBus.sendToBackground(ActionTypes.SET_DOMAIN_RULE, { domain, mode });
-        Toast.show(`已更新 ${domain} 跳转行为为 ${mode}`);
-        await this.loadRules();
+        const res = await MessageBus.sendToBackground(ActionTypes.SET_DOMAIN_RULE, { domain, mode });
+        if (res.success) {
+          Toast.show(`已更新 ${domain} 跳转行为为 ${mode}`);
+          await this.loadRules();
+        } else {
+          Toast.show(res.error || `更新 ${domain} 跳转行为失败`);
+        }
       }
     });
 
@@ -1651,7 +1659,11 @@ class DomainRulesComponent {
       return;
     }
 
-    await MessageBus.sendToBackground(ActionTypes.SET_DOMAIN_RULE, { domain: cleanDomain, mode });
+    const res = await MessageBus.sendToBackground(ActionTypes.SET_DOMAIN_RULE, { domain: cleanDomain, mode });
+    if (!res.success) {
+      Toast.show(res.error || '添加域名规则失败');
+      return;
+    }
     Toast.show(`已成功添加 ${cleanDomain} 规则`);
     if (this.inputDomain) this.inputDomain.value = '';
     await this.loadRules();
@@ -1770,9 +1782,9 @@ class BackupComponent {
   bindEvents() {
     // 1. 导出完整 JSON 备份文件
     this.btnExportFullJSON?.addEventListener('click', async () => {
-      const res = await MessageBus.sendToBackground(ActionTypes.EXPORT_BACKUP_DATA);
+      const res = await MessageBus.sendToBackground(ActionTypes.EXPORT_FULL_BACKUP);
       if (res.success && res.data) {
-        const jsonStr = JSON.stringify(res.data, null, 2);
+        const jsonStr = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
         const blob = new Blob([jsonStr], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1791,9 +1803,10 @@ class BackupComponent {
 
     // 2. 复制完整 JSON 数据
     this.btnCopyFullJSON?.addEventListener('click', async () => {
-      const res = await MessageBus.sendToBackground(ActionTypes.EXPORT_BACKUP_DATA);
+      const res = await MessageBus.sendToBackground(ActionTypes.EXPORT_FULL_BACKUP);
       if (res.success && res.data) {
-        await navigator.clipboard.writeText(JSON.stringify(res.data, null, 2));
+        const jsonStr = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
+        await navigator.clipboard.writeText(jsonStr);
         Toast.show('完整备份数据已复制到剪贴板');
       }
     });
@@ -1898,6 +1911,8 @@ class BackupComponent {
         } else {
           Toast.show('收纳箱中没有发现重复的标签组');
         }
+      } else {
+        Toast.show(res.error || '去重失败');
       }
       this.btnDeduplicate.disabled = false;
     });
@@ -1919,7 +1934,9 @@ class BackupComponent {
       Toast.show('备份数据无效');
       return;
     }
-    const res = await MessageBus.sendToBackground(ActionTypes.RESTORE_BACKUP_DATA, { backupData });
+    const res = await MessageBus.sendToBackground(ActionTypes.RESTORE_FULL_BACKUP, {
+      jsonString: JSON.stringify(backupData)
+    });
     if (res.success) {
       Toast.show('全量数据恢复成功！配置与收纳箱已同步更新');
       if (this.txtRestoreJSON) this.txtRestoreJSON.value = '';
@@ -1931,7 +1948,7 @@ class BackupComponent {
 
   async executeImportThirdParty(rawText) {
     Toast.show('正在智能解析第三方数据...');
-    const res = await MessageBus.sendToBackground(ActionTypes.IMPORT_ONETAB_TEXT, { rawText });
+    const res = await MessageBus.sendToBackground(ActionTypes.IMPORT_THIRD_PARTY_DATA, { textString: rawText });
     if (res.success && res.data) {
       const { importedCount, groupCount, formatName } = res.data;
       Toast.show(`成功识别 [${formatName || '数据'}]：已导入 ${groupCount} 个标签组（共 ${importedCount} 个网页）`);

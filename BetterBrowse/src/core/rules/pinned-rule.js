@@ -18,7 +18,7 @@ export class PinnedRule extends BaseRule {
   }
 
   async evaluate({ tab, config }) {
-    if (!config.rulesEnabled?.pinned) {
+    if (!config.rulesEnabled?.pinned || config.stashSettings?.excludePinnedTabs === false) {
       return { retain: false };
     }
 

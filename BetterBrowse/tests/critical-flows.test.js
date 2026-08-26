@@ -10,6 +10,9 @@ import { LocalStashRepository } from '../src/core/stash/local-stash-repo.js';
 import { StashService } from '../src/core/stash/stash-service.js';
 import { MessageBus } from '../src/core/bus/message-bus.js';
 import { OneTabConverter } from '../src/core/stash/onetab-converter.js';
+import { ContextMenuManager } from '../src/background/context-menu-manager.js';
+import { RuleEngine } from '../src/core/rules/rule-engine.js';
+import { DefaultConfig } from '../src/constants/config.js';
 
 function installChrome(overrides = {}) {
   globalThis.chrome = {
@@ -62,6 +65,58 @@ test('收纳持久化失败时不得关闭原标签页', async () => {
   }
 });
 
+test('智能收纳持久化失败时不得关闭原标签页', async () => {
+  let removed = false;
+  installChrome({
+    tabs: {
+      query: async () => [{ id: 12, windowId: 1, url: 'https://idle.example', active: false }],
+      remove: async () => { removed = true; },
+      update: async () => ({}),
+      move: async () => ({})
+    }
+  });
+
+  const origCreateGroup = LocalStashRepository.createGroup;
+  const origEnsure = StashService.ensurePinnedStashTab;
+
+  try {
+    LocalStashRepository.createGroup = async () => ({ success: false, error: '存储失败' });
+    StashService.ensurePinnedStashTab = async () => ({});
+
+    const service = new StashService({
+      evaluateTabs: async () => ({
+        tabsToKeep: [],
+        tabsToStash: [{ tab: { id: 12, url: 'https://idle.example', active: false } }]
+      })
+    });
+    const result = await service.executeSmartStash({}, 1);
+    assert.equal(result.success, false);
+    assert.equal(removed, false);
+  } finally {
+    LocalStashRepository.createGroup = origCreateGroup;
+    StashService.ensurePinnedStashTab = origEnsure;
+  }
+});
+
+test('右键定向收纳持久化失败时不得关闭原标签页', async () => {
+  let removed = false;
+  installChrome({
+    tabs: {
+      query: async () => [{ id: 13, index: 2, windowId: 1, url: 'https://right.example', active: false }],
+      remove: async () => { removed = true; }
+    }
+  });
+
+  const origCreateGroup = LocalStashRepository.createGroup;
+  try {
+    LocalStashRepository.createGroup = async () => ({ success: false, error: '存储失败' });
+    await ContextMenuManager.stashTabsDirectional(1, 0, 'right');
+    assert.equal(removed, false);
+  } finally {
+    LocalStashRepository.createGroup = origCreateGroup;
+  }
+});
+
 test('全部标签恢复失败时保留原收纳组', async () => {
   let deleted = false;
   installChrome({
@@ -109,6 +164,17 @@ test('消息总线正常响应与派发', async () => {
   assert.deepEqual(response, { success: true, data: 'pong:test' });
 });
 
+test('消息总线对未注册动作返回失败而不是伪成功', async () => {
+  installChrome({
+    runtime: {
+      lastError: null,
+      sendMessage: (_message, callback) => callback(undefined)
+    }
+  });
+  const response = await MessageBus.sendToBackground('UNKNOWN_ACTION');
+  assert.equal(response.success, false);
+});
+
 test('空壳 JSON 不得被当作成功导入', async () => {
   installChrome();
   const result = await LocalStashRepository.importDataJSON('{"data":[{}]}');
@@ -154,4 +220,18 @@ test('导入包含个别损坏项的列表能够容错跳过并成功导入其�
   const result = await LocalStashRepository.importDataJSON(text);
   assert.equal(result.success, true);
   assert.equal(result.importedCount, 3);
+});
+
+test('普通网页伪装扩展选项页路径时不得被系统保护规则放行', async () => {
+  installChrome({
+    runtime: {
+      getURL: (path) => `chrome-extension://test/${path}`
+    }
+  });
+  const result = await new RuleEngine().evaluateTabs({
+    allTabs: [{ id: 99, url: 'https://evil.example/src/options/options.html', active: false }],
+    activityStats: {},
+    config: DefaultConfig
+  });
+  assert.equal(result.tabsToStash.length, 1);
 });

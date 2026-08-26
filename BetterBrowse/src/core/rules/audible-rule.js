@@ -18,7 +18,7 @@ export class AudibleRule extends BaseRule {
   }
 
   async evaluate({ tab, config }) {
-    if (!config.rulesEnabled?.audible) {
+    if (!config.rulesEnabled?.audible || config.stashSettings?.excludeAudibleTabs === false) {
       return { retain: false };
     }
 

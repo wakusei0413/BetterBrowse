@@ -13,7 +13,9 @@ export class StorageAdapter {
    * @param {'local' | 'sync'} [area='local']
    */
   static getStorageArea(area = 'local') {
-    return area === 'sync' && chrome.storage.sync ? chrome.storage.sync : chrome.storage.local;
+    if (area === 'session' && chrome.storage.session) return chrome.storage.session;
+    if (area === 'sync' && chrome.storage.sync) return chrome.storage.sync;
+    return chrome.storage.local;
   }
 
   /**
@@ -114,7 +116,10 @@ export class StorageAdapter {
    * @returns {Promise<typeof DefaultConfig>}
    */
   static async getUserConfig() {
-    const storedConfig = await this.get(StorageKeys.USER_CONFIG, {});
+    const rawConfig = await this.get(StorageKeys.USER_CONFIG, {});
+    const storedConfig = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig)
+      ? rawConfig
+      : {};
     return {
       ...DefaultConfig,
       ...storedConfig,
@@ -125,6 +130,10 @@ export class StorageAdapter {
       globalLinkRule: {
         ...DefaultConfig.globalLinkRule,
         ...(storedConfig.globalLinkRule || {})
+      },
+      stashSettings: {
+        ...DefaultConfig.stashSettings,
+        ...(storedConfig.stashSettings || {})
       }
     };
   }
@@ -135,6 +144,9 @@ export class StorageAdapter {
    * @returns {Promise<boolean>}
    */
   static async updateUserConfig(partialConfig) {
+    partialConfig = partialConfig && typeof partialConfig === 'object' && !Array.isArray(partialConfig)
+      ? partialConfig
+      : {};
     const current = await this.getUserConfig();
     const updated = {
       ...current,
@@ -146,6 +158,10 @@ export class StorageAdapter {
       globalLinkRule: {
         ...current.globalLinkRule,
         ...(partialConfig.globalLinkRule || {})
+      },
+      stashSettings: {
+        ...current.stashSettings,
+        ...(partialConfig.stashSettings || {})
       }
     };
     return await this.set(StorageKeys.USER_CONFIG, updated);

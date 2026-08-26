@@ -6,6 +6,8 @@
 
 import { ActionTypes } from '../constants/action-types.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
+import { StorageKeys } from '../constants/storage-keys.js';
+import { filterCountableTabs } from '../core/extension-url.js';
 
 export class ThresholdMonitor {
   /**
@@ -18,12 +20,15 @@ export class ThresholdMonitor {
     this.onOpenOptions = onOpenOptions;
     this.notificationId = 'better_browse_threshold_notify';
     this.lastActionTime = 0; // 上次提醒、取消或执行收纳的时间戳（用于冷却防打扰）
-    this.countdownInterval = null; // 后台 1 秒心跳定时器
+    this.countdownInterval = null; // 兼容旧调用方，倒计时由 alarms 驱动
     this.remainingSeconds = 0; // 当前剩余秒数
     this.totalSeconds = 15;
     this.activeWindowId = null; // 当前正在倒计时的窗口 ID
+    this.deadline = 0;
+    this.alarmName = 'better-browse-threshold-countdown';
 
     this.initListeners();
+    this.restoreState();
 
     // 插件启动或 Service Worker 唤醒时，延迟 1 秒主动检测一次当前窗口标签数
     setTimeout(() => {
@@ -64,6 +69,33 @@ export class ThresholdMonitor {
         }
       });
     }
+    if (chrome.alarms?.onAlarm) {
+      chrome.alarms.onAlarm.addListener((alarm) => {
+        if (alarm?.name === this.alarmName) this.handleAlarm();
+      });
+    }
+  }
+
+  async restoreState() {
+    try {
+      const state = await StorageAdapter.get(StorageKeys.THRESHOLD_STATE, null, 'session');
+      if (!state || !state.deadline || state.deadline <= Date.now()) return;
+      this.deadline = state.deadline;
+      this.activeWindowId = state.activeWindowId ?? null;
+      this.totalSeconds = state.totalSeconds || 15;
+      this.lastActionTime = state.lastActionTime || 0;
+      this.remainingSeconds = Math.max(0, Math.ceil((state.deadline - Date.now()) / 1000));
+      this.updateBadge(this.remainingSeconds);
+    } catch {}
+  }
+
+  async persistState() {
+    await StorageAdapter.set(StorageKeys.THRESHOLD_STATE, {
+      deadline: this.deadline,
+      activeWindowId: this.activeWindowId,
+      totalSeconds: this.totalSeconds,
+      lastActionTime: this.lastActionTime
+    }, 'session');
   }
 
   /**
@@ -108,14 +140,18 @@ export class ThresholdMonitor {
     try {
       const config = await StorageAdapter.getUserConfig();
       const { windowId, tabs } = await this.getActiveWindowInfo(targetWindowId);
-      if (!tabs || tabs.length === 0) return;
+      const countableTabs = filterCountableTabs(tabs);
+      if (countableTabs.length === 0) {
+        if (this.deadline > Date.now()) this.clearCountdownUI();
+        return;
+      }
 
-      const currentCount = tabs.length;
+      const currentCount = countableTabs.length;
       const threshold = config.tabThreshold || 15;
 
       if (currentCount < threshold) {
         // 若标签数已降回阈值以下且正在倒计时，取消倒计时
-        if (this.countdownInterval) {
+        if (this.deadline > Date.now()) {
           this.clearCountdownUI();
         }
         return;
@@ -126,7 +162,7 @@ export class ThresholdMonitor {
       const now = Date.now();
 
       // 正在倒计时中或处于冷却期内，不重复打扰
-      if (this.countdownInterval !== null) {
+      if (this.deadline > Date.now()) {
         return;
       }
       if (now - this.lastActionTime < cooldownMs) {
@@ -136,7 +172,7 @@ export class ThresholdMonitor {
       // 1. 若开启了超阈值自动倒计时智能收纳
       if (config.autoStashOnThreshold !== false) {
         this.lastActionTime = now;
-        this.startCountdown(windowId, tabs, config);
+        this.startCountdown(windowId, countableTabs, config);
         return;
       }
 
@@ -157,14 +193,15 @@ export class ThresholdMonitor {
     this.activeWindowId = windowId;
     this.totalSeconds = Math.max(3, config.countdownSeconds || 15);
     this.remainingSeconds = this.totalSeconds;
-    const currentCount = tabs.length;
+    const countableTabs = filterCountableTabs(tabs);
+    const currentCount = countableTabs.length;
     const threshold = config.tabThreshold || 15;
 
     // 1. 更新 Action 图标 Badge 徽章动画
     this.updateBadge(this.remainingSeconds);
 
     // 2. 向当前窗口内所有可用的网页标签广播倒计时卡片
-    this.broadcastBannerToTabs(tabs, {
+    this.broadcastBannerToTabs(countableTabs, {
       countdownSeconds: this.totalSeconds,
       currentCount,
       threshold
@@ -175,25 +212,21 @@ export class ThresholdMonitor {
       this.showThresholdNotification(currentCount, threshold, this.remainingSeconds);
     }
 
-    // 4. 启动后台 1 秒心跳定时器
-    if (this.countdownInterval) {
-      clearInterval(this.countdownInterval);
-    }
-
-    this.countdownInterval = setInterval(async () => {
-      this.remainingSeconds -= 1;
-
-      if (this.remainingSeconds > 0) {
-        this.updateBadge(this.remainingSeconds);
-      } else {
-        // 倒计时归零，执行自动智能收纳
-        console.info('[ThresholdMonitor] 倒计时结束，触发智能规则收纳');
-        this.clearCountdownUI();
-        if (this.onStashRequested) {
-          await this.onStashRequested(this.activeWindowId);
-        }
+    this.deadline = Date.now() + this.totalSeconds * 1000;
+    this.persistState();
+    try {
+      if (chrome.alarms?.create) {
+        chrome.alarms.create(this.alarmName, { when: this.deadline });
       }
-    }, 1000);
+    } catch {}
+  }
+
+  async handleAlarm() {
+    if (!this.deadline || this.deadline > Date.now()) return;
+    const windowId = this.activeWindowId;
+    this.clearCountdownUI();
+    this.lastActionTime = Date.now();
+    if (this.onStashRequested) await this.onStashRequested(windowId);
   }
 
   /**
@@ -263,6 +296,9 @@ export class ThresholdMonitor {
       this.countdownInterval = null;
     }
     this.remainingSeconds = 0;
+    this.deadline = 0;
+    try { chrome.alarms?.clear?.(this.alarmName); } catch {}
+    this.persistState();
 
     try {
       if (chrome.action?.setBadgeText) {
@@ -296,6 +332,7 @@ export class ThresholdMonitor {
   handleCancelAutoStash() {
     this.clearCountdownUI();
     this.lastActionTime = Date.now();
+    this.persistState();
     return { success: true };
   }
 
@@ -305,6 +342,7 @@ export class ThresholdMonitor {
   async handleConfirmAutoStash() {
     this.clearCountdownUI();
     this.lastActionTime = Date.now();
+    await this.persistState();
     if (this.onStashRequested) {
       return await this.onStashRequested(this.activeWindowId);
     }
@@ -315,6 +353,7 @@ export class ThresholdMonitor {
    * 获取当前倒计时状态
    */
   getCountdownStatus() {
+    if (this.deadline > 0) this.remainingSeconds = Math.max(0, Math.ceil((this.deadline - Date.now()) / 1000));
     return {
       isCountingDown: this.remainingSeconds > 0,
       remainingSeconds: this.remainingSeconds,
@@ -332,8 +371,8 @@ export class ThresholdMonitor {
     if (!chrome.notifications) return;
 
     const message = countdownSeconds
-      ? `当前标签页已达 ${count} 个（超过阈值 ${threshold} 个），将在 ${countdownSeconds} 秒后自动智能收纳闲置标签。`
-      : `当前标签页已达 ${count} 个（超过阈值 ${threshold} 个），建议进行智能收纳以释放内存。`;
+      ? `当前标签页已达到 ${count} 个（达到或超过阈值 ${threshold} 个），将在 ${countdownSeconds} 秒后自动智能收纳闲置标签。`
+      : `当前标签页已达到 ${count} 个（达到或超过阈值 ${threshold} 个），建议进行智能收纳以释放内存。`;
 
     chrome.notifications.create(
       this.notificationId,

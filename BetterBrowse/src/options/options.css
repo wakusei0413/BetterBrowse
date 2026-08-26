@@ -360,6 +360,17 @@ a:focus-visible {
   border: 1px solid rgba(30, 142, 62, 0.2);
 }
 
+.autosave-badge.visible {
+  opacity: 1;
+  color: var(--success-color, #15803d);
+}
+
+:root[data-display-density="compact"] .setting-item,
+:root[data-display-density="compact"] .card {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
 /* 提示横幅 */
 .alert-banner {
   display: flex;

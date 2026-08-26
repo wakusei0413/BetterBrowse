@@ -37,22 +37,23 @@ const filesToBundle = [
   'src/content/index.js'
 ];
 
-let combinedCode = banner;
-
-for (const relPath of filesToBundle) {
-  const fullPath = path.resolve(projectRoot, relPath);
-  let content = await fs.readFile(fullPath, 'utf8');
-
-  // 移除 import 和 export 语句以适配自包含 IIFE
-  content = content
-    .replace(/^import\s+[\s\S]*?from\s+['"].*?['"];?/gm, '')
-    .replace(/^export\s+(const|let|var|class|function|default)\s+/gm, '$1 ');
-
-  combinedCode += `\n// ===== [模块: ${relPath}] =====\n` + content + '\n';
+export async function buildContentBundle() {
+  let combinedCode = banner;
+  for (const relPath of filesToBundle) {
+    const fullPath = path.resolve(projectRoot, relPath);
+    let content = await fs.readFile(fullPath, 'utf8');
+    content = content
+      .replace(/^import\s+[\s\S]*?from\s+['"].*?['"];?/gm, '')
+      .replace(/^export\s+(const|let|var|class|function)\s+/gm, '$1 ')
+      .replace(/^export\s+default\s+/gm, '');
+    combinedCode += `\n// ===== [模块: ${relPath}] =====\n` + content + '\n';
+  }
+  return combinedCode + footer;
 }
 
-combinedCode += footer;
-
-const outputPath = path.resolve(projectRoot, 'src/content/content-bundle.js');
-await fs.writeFile(outputPath, combinedCode, 'utf8');
-console.log(`✅ 已成功打包内容脚本: ${outputPath} (${combinedCode.length} 字符)`);
+if (import.meta.main) {
+  const outputPath = path.resolve(projectRoot, 'src/content/content-bundle.js');
+  const combinedCode = await buildContentBundle();
+  await fs.writeFile(outputPath, combinedCode, 'utf8');
+  console.log(`✅ 已成功打包内容脚本: ${outputPath} (${combinedCode.length} 字符)`);
+}

@@ -19,8 +19,8 @@ export class FormGuardRule extends BaseRule {
     });
   }
 
-  async evaluate({ tab, config }) {
-    if (!config.rulesEnabled?.formGuard) {
+  async evaluate({ tab, config, formResults }) {
+    if (!config.rulesEnabled?.formGuard || config.stashSettings?.excludeFormDirtyTabs === false) {
       return { retain: false };
     }
 
@@ -32,13 +32,25 @@ export class FormGuardRule extends BaseRule {
     if (!tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
       return { retain: false };
     }
+    if (!globalThis.chrome?.tabs?.sendMessage) {
+      return { retain: false };
+    }
 
     try {
-      const response = await MessageBus.sendToTab(tab.id, ActionTypes.CHECK_FORM_INPUT);
+      const cached = formResults?.get(tab.id);
+      const response = cached || await MessageBus.sendToTab(tab.id, ActionTypes.CHECK_FORM_INPUT);
+      formResults?.set(tab.id, response);
       if (response && response.success && response.data && response.data.hasActiveInput) {
         return {
           retain: true,
           reason: response.data.reason || '标签页包含未提交或正在编辑的表单内容',
+          matchedRuleId: this.id
+        };
+      }
+      if (!response?.success) {
+        return {
+          retain: true,
+          reason: '无法确认表单状态，按安全策略暂不收纳',
           matchedRuleId: this.id
         };
       }

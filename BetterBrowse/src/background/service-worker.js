@@ -6,6 +6,7 @@
 
 import { ActionTypes } from '../constants/action-types.js';
 import { DefaultConfig } from '../constants/config.js';
+import { StorageKeys } from '../constants/storage-keys.js';
 import { MigrationManager } from '../core/storage/migration.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
 import { LinkService } from '../core/link/link-service.js';
@@ -16,6 +17,7 @@ import { TabActivityTracker } from './activity-tracker.js';
 import { ThresholdMonitor } from './threshold-monitor.js';
 import { PinnedTabGuard } from './pinned-tab-guard.js';
 import { ContextMenuManager } from './context-menu-manager.js';
+import { filterCountableTabs, isOwnOptionsUrl } from '../core/extension-url.js';
 
 // 初始化模块实例
 const activityTracker = new TabActivityTracker();
@@ -33,7 +35,7 @@ const thresholdMonitor = new ThresholdMonitor({
   onOpenOptions: async () => {
     const targetUrl = chrome.runtime.getURL('src/options/options.html#stash-settings');
     const tabs = await chrome.tabs.query({ currentWindow: true });
-    const existingOptionsTab = tabs.find((t) => t.url && t.url.includes('src/options/options.html'));
+    const existingOptionsTab = tabs.find((t) => isOwnOptionsUrl(t.url));
     if (existingOptionsTab) {
       await chrome.tabs.update(existingOptionsTab.id, { url: targetUrl, active: true });
       chrome.tabs.sendMessage(existingOptionsTab.id, {
@@ -46,17 +48,32 @@ const thresholdMonitor = new ThresholdMonitor({
   }
 });
 
+async function updateStashBadge() {
+  if (!chrome.action?.setBadgeText) return;
+  const config = await StorageAdapter.getUserConfig();
+  if (config.stashSettings?.showTabCountBadge === false) {
+    await chrome.action.setBadgeText({ text: '' });
+    return;
+  }
+  const groups = await LocalStashRepository.getAllGroups();
+  const count = groups.reduce((total, group) => total + (Array.isArray(group.tabs) ? group.tabs.length : 0), 0);
+  await chrome.action.setBadgeText({ text: count > 999 ? '999+' : String(count) });
+  await chrome.action.setBadgeBackgroundColor({ color: '#64748b' });
+}
+
 // 扩展安装/升级时运行迁移并强制死守首位固定小标签
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.info(`[ServiceWorker] 插件已安装/更新 (原因: ${details.reason})`);
   await MigrationManager.runMigrations();
-  await StashService.ensureAllAllWindowsPinnedTab();
+  const config = await StorageAdapter.getUserConfig();
+  if (config.stashSettings?.pinnedTabGuard !== false) await StashService.ensureAllAllWindowsPinnedTab();
 });
 
 // 浏览器启动时自动守护
 if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(async () => {
-    await StashService.ensureAllAllWindowsPinnedTab();
+    const config = await StorageAdapter.getUserConfig();
+    if (config.stashSettings?.pinnedTabGuard !== false) await StashService.ensureAllAllWindowsPinnedTab();
   });
 }
 
@@ -106,9 +123,41 @@ MessageBus.registerListener({
     return res;
   },
 
+  [ActionTypes.GET_DOMAIN_RULES]: async () => {
+    return await LinkService.getAllRules();
+  },
+
+  [ActionTypes.SET_DOMAIN_RULE]: async (payload) => {
+    const { domain, mode } = payload || {};
+    const res = await LinkService.setDomainRule(domain, mode);
+    broadcastToTabs(ActionTypes.NOTIFY_RULE_UPDATED, { domain, mode });
+    return res;
+  },
+
+  [ActionTypes.REMOVE_DOMAIN_RULE]: async (payload) => {
+    const res = await LinkService.removeDomainRule(payload?.domain);
+    broadcastToTabs(ActionTypes.NOTIFY_RULE_UPDATED, { domain: payload?.domain, mode: 'auto' });
+    return res;
+  },
+
+  [ActionTypes.CLEAR_DOMAIN_RULES]: async () => {
+    const res = await LinkService.clearAllDomainRules();
+    broadcastToTabs(ActionTypes.NOTIFY_RULE_UPDATED, { clearAll: true });
+    return res;
+  },
+
   [ActionTypes.OPEN_TAB_BACKGROUND]: async (payload, sender) => {
     const url = payload?.url;
     if (!url) return false;
+
+    try {
+      const parsedUrl = new URL(url);
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        return false;
+      }
+    } catch {
+      return false;
+    }
 
     const createProperties = {
       url,
@@ -142,11 +191,16 @@ MessageBus.registerListener({
     const forceAll = payload?.forceAll !== false;
     const res = await stashService.executeStash(activityTracker.getStats(), { forceAll });
     broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
+    await updateStashBadge();
     return res;
   },
 
   [ActionTypes.GET_TAB_ACTIVITY_STATS]: async () => {
     return activityTracker.getStats();
+  },
+
+  [ActionTypes.GET_COUNTDOWN_STATUS]: async () => {
+    return thresholdMonitor.getCountdownStatus();
   },
 
   [ActionTypes.CANCEL_AUTO_STASH]: async () => {
@@ -156,6 +210,7 @@ MessageBus.registerListener({
   [ActionTypes.CONFIRM_AUTO_STASH]: async () => {
     const res = await thresholdMonitor.handleConfirmAutoStash();
     broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
+    await updateStashBadge();
     return res;
   },
 
@@ -165,7 +220,7 @@ MessageBus.registerListener({
       StorageAdapter.getUserConfig()
     ]);
     return {
-      currentCount: tabs.length,
+      currentCount: filterCountableTabs(tabs).length,
       threshold: config.tabThreshold || 15
     };
   },
@@ -176,16 +231,18 @@ MessageBus.registerListener({
   },
 
   [ActionTypes.RESTORE_STASH_GROUP]: async (payload) => {
-    const { groupId, removeAfterRestore = true } = payload || {};
+    const { groupId, removeAfterRestore } = payload || {};
     const res = await StashService.restoreGroup(groupId, removeAfterRestore);
     broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
+    await updateStashBadge();
     return res;
   },
 
   [ActionTypes.RESTORE_STASH_ITEM]: async (payload) => {
-    const { groupId, itemId, removeAfterRestore = true } = payload || {};
+    const { groupId, itemId, removeAfterRestore } = payload || {};
     const res = await StashService.restoreItem(groupId, itemId, removeAfterRestore);
     broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
+    await updateStashBadge();
     return res;
   },
 
@@ -193,6 +250,7 @@ MessageBus.registerListener({
     const groupId = payload?.groupId;
     const res = await LocalStashRepository.deleteGroup(groupId);
     broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
+    await updateStashBadge();
     return res;
   },
 
@@ -206,6 +264,12 @@ MessageBus.registerListener({
   [ActionTypes.CLEAR_ALL_STASH]: async () => {
     const res = await LocalStashRepository.clearAll();
     broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
+    return res;
+  },
+
+  [ActionTypes.DEDUPLICATE_STASH_DATA]: async () => {
+    const res = await LocalStashRepository.deduplicateGroups();
+    if (res.success) broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
     return res;
   },
 
@@ -271,7 +335,7 @@ MessageBus.registerListener({
     const targetUrl = chrome.runtime.getURL(`src/options/options.html#${targetTab}`);
     try {
       const tabs = await chrome.tabs.query({ currentWindow: true });
-      const existingOptionsTab = tabs.find((t) => t.url && t.url.includes('src/options/options.html'));
+      const existingOptionsTab = tabs.find((t) => isOwnOptionsUrl(t.url));
 
       if (existingOptionsTab) {
         await chrome.tabs.update(existingOptionsTab.id, {

@@ -17,7 +17,21 @@ export class FrequencyRule extends BaseRule {
     });
   }
 
-  async evaluate({ tab, allTabs, activityStats, config }) {
+  createContext({ allTabs, activityStats, config }) {
+    const windowMinutes = Number.isFinite(config.frequencyHistoryMinutes) && config.frequencyHistoryMinutes > 0 ? config.frequencyHistoryMinutes : 60;
+    const now = Date.now();
+    const countMap = new Map();
+    for (const t of allTabs || []) {
+      const timestamps = activityStats?.[t.id]?.activationTimestamps || [];
+      countMap.set(t.id, timestamps.filter((ts) => now - ts <= windowMinutes * 60 * 1000).length);
+    }
+    const percentile = Number.isFinite(config.frequencyPercentile) && config.frequencyPercentile > 0 ? Math.min(config.frequencyPercentile, 1) : 0.2;
+    const counts = Array.from(countMap.values()).sort((a, b) => b - a);
+    const threshold = counts[Math.max(0, Math.max(1, Math.ceil((allTabs || []).length * percentile)) - 1)] || 2;
+    return { countMap, threshold };
+  }
+
+  async evaluate({ tab, allTabs, activityStats, config, frequencyContext }) {
     if (!config.rulesEnabled?.highFrequency) {
       return { retain: false };
     }
@@ -26,27 +40,15 @@ export class FrequencyRule extends BaseRule {
       return { retain: false };
     }
 
-    const windowMs = (config.frequencyHistoryMinutes || 60) * 60 * 1000;
-    const now = Date.now();
-
-    // 计算每个标签在时间窗口内的有效激活次数
-    const countMap = new Map();
-    for (const t of allTabs) {
-      const timestamps = activityStats[t.id]?.activationTimestamps || [];
-      const validCount = timestamps.filter((ts) => (now - ts) <= windowMs).length;
-      countMap.set(t.id, validCount);
-    }
-
-    const currentTabCount = countMap.get(tab.id) || 0;
+    const context = frequencyContext || this.createContext({ allTabs, activityStats, config });
+    const currentTabCount = context.countMap.get(tab.id) || 0;
     // 如果该标签页在 1 小时内几乎没有激活过（少于 2 次），则不属于高频标签
     if (currentTabCount < 2) {
       return { retain: false };
     }
 
     // 获取所有标签页的激活频次并降序排序
-    const allCounts = Array.from(countMap.values()).sort((a, b) => b - a);
-    const topCountIndex = Math.max(1, Math.ceil(allTabs.length * (config.frequencyPercentile || 0.2)));
-    const thresholdCount = allCounts[topCountIndex - 1] || 2;
+    const thresholdCount = context.threshold;
 
     if (currentTabCount >= thresholdCount) {
       return {

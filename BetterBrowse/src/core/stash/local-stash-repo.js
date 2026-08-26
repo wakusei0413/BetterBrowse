@@ -9,6 +9,13 @@ import { StorageAdapter } from '../storage/storage-adapter.js';
 import { OneTabConverter } from './onetab-converter.js';
 
 export class LocalStashRepository {
+  static writeQueue = Promise.resolve();
+
+  static enqueueWrite(operation) {
+    const run = this.writeQueue.then(operation, operation);
+    this.writeQueue = run.catch(() => undefined);
+    return run;
+  }
   /**
    * 获取所有已保存的收纳标签组列表（默认按时间倒序）
    * @returns {Promise<Array<{ id: string, createdAt: number, title: string, locked?: boolean, starred?: boolean, tabs: Array<{ id: string, url: string, title: string, favIconUrl?: string, pinned?: boolean }> }>>}
@@ -16,7 +23,7 @@ export class LocalStashRepository {
   static async getAllGroups() {
     const groups = await StorageAdapter.get(StorageKeys.STASH_GROUPS, []);
     if (!Array.isArray(groups)) return [];
-    return groups.sort((a, b) => {
+    return [...groups].sort((a, b) => {
       // 星标组优先置顶，其余按时间倒序
       if (a.starred && !b.starred) return -1;
       if (!a.starred && b.starred) return 1;
@@ -35,8 +42,33 @@ export class LocalStashRepository {
       return { success: false };
     }
 
-    const now = Date.now();
-    const dateStr = new Intl.DateTimeFormat('zh-CN', {
+    return await this.enqueueWrite(async () => {
+      const config = await StorageAdapter.getUserConfig();
+      const settings = config.stashSettings || {};
+      const existingGroups = await this.getAllGroups();
+      let normalizedItems = tabItems.filter((item) => item && item.url);
+      if (settings.allowDuplicates === false) {
+        const existingUrls = new Set(existingGroups.flatMap((group) => (group.tabs || []).map((tab) => tab.url)));
+        const seenIncoming = new Set();
+        normalizedItems = normalizedItems.filter((item) => {
+          if (existingUrls.has(item.url) || seenIncoming.has(item.url)) return false;
+          seenIncoming.add(item.url);
+          return true;
+        });
+        if (settings.existingTabTitleBehavior === 'useLatest') {
+          for (const group of existingGroups) {
+            for (const tab of group.tabs || []) {
+              const incoming = tabItems.find((item) => item?.url === tab.url);
+              if (incoming?.title) tab.title = incoming.title;
+            }
+          }
+          await StorageAdapter.set(StorageKeys.STASH_GROUPS, existingGroups);
+        }
+      }
+      if (normalizedItems.length === 0) return { success: true, group: null, skipped: tabItems.length };
+
+      const now = Date.now();
+      const dateStr = new Intl.DateTimeFormat('zh-CN', {
       year: 'numeric',
       month: 'numeric',
       day: 'numeric',
@@ -45,7 +77,7 @@ export class LocalStashRepository {
       hour12: false
     }).format(new Date(now));
 
-    const defaultTitle = customTitle || `${dateStr} 收纳 (${tabItems.length} 个标签页)`;
+      const defaultTitle = customTitle || `${dateStr} 收纳 (${normalizedItems.length} 个标签页)`;
 
     const newGroup = {
       id: `stash_grp_${now}_${Math.random().toString(36).substring(2, 7)}`,
@@ -53,7 +85,7 @@ export class LocalStashRepository {
       title: defaultTitle,
       locked: false,
       starred: false,
-      tabs: tabItems.map((item) => ({
+      tabs: normalizedItems.map((item) => ({
         id: `tab_item_${Math.random().toString(36).substring(2, 9)}`,
         url: item.url || '',
         title: item.title || item.url || '无标题页面',
@@ -62,11 +94,20 @@ export class LocalStashRepository {
       }))
     };
 
-    const currentGroups = await this.getAllGroups();
-    currentGroups.unshift(newGroup);
+      const currentGroups = await this.getAllGroups();
+      currentGroups.unshift(newGroup);
 
-    const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
-    return { success: ok, group: newGroup };
+      const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
+      if (ok && settings.autoBackupEnabled !== false) {
+        const backups = await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, []);
+        const retentionDays = Math.max(1, Number(settings.backupRetentionDays) || 30);
+        const cutoff = Date.now() - retentionDays * 86400000;
+        const nextBackups = [{ createdAt: now, groups: currentGroups }]
+          .concat(Array.isArray(backups) ? backups.filter((backup) => backup?.createdAt > cutoff).slice(0, 4) : []);
+        await StorageAdapter.set(StorageKeys.AUTO_BACKUPS, nextBackups);
+      }
+      return { success: ok, group: newGroup };
+    });
   }
 
   /**
@@ -76,12 +117,18 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async updateGroup(groupId, updates) {
-    const currentGroups = await this.getAllGroups();
-    const target = currentGroups.find((g) => g.id === groupId);
-    if (!target) return false;
-
-    Object.assign(target, updates);
-    return await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
+    return await this.enqueueWrite(async () => {
+      const currentGroups = await this.getAllGroups();
+      const target = currentGroups.find((g) => g.id === groupId);
+      if (!target || !updates || typeof updates !== 'object') return false;
+      const allowed = ['title', 'locked', 'starred', 'archived'];
+      for (const key of allowed) {
+        if (Object.prototype.hasOwnProperty.call(updates, key)) {
+          target[key] = key === 'title' ? String(updates[key]).slice(0, 200) : Boolean(updates[key]);
+        }
+      }
+      return await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
+    });
   }
 
   /**
@@ -91,13 +138,13 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async deleteGroup(groupId, force = false) {
-    const currentGroups = await this.getAllGroups();
-    const target = currentGroups.find((g) => g.id === groupId);
-    if (target && target.locked && !force) {
-      return false; // 锁定状态禁止误删
-    }
-    const filtered = currentGroups.filter((g) => g.id !== groupId);
-    return await StorageAdapter.set(StorageKeys.STASH_GROUPS, filtered);
+    return await this.enqueueWrite(async () => {
+      const currentGroups = await this.getAllGroups();
+      const target = currentGroups.find((g) => g.id === groupId);
+      if (target && target.locked && !force) return false;
+      const filtered = currentGroups.filter((g) => g.id !== groupId);
+      return await StorageAdapter.set(StorageKeys.STASH_GROUPS, filtered);
+    });
   }
 
   /**
@@ -107,19 +154,15 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async deleteTabItem(groupId, itemId) {
-    const currentGroups = await this.getAllGroups();
-    const targetGroup = currentGroups.find((g) => g.id === groupId);
-    if (!targetGroup) return false;
-
-    targetGroup.tabs = targetGroup.tabs.filter((t) => t.id !== itemId);
-
-    // 若非锁定组且所有标签已被删空，则自动移除空组
-    let updatedGroups = currentGroups;
-    if (targetGroup.tabs.length === 0 && !targetGroup.locked) {
-      updatedGroups = currentGroups.filter((g) => g.id !== groupId);
-    }
-
-    return await StorageAdapter.set(StorageKeys.STASH_GROUPS, updatedGroups);
+    return await this.enqueueWrite(async () => {
+      const currentGroups = await this.getAllGroups();
+      const targetGroup = currentGroups.find((g) => g.id === groupId);
+      if (!targetGroup) return false;
+      targetGroup.tabs = targetGroup.tabs.filter((t) => t.id !== itemId);
+      let updatedGroups = currentGroups;
+      if (targetGroup.tabs.length === 0 && !targetGroup.locked) updatedGroups = currentGroups.filter((g) => g.id !== groupId);
+      return await StorageAdapter.set(StorageKeys.STASH_GROUPS, updatedGroups);
+    });
   }
 
   /**
@@ -127,12 +170,50 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async clearAll(includeLocked = false) {
-    if (includeLocked) {
-      return await StorageAdapter.set(StorageKeys.STASH_GROUPS, []);
+    return await this.enqueueWrite(async () => {
+      if (includeLocked) return await StorageAdapter.set(StorageKeys.STASH_GROUPS, []);
+      const currentGroups = await this.getAllGroups();
+      return await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups.filter((g) => g.locked));
+    });
+  }
+
+  static async markGroupArchived(groupId) {
+    return await this.updateGroup(groupId, { archived: true });
+  }
+
+  /**
+   * 清理标签 URL 完全相同的重复收纳组，锁定组不会被删除。
+   * @returns {Promise<{ success: boolean, removedCount: number, groupCountAfter: number, error?: string }>}
+   */
+  static async deduplicateGroups() {
+    return await this.enqueueWrite(async () => {
+      const groups = await this.getAllGroups();
+    const seen = new Set();
+    const retained = [];
+    let removedCount = 0;
+
+    for (const group of groups) {
+      const urls = Array.isArray(group.tabs)
+        ? group.tabs.map((tab) => String(tab?.url || '').trim()).filter(Boolean).sort()
+        : [];
+      const fingerprint = JSON.stringify(urls);
+
+      if (seen.has(fingerprint) && !group.locked) {
+        removedCount++;
+        continue;
+      }
+
+      seen.add(fingerprint);
+      retained.push(group);
     }
-    const currentGroups = await this.getAllGroups();
-    const lockedOnly = currentGroups.filter((g) => g.locked);
-    return await StorageAdapter.set(StorageKeys.STASH_GROUPS, lockedOnly);
+
+      if (removedCount === 0) return { success: true, removedCount: 0, groupCountAfter: groups.length };
+
+    const saved = await StorageAdapter.set(StorageKeys.STASH_GROUPS, retained);
+      return saved
+      ? { success: true, removedCount, groupCountAfter: retained.length }
+      : { success: false, removedCount: 0, groupCountAfter: groups.length, error: '写入本地收纳仓储失败' };
+    });
   }
 
   /**
@@ -208,13 +289,23 @@ export class LocalStashRepository {
         configToRestore.globalLinkRule = parsed.globalLinkRule;
       }
 
-      if (Object.keys(configToRestore).length > 0) {
-        await StorageAdapter.updateUserConfig(configToRestore);
+      const safeConfig = {};
+      const scalarKeys = ['tabThreshold', 'autoThresholdNotify', 'autoStashOnThreshold', 'countdownSeconds', 'thresholdCooldownMinutes', 'recentActiveMinutes', 'frequencyPercentile', 'frequencyHistoryMinutes'];
+      for (const key of scalarKeys) if (Object.prototype.hasOwnProperty.call(configToRestore, key)) safeConfig[key] = configToRestore[key];
+      if (configToRestore.rulesEnabled && typeof configToRestore.rulesEnabled === 'object') safeConfig.rulesEnabled = configToRestore.rulesEnabled;
+      if (configToRestore.globalLinkRule && typeof configToRestore.globalLinkRule === 'object') safeConfig.globalLinkRule = configToRestore.globalLinkRule;
+      if (configToRestore.stashSettings && typeof configToRestore.stashSettings === 'object') safeConfig.stashSettings = configToRestore.stashSettings;
+      if (Object.keys(safeConfig).length > 0) {
+        await StorageAdapter.updateUserConfig(safeConfig);
         restoredConfig = true;
       }
 
       if (parsed.linkRules && typeof parsed.linkRules === 'object') {
-        await StorageAdapter.set(StorageKeys.LINK_RULES, parsed.linkRules);
+        const safeRules = {};
+        for (const [domain, mode] of Object.entries(parsed.linkRules)) {
+          if (/^[a-z0-9.-]+$/i.test(domain) && ['auto', 'current', 'new'].includes(mode)) safeRules[domain.toLowerCase()] = mode;
+        }
+        await StorageAdapter.set(StorageKeys.LINK_RULES, safeRules);
         restoredRules = true;
       }
     }

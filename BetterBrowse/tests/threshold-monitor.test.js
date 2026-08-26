@@ -55,3 +55,25 @@ test('ThresholdMonitor: 冷却时间内防打扰机制生效', () => {
   const isCooling = Date.now() - monitor.lastActionTime < 5 * 60 * 1000;
   assert.equal(isCooling, true);
 });
+
+test('ThresholdMonitor: 扩展页与新标签页不参与阈值计数', async () => {
+  installMockChrome();
+  chrome.storage.local.get = (_keys, cb) => cb({
+    user_config: { ...DefaultConfig, tabThreshold: 3, countdownSeconds: 3 }
+  });
+
+  const monitor = new ThresholdMonitor();
+  monitor.getActiveWindowInfo = async () => ({
+    windowId: 1,
+    tabs: [
+      { id: 1, url: 'https://one.example' },
+      { id: 2, url: 'https://two.example' },
+      { id: 3, url: 'chrome-extension://test/src/options/options.html#stash' },
+      { id: 4, url: 'chrome://newtab/' }
+    ]
+  });
+
+  await monitor.checkTabCount();
+  assert.equal(monitor.remainingSeconds, 0);
+  assert.equal(monitor.countdownInterval, null);
+});

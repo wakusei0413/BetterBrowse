@@ -6,6 +6,7 @@
 
 import { StashService } from '../core/stash/stash-service.js';
 import { LocalStashRepository } from '../core/stash/local-stash-repo.js';
+import { isOwnOptionsUrl } from '../core/extension-url.js';
 
 export class ContextMenuManager {
   /**
@@ -123,7 +124,7 @@ export class ContextMenuManager {
 
     const targetTabs = tabs.filter((tab) => {
       if (!tab.url) return false;
-      if (tab.url.includes('src/options/options.html')) return false;
+      if (isOwnOptionsUrl(tab.url)) return false;
       if (tab.url === 'chrome://newtab/' || tab.url === 'edge://newtab/' || tab.url === 'about:blank') return false;
 
       if (direction === 'right') {
@@ -142,7 +143,8 @@ export class ContextMenuManager {
       pinned: tab.pinned
     }));
 
-    await LocalStashRepository.createGroup(itemsToSave);
+    const createRes = await LocalStashRepository.createGroup(itemsToSave);
+    if (!createRes?.success) return;
     await StashService.ensurePinnedStashTab(false, windowId);
 
     const tabIdsToClose = targetTabs

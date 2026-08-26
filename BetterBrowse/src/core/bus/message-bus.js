@@ -23,7 +23,7 @@ export class MessageBus {
             });
             return;
           }
-          resolve(response || { success: true });
+          resolve(response || { success: false, error: '后台未处理该动作' });
         });
       } catch (err) {
         resolve({
@@ -41,23 +41,36 @@ export class MessageBus {
    * @param {any} [payload=null] - 负载数据
    * @returns {Promise<{ success: boolean, data?: any, error?: string }>}
    */
-  static async sendToTab(tabId, action, payload = null) {
+  static async sendToTab(tabId, action, payload = null, timeoutMs = 2000) {
     return new Promise((resolve) => {
+      let settled = false;
+      const timeoutId = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve({ success: false, error: '内容脚本响应超时' });
+        }
+      }, Math.max(100, timeoutMs));
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        resolve(value);
+      };
       try {
         chrome.tabs.sendMessage(tabId, { action, payload }, (response) => {
           const lastError = chrome.runtime.lastError;
           if (lastError) {
             // 很多特殊标签页（如 chrome://, edge://, 空白页）无法注入脚本，属正常预期
-            resolve({
+            finish({
               success: false,
               error: lastError.message
             });
             return;
           }
-          resolve(response || { success: true });
+          finish(response || { success: true });
         });
       } catch (err) {
-        resolve({
+        finish({
           success: false,
           error: err.message
         });

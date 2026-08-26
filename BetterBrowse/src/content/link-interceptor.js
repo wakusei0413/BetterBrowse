@@ -58,7 +58,7 @@ export class LinkInterceptor {
   initMainWorldEvents() {
     window.addEventListener('__BETTER_BROWSE_OPEN_NEW_TAB__', (event) => {
       const url = event?.detail?.url;
-      if (url) {
+      if (this.isSafeHttpUrl(url)) {
         // 记录已由主世界拦截并处理的时间戳与 URL，彻底杜绝隔离世界二次重复发送消息
         this.lastHandledUrl = url;
         this.lastHandledTime = Date.now();
@@ -72,6 +72,21 @@ export class LinkInterceptor {
         });
       }
     });
+  }
+
+  /**
+   * 主世界事件属于公开页面 API，必须再次校验协议，防止页面脚本伪造特权 URL。
+   * @param {unknown} rawUrl
+   * @returns {boolean}
+   */
+  isSafeHttpUrl(rawUrl) {
+    if (typeof rawUrl !== 'string' || !LinkMatcher.isInterceptionAllowed(rawUrl)) return false;
+    try {
+      const parsed = new URL(rawUrl, window.location.href);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
   }
 
   /**

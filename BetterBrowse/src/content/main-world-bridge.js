@@ -51,20 +51,14 @@
    */
   function isAllowedUrl(url) {
     if (!url || typeof url !== 'string') return false;
-    const trimmed = url.trim().toLowerCase();
-    if (
-      !trimmed ||
-      trimmed === '#' ||
-      trimmed.startsWith('#') ||
-      trimmed.startsWith('javascript:') ||
-      trimmed.startsWith('mailto:') ||
-      trimmed.startsWith('tel:') ||
-      trimmed.startsWith('blob:') ||
-      trimmed.startsWith('data:')
-    ) {
+    const trimmed = url.trim();
+    if (!trimmed || trimmed === '#' || trimmed.startsWith('#') || /[\u0000-\u001f\u007f]/.test(trimmed)) return false;
+    try {
+      const parsed = new URL(trimmed, window.location.href);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
       return false;
     }
-    return true;
   }
 
   /**
@@ -171,8 +165,12 @@
   const originalWindowOpen = window.open;
   window.open = function (url, target, features) {
     if (currentEffectiveMode === 'current' && url && isAllowedUrl(url)) {
-      window.location.href = url;
-      return window;
+      const requestedTarget = typeof target === 'string' ? target.toLowerCase() : '';
+      if (!requestedTarget || requestedTarget === '_self' || requestedTarget === '_top' || requestedTarget === '_parent') {
+        window.location.href = new URL(url, window.location.href).href;
+        return window;
+      }
+      return originalWindowOpen.call(this, url, '_self', features);
     }
     return originalWindowOpen.apply(this, arguments);
   };

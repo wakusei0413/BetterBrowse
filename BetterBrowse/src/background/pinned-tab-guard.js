@@ -6,6 +6,8 @@
 
 import { StashService } from '../core/stash/stash-service.js';
 import { LocalStashRepository } from '../core/stash/local-stash-repo.js';
+import { isOwnOptionsUrl } from '../core/extension-url.js';
+import { StorageAdapter } from '../core/storage/storage-adapter.js';
 
 export class PinnedTabGuard {
   constructor() {
@@ -19,7 +21,7 @@ export class PinnedTabGuard {
     this.closingWindows = new Set();
 
     this.initListeners();
-    this.syncAllTabs();
+    this.ready = this.syncAllTabs();
   }
 
   /**
@@ -74,7 +76,7 @@ export class PinnedTabGuard {
       this.recordTab(tab);
 
       // 固定小标签防脱落/防解绑守护
-      if (tab && tab.url && tab.url.includes('src/options/options.html')) {
+      if (tab && isOwnOptionsUrl(tab.url)) {
         if (changeInfo.pinned === false || (typeof tab.index === 'number' && tab.index !== 0)) {
           this.scheduleCheck(100, tab.windowId);
         }
@@ -86,7 +88,11 @@ export class PinnedTabGuard {
       chrome.windows.onCreated.addListener((window) => {
         if (window.type === 'normal') {
           setTimeout(() => {
-            StashService.ensurePinnedStashTab(false, window.id);
+            StorageAdapter.getUserConfig().then((config) => {
+              if (config.stashSettings?.pinnedTabGuard !== false) {
+                return StashService.ensurePinnedStashTab(false, window.id);
+              }
+            }).catch(() => {});
           }, 350);
         }
       });
@@ -147,13 +153,28 @@ export class PinnedTabGuard {
    */
   async stashClosingWindowTabs(windowId) {
     try {
-      const windowTabsMap = this.tabsByWindow.get(windowId);
-      if (!windowTabsMap || windowTabsMap.size === 0) return;
-
-      const tabsList = Array.from(windowTabsMap.values());
+      const config = await StorageAdapter.getUserConfig();
+      if (config.stashSettings?.pinnedTabGuard === false) return;
+      let tabsList = [];
+      try {
+        const liveTabs = await chrome.tabs.query({ windowId });
+        tabsList = liveTabs.map((tab) => ({
+          id: tab.id,
+          url: tab.url || '',
+          title: tab.title || tab.url || '无标题页面',
+          favIconUrl: tab.favIconUrl || '',
+          pinned: Boolean(tab.pinned),
+          index: tab.index
+        }));
+      } catch {}
+      if (tabsList.length === 0) {
+        const windowTabsMap = this.tabsByWindow.get(windowId);
+        tabsList = windowTabsMap ? Array.from(windowTabsMap.values()) : [];
+      }
+      if (tabsList.length === 0) return;
       const tabsToSave = tabsList.filter((tab) => {
         if (!tab.url) return false;
-        if (tab.url.includes('src/options/options.html')) return false;
+        if (isOwnOptionsUrl(tab.url)) return false;
         if (tab.url === 'chrome://newtab/' || tab.url === 'edge://newtab/' || tab.url === 'about:blank') return false;
         return true;
       });
@@ -181,6 +202,8 @@ export class PinnedTabGuard {
     this.checkDebounceTimer = setTimeout(async () => {
       this.isGuarding = true;
       try {
+        const config = await StorageAdapter.getUserConfig();
+        if (config.stashSettings?.pinnedTabGuard === false) return;
         if (windowId && windowId !== chrome.windows.WINDOW_ID_NONE) {
           const win = await chrome.windows.get(windowId).catch(() => null);
           if (win && win.type === 'normal') {

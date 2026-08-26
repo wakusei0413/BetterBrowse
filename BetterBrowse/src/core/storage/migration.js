@@ -19,6 +19,11 @@ export class MigrationManager {
       return;
     }
 
+    if (currentVersion > CURRENT_SCHEMA_VERSION) {
+      console.warn(`[MigrationManager] 检测到更高数据版本 v${currentVersion}，当前版本 v${CURRENT_SCHEMA_VERSION} 不执行降级覆盖`);
+      return;
+    }
+
     console.info(`[MigrationManager] 正在将数据架构从 v${currentVersion} 迁移至 v${CURRENT_SCHEMA_VERSION}...`);
 
     if (currentVersion === 0) {
@@ -40,11 +45,19 @@ export class MigrationManager {
     }
 
     if (currentVersion < 3) {
-      // 迁移 v1/v2 到 v3：平滑补齐 stashSettings 缺失字段
+      // 迁移 v1/v2 到 v3：平滑补齐收纳箱设置，保留用户已有值。
       const existingConfig = await StorageAdapter.get(StorageKeys.USER_CONFIG, {});
       const mergedConfig = {
         ...DefaultConfig,
         ...existingConfig,
+        rulesEnabled: {
+          ...DefaultConfig.rulesEnabled,
+          ...(existingConfig.rulesEnabled || {})
+        },
+        globalLinkRule: {
+          ...DefaultConfig.globalLinkRule,
+          ...(existingConfig.globalLinkRule || {})
+        },
         stashSettings: {
           ...DefaultConfig.stashSettings,
           ...(existingConfig.stashSettings || {})

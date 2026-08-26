@@ -7,6 +7,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildContentBundle } from './build-content.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +20,7 @@ const allJsFiles = [
   'src/core/bus/message-bus.js',
   'src/core/storage/storage-adapter.js',
   'src/core/storage/migration.js',
+  'src/core/extension-url.js',
   'src/core/link/link-matcher.js',
   'src/core/link/link-service.js',
   'src/core/rules/base-rule.js',
@@ -84,6 +86,12 @@ try {
   } else {
     console.log(`\n[PASS] manifest.json 格式正确 (Manifest V${manifest.manifest_version}, 名称: ${manifest.name})`);
   }
+  if (manifest.version_name !== 'Milestone 1') {
+    console.error('[FAIL] manifest.json 展示版本必须为 Milestone 1');
+    hasError = true;
+  } else {
+    console.log('[PASS] 扩展展示版本为 Milestone 1');
+  }
   if (!manifest.permissions?.includes('contextMenus')) {
     console.error('[FAIL] manifest.json 缺少 contextMenus 权限');
     hasError = true;
@@ -137,6 +145,21 @@ for (const htmlFile of htmlFiles) {
     console.error(`[FAIL] 无法读取 HTML 文件: ${htmlFile}`);
     hasError = true;
   }
+}
+
+// 5. 校验内容脚本产物与当前源码严格一致，防止源码/Bundle 双真值分叉
+try {
+  const expectedBundle = await buildContentBundle();
+  const actualBundle = await fs.readFile(path.resolve(projectRoot, 'src/content/content-bundle.js'), 'utf8');
+  if (expectedBundle !== actualBundle) {
+    console.error('[FAIL] src/content/content-bundle.js 与当前内容脚本源码不一致，请执行 deno task bundle');
+    hasError = true;
+  } else {
+    console.log('[PASS] content-bundle.js 与源码一致');
+  }
+} catch (err) {
+  console.error('[FAIL] 内容脚本产物一致性校验异常:', err);
+  hasError = true;
 }
 
 if (hasError) {

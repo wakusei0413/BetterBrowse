@@ -9,6 +9,7 @@ import { FormGuardRule } from './form-guard-rule.js';
 import { RecentActiveRule } from './recent-active-rule.js';
 import { FrequencyRule } from './frequency-rule.js';
 import { PinnedRule } from './pinned-rule.js';
+import { isOwnOptionsUrl } from '../extension-url.js';
 
 export class RuleEngine {
   /**
@@ -68,9 +69,14 @@ export class RuleEngine {
     const tabsToKeep = [];
     const tabsToStash = [];
 
+    const frequencyContext = this.rules.find((rule) => rule.id === 'highFrequency')?.createContext?.({ allTabs, activityStats, config });
+    const formResults = new Map();
+    const formRule = this.rules.find((rule) => rule.id === 'formGuard');
+    if (formRule?.preload) await formRule.preload({ allTabs, config, results: formResults });
+
     for (const tab of allTabs) {
       // 插件自身 options 收纳页及系统特殊页面绝对保护保留（绝不收纳自身）
-      if (tab.url && (tab.url.includes('src/options/options.html') || tab.url.startsWith('chrome://') || tab.url.startsWith('edge://') || tab.url.startsWith('chrome-extension://'))) {
+      if (tab.url && (isOwnOptionsUrl(tab.url) || tab.url.startsWith('chrome://') || tab.url.startsWith('edge://') || tab.url.startsWith('about:') || tab.url.startsWith('chrome-extension://'))) {
         tabsToKeep.push({
           tab,
           reason: '插件自身常驻小标签与系统页面保护',
@@ -90,7 +96,9 @@ export class RuleEngine {
             tab,
             allTabs,
             activityStats,
-            config
+            config,
+            frequencyContext,
+            formResults
           });
 
           if (result && result.retain) {

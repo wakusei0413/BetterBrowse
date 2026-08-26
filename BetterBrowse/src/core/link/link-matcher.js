@@ -37,21 +37,10 @@ export class LinkMatcher {
    */
   static isInterceptionAllowed(url) {
     if (!url || typeof url !== 'string') return false;
-    const trimmed = url.trim().toLowerCase();
-    // 忽略空链接、锚点、JavaScript伪协议、邮件、电话等
-    if (
-      !trimmed ||
-      trimmed === '#' ||
-      trimmed.startsWith('#') ||
-      trimmed.startsWith('javascript:') ||
-      trimmed.startsWith('mailto:') ||
-      trimmed.startsWith('tel:') ||
-      trimmed.startsWith('blob:') ||
-      trimmed.startsWith('data:')
-    ) {
-      return false;
-    }
-    return true;
+    const trimmed = url.trim();
+    if (!trimmed || trimmed === '#' || trimmed.startsWith('#') || /[\u0000-\u001f\u007f]/.test(trimmed)) return false;
+    const protocolMatch = trimmed.match(/^([a-z][a-z0-9+.-]*):/i);
+    return !protocolMatch || /^https?:$/i.test(`${protocolMatch[1]}:`);
   }
 
   /**

@@ -385,11 +385,10 @@ export class CountdownBanner {
         progressBar.style.width = `${percent}%`;
       }
 
-      // 倒计时结束，触发自动智能收纳
+      // 倒计时仅负责展示，自动收纳由后台唯一计时器触发，避免重复执行
       if (this.remainingSeconds <= 0) {
         clearInterval(this.timer);
         this.timer = null;
-        this.confirmAutoStash();
       }
     }, 1000);
   }
