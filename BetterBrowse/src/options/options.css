@@ -415,6 +415,41 @@ a:focus-visible {
   line-height: 1.6;
 }
 
+/* 设置组分隔线与小标题（阶梯式降级收纳等分组设置） */
+.setting-divider {
+  height: 1px;
+  background-color: var(--border-light);
+  margin: 14px 0 8px;
+}
+
+.sub-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 6px;
+  letter-spacing: 0.02em;
+}
+
+/* 数字输入带单位 */
+.input-with-unit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 阶梯机制关闭时下级参数行淡出隐藏 */
+.setting-item--disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.input-with-unit .unit-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
 /* 全局覆盖卡片 */
 .global-override-inner {
   display: flex;

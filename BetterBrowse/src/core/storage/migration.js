@@ -61,6 +61,36 @@ export class MigrationManager {
         stashSettings: {
           ...DefaultConfig.stashSettings,
           ...(existingConfig.stashSettings || {})
+        },
+        tieredStash: {
+          ...DefaultConfig.tieredStash,
+          ...(existingConfig.tieredStash || {})
+        }
+      };
+      await StorageAdapter.set(StorageKeys.USER_CONFIG, mergedConfig);
+    }
+
+    if (currentVersion < 4) {
+      // 迁移 v1/v2/v3 到 v4：平滑补齐"阶梯式降级收纳"默认配置，保留用户已有值。
+      const existingConfig = await StorageAdapter.get(StorageKeys.USER_CONFIG, {});
+      const mergedConfig = {
+        ...DefaultConfig,
+        ...existingConfig,
+        rulesEnabled: {
+          ...DefaultConfig.rulesEnabled,
+          ...(existingConfig.rulesEnabled || {})
+        },
+        globalLinkRule: {
+          ...DefaultConfig.globalLinkRule,
+          ...(existingConfig.globalLinkRule || {})
+        },
+        stashSettings: {
+          ...DefaultConfig.stashSettings,
+          ...(existingConfig.stashSettings || {})
+        },
+        tieredStash: {
+          ...DefaultConfig.tieredStash,
+          ...(existingConfig.tieredStash || {})
         }
       };
       await StorageAdapter.set(StorageKeys.USER_CONFIG, mergedConfig);

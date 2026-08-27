@@ -433,6 +433,65 @@
                 <span class="slider"></span>
               </label>
             </div>
+
+            <!-- 阶梯式降级收纳设置组 -->
+            <div class="setting-divider" role="separator"></div>
+            <h4 class="sub-section-title">阶梯式降级收纳</h4>
+
+            <div class="setting-item">
+              <div class="setting-info" id="infoTieredStash">
+                <span class="setting-label">启用阶梯式降级收纳</span>
+                <span class="setting-hint">一轮智能收纳后标签数仍超标时，逐级放宽软性保护（"最近访问"窗口逐步缩短、"高频访问"门槛逐步提高），直至降到阈值以下</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkTieredStash" aria-labelledby="infoTieredStash">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="setting-item" id="rowTierStepSeconds">
+              <div class="setting-info" id="infoTierStepSeconds">
+                <span class="setting-label">每级降级步长</span>
+                <span class="setting-hint">每一级将"最近访问"保护窗口缩短的秒数（如 60 秒/级：5 分钟 → 4 分 59 秒 → 4 分 58 秒…）</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTierStepSeconds" class="num-input" min="1" max="300" value="60" aria-labelledby="infoTierStepSeconds" />
+                <span class="unit-text">秒/级</span>
+              </div>
+            </div>
+
+            <div class="setting-item" id="rowTierMaxLevels">
+              <div class="setting-info" id="infoTierMaxLevels">
+                <span class="setting-label">最大降级层数</span>
+                <span class="setting-hint">软性保护最多降级的层数（默认 5 级；设为 0 表示仅执行标准一轮、不逐级放宽）</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTierMaxLevels" class="num-input" min="0" max="20" value="5" aria-labelledby="infoTierMaxLevels" />
+                <span class="unit-text">级</span>
+              </div>
+            </div>
+
+            <div class="setting-item" id="rowTierSafetyMargin">
+              <div class="setting-info" id="infoTierSafetyMargin">
+                <span class="setting-label">达标安全余量</span>
+                <span class="setting-hint">降到阈值以下后，再额外多收纳几个标签页作为缓冲（默认 0）</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTierSafetyMargin" class="num-input" min="0" max="20" value="0" aria-labelledby="infoTierSafetyMargin" />
+                <span class="unit-text">个</span>
+              </div>
+            </div>
+
+            <div class="setting-item" id="rowTierUltimateFallback">
+              <div class="setting-info" id="infoTierUltimateFallback">
+                <span class="setting-label">终极兜底强制回收</span>
+                <span class="setting-hint">所有软性保护放宽到极限仍超标时，按重要度从低到高强制回收最不重要的标签页直至达标（始终保护媒体播放、表单输入、前台激活、固定标签及系统页面）</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkTierUltimateFallback" aria-labelledby="infoTierUltimateFallback">
+                <span class="slider"></span>
+              </label>
+            </div>
           </div>
 
           <!-- 优先级保留规则链开关 -->

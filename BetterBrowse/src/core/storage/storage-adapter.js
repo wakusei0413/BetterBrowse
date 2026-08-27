@@ -134,6 +134,10 @@ export class StorageAdapter {
       stashSettings: {
         ...DefaultConfig.stashSettings,
         ...(storedConfig.stashSettings || {})
+      },
+      tieredStash: {
+        ...DefaultConfig.tieredStash,
+        ...(storedConfig.tieredStash || {})
       }
     };
   }
@@ -162,6 +166,10 @@ export class StorageAdapter {
       stashSettings: {
         ...current.stashSettings,
         ...(partialConfig.stashSettings || {})
+      },
+      tieredStash: {
+        ...current.tieredStash,
+        ...(partialConfig.tieredStash || {})
       }
     };
     return await this.set(StorageKeys.USER_CONFIG, updated);

@@ -17,12 +17,20 @@ export class RecentActiveRule extends BaseRule {
     });
   }
 
-  async evaluate({ tab, activityStats, config }) {
+  /**
+   * 评估标签页是否应被保留
+   * @param {Object} params
+   * @param {chrome.tabs.Tab} params.tab - 待评估标签页
+   * @param {Record<number, { lastActivated: number, activationTimestamps: number[] }>} params.activityStats - 活跃度统计
+   * @param {typeof import('../../constants/config.js').DefaultConfig} params.config - 用户全局配置
+   * @param {object|null} [params.tierContext] - 阶梯式降级上下文（可缩短"最近访问"窗口；终极兜底 hardCoreOnly 时仅保留前台激活分支）
+   */
+  async evaluate({ tab, activityStats, config, tierContext }) {
     if (!config.rulesEnabled?.recentActive) {
       return { retain: false };
     }
 
-    // 1. 当前正在前台激活的标签页直接保留
+    // 1. 当前正在前台激活的标签页直接保留（硬性保护，不随阶梯降级）
     if (tab.active === true) {
       return {
         retain: true,
@@ -31,8 +39,13 @@ export class RecentActiveRule extends BaseRule {
       };
     }
 
-    // 2. 检查最近访问时间
-    const windowMs = (config.recentActiveMinutes || 5) * 60 * 1000;
+    // 2. 终极兜底阶段：放弃"最近访问窗口"软性保护，仅保留前台激活
+    if (tierContext?.hardCoreOnly) {
+      return { retain: false };
+    }
+
+    // 3. 检查最近访问时间（阶梯降级时窗口逐级缩短）
+    const windowMs = ((tierContext?.recentActiveMinutes ?? config.recentActiveMinutes) || 5) * 60 * 1000;
     const tabStat = activityStats?.[tab.id];
     const lastActivated = tabStat?.lastActivated || 0;
     const now = Date.now();

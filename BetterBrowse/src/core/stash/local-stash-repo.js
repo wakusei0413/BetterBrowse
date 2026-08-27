@@ -7,6 +7,7 @@
 import { StorageKeys } from '../../constants/storage-keys.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { OneTabConverter } from './onetab-converter.js';
+import { DefaultConfig } from '../../constants/config.js';
 
 export class LocalStashRepository {
   static writeQueue = Promise.resolve();
@@ -16,6 +17,74 @@ export class LocalStashRepository {
     this.writeQueue = run.catch(() => undefined);
     return run;
   }
+
+  /**
+   * 构建轻量级备份快照，剔除体积大户 favIconUrl 并截断标题
+   * @param {any[]} groups - 当前收纳组列表
+   * @param {boolean} [stripFavIcons=true]
+   * @returns {any[]}
+   */
+  static createBackupSnapshot(groups, stripFavIcons = true) {
+    return groups.map((group) => ({
+      id: group.id,
+      createdAt: group.createdAt,
+      title: typeof group.title === 'string' ? group.title.slice(0, 200) : '',
+      locked: Boolean(group.locked),
+      starred: Boolean(group.starred),
+      archived: Boolean(group.archived),
+      tabs: (group.tabs || []).map((tab) => ({
+        id: tab.id,
+        url: tab.url,
+        title: typeof tab.title === 'string' ? tab.title.slice(0, 4096) : tab.url || '',
+        pinned: Boolean(tab.pinned),
+        ...(stripFavIcons ? {} : { favIconUrl: tab.favIconUrl })
+      }))
+    }));
+  }
+
+  /**
+   * 估算备份列表序列化后的大致字节数
+   * @param {any[]} backups
+   * @returns {number}
+   */
+  static estimateBackupBytes(backups) {
+    try {
+      return new Blob([JSON.stringify(backups)]).size;
+    } catch {
+      return Infinity;
+    }
+  }
+
+  /**
+   * 在配额限制内安全持久化自动备份
+   * @param {any[]} backups
+   * @returns {Promise<boolean>}
+   */
+  static async persistAutoBackups(backups) {
+    const limits = DefaultConfig.autoBackupLimits || {};
+    const maxTotalBytes = typeof limits.maxTotalBytes === 'number' ? limits.maxTotalBytes : 3 * 1024 * 1024;
+    const maxBackups = typeof limits.maxBackups === 'number' ? limits.maxBackups : 2;
+
+    let trimmed = backups.slice(0, maxBackups);
+
+    // 若超出软上限，逐级丢弃最旧的快照，直至满足配额或只剩最新一份
+    while (trimmed.length > 1 && this.estimateBackupBytes(trimmed) > maxTotalBytes) {
+      trimmed.pop();
+    }
+
+    // 只剩一份仍超限，说明主数据本身已接近配额，跳过本次备份，避免污染主写入
+    if (this.estimateBackupBytes(trimmed) > maxTotalBytes) {
+      console.warn('[LocalStashRepository] 自动备份大小超出安全配额，已跳过本次快照');
+      return false;
+    }
+
+    const ok = await StorageAdapter.set(StorageKeys.AUTO_BACKUPS, trimmed);
+    if (!ok) {
+      console.warn('[LocalStashRepository] 自动备份写入失败，可能由于存储配额不足');
+    }
+    return ok;
+  }
+
   /**
    * 获取所有已保存的收纳标签组列表（默认按时间倒序）
    * @returns {Promise<Array<{ id: string, createdAt: number, title: string, locked?: boolean, starred?: boolean, tabs: Array<{ id: string, url: string, title: string, favIconUrl?: string, pinned?: boolean }> }>>}
@@ -99,12 +168,30 @@ export class LocalStashRepository {
 
       const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
       if (ok && settings.autoBackupEnabled !== false) {
-        const backups = await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, []);
-        const retentionDays = Math.max(1, Number(settings.backupRetentionDays) || 30);
-        const cutoff = Date.now() - retentionDays * 86400000;
-        const nextBackups = [{ createdAt: now, groups: currentGroups }]
-          .concat(Array.isArray(backups) ? backups.filter((backup) => backup?.createdAt > cutoff).slice(0, 4) : []);
-        await StorageAdapter.set(StorageKeys.AUTO_BACKUPS, nextBackups);
+        try {
+          const backups = await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, []);
+          const retentionDays = Math.max(1, Number(settings.backupRetentionDays) || 30);
+          const cutoff = Date.now() - retentionDays * 86400000;
+          const limits = DefaultConfig.autoBackupLimits || {};
+          const stripFavIcons = limits.stripFavIcons !== false;
+
+          const nextBackups = [
+            { createdAt: now, groups: this.createBackupSnapshot(currentGroups, stripFavIcons) },
+            ...(Array.isArray(backups)
+              ? backups
+                  .filter((backup) => backup?.createdAt > cutoff)
+                  .map((backup) => ({
+                    createdAt: backup.createdAt,
+                    groups: this.createBackupSnapshot(backup.groups || [], stripFavIcons)
+                  }))
+              : [])
+          ];
+
+          await this.persistAutoBackups(nextBackups);
+        } catch (backupErr) {
+          // 自动备份失败绝不影响主收纳流程
+          console.warn('[LocalStashRepository] 自动备份异常，已忽略:', backupErr);
+        }
       }
       return { success: ok, group: newGroup };
     });

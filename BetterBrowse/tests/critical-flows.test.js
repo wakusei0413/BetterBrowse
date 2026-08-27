@@ -67,9 +67,16 @@ test('收纳持久化失败时不得关闭原标签页', async () => {
 
 test('智能收纳持久化失败时不得关闭原标签页', async () => {
   let removed = false;
+  // 模拟达到标签阈值（默认 15）的场景，确保进入智能收纳流程
+  const manyTabs = Array.from({ length: 15 }, (_, i) => ({
+    id: 100 + i,
+    windowId: 1,
+    url: `https://idle${i}.example`,
+    active: false
+  }));
   installChrome({
     tabs: {
-      query: async () => [{ id: 12, windowId: 1, url: 'https://idle.example', active: false }],
+      query: async () => manyTabs,
       remove: async () => { removed = true; },
       update: async () => ({}),
       move: async () => ({})

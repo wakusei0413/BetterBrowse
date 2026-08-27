@@ -150,6 +150,39 @@ BetterBrowse/
   └── 其余所有闲置标签页 ──────────────────────────────────────────► [归档进收纳组 & 安全关闭]
 ```
 
+### 3.2.1 阶梯式降级收纳机制 (Tiered Escalation Stash)
+
+当达到标签阈值触发自动收纳时，若一轮标准规则评估后标签数量**仍未降到阈值以下**，则启动阶梯式降级：
+
+```
+[智能收纳触发] (StashService.executeSmartStash)
+  │
+  ▼
+【第 0 级】标准规则评估 (P0~P3 全部生效)
+  │   收纳后可计数标签 < 阈值? ──► 完成 ✅
+  │
+  ▼ 未达标，进入下一级
+【第 1 级】软性保护降级：
+  │   - "最近访问"窗口缩短 (如 5 分钟 → 4 分 59 秒 → 4 分 58 秒…)
+  │   - "高频访问"百分比下调 (20% → 15% → 10% → 5% → 0%)
+  │   - "高频访问"最低激活次数上调 (2 → 3 → 4 …)
+  │   收纳后可计数标签 < 阈值? ──► 完成 ✅
+  │
+  ▼ 逐级放宽直至 maxTiers 层
+【终极兜底】(ultimateFallback)
+  │   仅保留硬性保护 (播放媒体 / 表单输入 / 前台激活 / 固定标签 / 系统页面)
+  │   其余标签按"重要度评分"从低到高强制回收，直至降到阈值以下
+  │
+  ▼ 若硬性保护数量本身已超出目标剩余数
+【放弃】返回明确提示，绝不误关任何受保护标签页
+```
+
+**核心概念：**
+- **硬性保护**（永不降级）：系统/插件自身页面、正在播放媒体（P0）、正在输入表单（P0）、前台激活标签、固定标签（P3）。
+- **软性保护**（随阶梯逐级放宽）：最近访问（P1，窗口逐级缩短）、高频访问（P2，百分比下调 + 最低激活次数上调）。
+- **达标口径**：与阈值监控完全一致（`filterCountableTabs` 可计数标签），收纳后 `可计数数量 < 阈值` 即为达标。
+- 配置项位于 `DefaultConfig.tieredStash`（`enabled` / `maxTiers` / `tierStepSeconds` / `ultimateFallback` / `targetSafetyMargin`）。
+
 ### 3.3 数据导入与 URL 容错清洗机制
 
 ```
@@ -206,6 +239,11 @@ BetterBrowse/
    ```
 3. 在 [src/constants/config.js](file:///c:/Users/wakusei/Desktop/BetterBrowse/BetterBrowse/src/constants/config.js) 的 `DefaultConfig.rulesEnabled` 中增加对应开关，并在设置面板挂载 UI。
 4. **原有规则代码完全无需任何变动**。
+
+> **⚠️ 软性规则与阶梯降级**：新增规则时需明确其保护属性——
+> - **硬性规则**（如 `AudibleRule`、`FormGuardRule`、`PinnedRule` 及前台激活分支）：在阶梯降级与终极兜底阶段**始终生效**，无需任何特殊处理；
+> - **软性规则**（如 `RecentActiveRule`、`FrequencyRule`）：其 `evaluate({ ..., tierContext })` 必须读取 `tierContext` 以支持逐级放宽，并在 `tierContext?.hardCoreOnly === true`（终极兜底）时返回 `{ retain: false }`；
+> - 阶梯参数由 `RuleEngine.buildTierContext(config, tierLevel, tierSettings)` 统一计算，无需在规则内自行推导。
 
 ---
 

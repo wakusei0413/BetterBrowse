@@ -85,7 +85,10 @@ Deno.test("MigrationManager: 从历史 v1 迁移至当前版本平滑补齐 stas
   assertEquals(config.stashSettings.restoreBehavior, "remove");
   assertEquals(config.stashSettings.allowDuplicates, true);
   assertEquals(config.stashSettings.autoOpenStashTab, true);
-  assertEquals(store[StorageKeys.SCHEMA_VERSION], 3);
+  // v4 起补齐"阶梯式降级收纳"默认配置
+  assertEquals(config.tieredStash.enabled, true);
+  assertEquals(config.tieredStash.ultimateFallback, true);
+  assertEquals(store[StorageKeys.SCHEMA_VERSION], 4);
 });
 
 Deno.test("LocalStashRepository: createGroup 与 updateGroup 基础操作", async () => {

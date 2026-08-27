@@ -1450,6 +1450,15 @@ class RulesConfigComponent {
       chkRecentActive: document.getElementById('chkRuleRecentActive'),
       chkHighFrequency: document.getElementById('chkRuleHighFrequency'),
       chkPinned: document.getElementById('chkRulePinned'),
+      chkTieredStash: document.getElementById('chkTieredStash'),
+      inputTierStepSeconds: document.getElementById('inputTierStepSeconds'),
+      inputTierMaxLevels: document.getElementById('inputTierMaxLevels'),
+      inputTierSafetyMargin: document.getElementById('inputTierSafetyMargin'),
+      chkTierUltimateFallback: document.getElementById('chkTierUltimateFallback'),
+      rowTierStepSeconds: document.getElementById('rowTierStepSeconds'),
+      rowTierMaxLevels: document.getElementById('rowTierMaxLevels'),
+      rowTierSafetyMargin: document.getElementById('rowTierSafetyMargin'),
+      rowTierUltimateFallback: document.getElementById('rowTierUltimateFallback'),
       autoSaveIndicator: document.getElementById('rulesAutoSaveIndicator')
     };
 
@@ -1479,6 +1488,32 @@ class RulesConfigComponent {
     if (this.dom.chkRecentActive) this.dom.chkRecentActive.checked = rules.recentActive !== false;
     if (this.dom.chkHighFrequency) this.dom.chkHighFrequency.checked = rules.highFrequency !== false;
     if (this.dom.chkPinned) this.dom.chkPinned.checked = rules.pinned !== false;
+
+    // 阶梯式降级收纳配置
+    const tiered = config.tieredStash || {};
+    if (this.dom.chkTieredStash) this.dom.chkTieredStash.checked = tiered.enabled !== false;
+    if (this.dom.inputTierStepSeconds) this.dom.inputTierStepSeconds.value = Number.isFinite(tiered.tierStepSeconds) ? tiered.tierStepSeconds : 60;
+    if (this.dom.inputTierMaxLevels) this.dom.inputTierMaxLevels.value = Number.isFinite(tiered.maxTiers) ? tiered.maxTiers : 5;
+    if (this.dom.inputTierSafetyMargin) this.dom.inputTierSafetyMargin.value = Number.isFinite(tiered.targetSafetyMargin) ? tiered.targetSafetyMargin : 0;
+    if (this.dom.chkTierUltimateFallback) this.dom.chkTierUltimateFallback.checked = tiered.ultimateFallback !== false;
+    this.updateTieredRowsState();
+  }
+
+  /**
+   * 根据阶梯总开关联动显示/隐藏下级参数行
+   */
+  updateTieredRowsState() {
+    const enabled = Boolean(this.dom.chkTieredStash?.checked);
+    const rows = [
+      this.dom.rowTierStepSeconds,
+      this.dom.rowTierMaxLevels,
+      this.dom.rowTierSafetyMargin,
+      this.dom.rowTierUltimateFallback
+    ];
+    for (const row of rows) {
+      if (!row) continue;
+      row.classList.toggle('setting-item--disabled', !enabled);
+    }
   }
 
   bindEvents() {
@@ -1492,12 +1527,20 @@ class RulesConfigComponent {
       this.dom.chkFormGuard,
       this.dom.chkRecentActive,
       this.dom.chkHighFrequency,
-      this.dom.chkPinned
+      this.dom.chkPinned,
+      this.dom.chkTieredStash,
+      this.dom.inputTierStepSeconds,
+      this.dom.inputTierMaxLevels,
+      this.dom.inputTierSafetyMargin,
+      this.dom.chkTierUltimateFallback
     ];
 
     inputs.forEach((el) => {
       if (!el) return;
-      el.addEventListener('change', () => this.saveConfig());
+      el.addEventListener('change', () => {
+        this.updateTieredRowsState();
+        this.saveConfig();
+      });
       if (el.type === 'number') {
         el.addEventListener('input', () => this.saveConfig());
       }
@@ -1521,13 +1564,22 @@ class RulesConfigComponent {
         pinned: Boolean(this.dom.chkPinned?.checked)
       };
 
+      const tieredStash = {
+        enabled: Boolean(this.dom.chkTieredStash?.checked),
+        tierStepSeconds: Math.max(1, parseInt(this.dom.inputTierStepSeconds?.value, 10) || 60),
+        maxTiers: Math.max(0, parseInt(this.dom.inputTierMaxLevels?.value, 10) || 5),
+        targetSafetyMargin: Math.max(0, parseInt(this.dom.inputTierSafetyMargin?.value, 10) || 0),
+        ultimateFallback: Boolean(this.dom.chkTierUltimateFallback?.checked)
+      };
+
       const res = await MessageBus.sendToBackground(ActionTypes.UPDATE_CONFIG, {
         tabThreshold,
         recentActiveMinutes,
         autoStashOnThreshold,
         countdownSeconds,
         autoThresholdNotify,
-        rulesEnabled
+        rulesEnabled,
+        tieredStash
       });
 
       if (res.success) {

@@ -25,8 +25,8 @@ export const DefaultConfig = {
   autoStashOnThreshold: true,    // 达到阈值时是否自动倒计时智能收纳
   countdownSeconds: 15,          // 自动收纳倒计时时长（秒，默认15秒）
   thresholdCooldownMinutes: 5,   // 取消或触发后的防打扰冷却时间（分钟，默认5分钟）
-  recentActiveMinutes: 5,        // “最近访问”时间窗口（分钟，默认5分钟）
-  frequencyPercentile: 0.2,      // “高频使用”保留比例（前20%）
+  recentActiveMinutes: 5,        // "最近访问"时间窗口（分钟，默认5分钟）
+  frequencyPercentile: 0.2,      // "高频使用"保留比例（前20%）
   frequencyHistoryMinutes: 60,   // 统计使用频次的时间窗口（分钟，默认60分钟）
 
   // === 规则启用开关 ===
@@ -60,7 +60,26 @@ export const DefaultConfig = {
     autoBackupEnabled: true,
     backupRetentionDays: 30,
     displayDensity: 'comfortable'
+  },
+
+  // === 本地自动快照安全约束 ===
+  // 防止收纳数据过多时自动备份撑爆 chrome.storage.local 配额（默认约 5MB）
+  autoBackupLimits: {
+    maxBackups: 2,              // 最多保留几份快照（新 + 旧）
+    maxTotalBytes: 3 * 1024 * 1024, // 自动备份总大小软上限（字节，留余量给其它数据）
+    stripFavIcons: true         // 快照中剔除 favIconUrl 以显著减小体积
+  },
+
+  // === 阶梯式降级收纳（Tiered Escalation Stash）===
+  // 当一轮智能收纳后标签页数量仍超过阈值时，逐级放宽"软性保护"
+  // （最近访问窗口逐级缩短、高频访问门槛逐级提高），直至降到阈值以下。
+  tieredStash: {
+    enabled: true,            // 总开关：是否启用阶梯式降级收纳
+    maxTiers: 5,              // 最大降级层数（0 = 不降级，仅执行标准一轮）
+    tierStepSeconds: 60,      // 每级将"最近访问"保护窗口缩短的秒数（默认 60 秒/级）
+    ultimateFallback: true,   // 终极兜底：软性保护全部放宽后仍超标时，按重要度从低到高强制回收
+    targetSafetyMargin: 0     // 达标安全余量：降到阈值以下后再额外多收纳的标签页数量
   }
 };
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
