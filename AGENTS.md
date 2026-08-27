@@ -8,7 +8,7 @@
 
 - **项目名称**：Better Browse（智能浏览增强插件）
 - **规范标准**：Chrome Extensions **Manifest V3**
-- **当前版本**：`Milestone 1`
+- **当前版本**：`Milestone 2`
 - **开发运行时与工具链**：**纯 JavaScript (原生 ESM) + Deno 2.x 原生驱动**（彻底告别 Node.js/npm 体系）
 - **零构建与所见即所得原则**（⚠️ **核心开发手感**）：
   - 源码直接在 `src/` 中以纯原生 JavaScript 编写（`.js`、`.html`、`.css`）。

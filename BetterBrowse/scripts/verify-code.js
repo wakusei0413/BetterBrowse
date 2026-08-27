@@ -88,11 +88,11 @@ try {
   } else {
     console.log(`\n[PASS] manifest.json 格式正确 (Manifest V${manifest.manifest_version}, 名称: ${manifest.name})`);
   }
-  if (manifest.version_name !== 'Milestone 1') {
-    console.error('[FAIL] manifest.json 展示版本必须为 Milestone 1');
+  if (manifest.version_name !== 'Milestone 2') {
+    console.error('[FAIL] manifest.json 展示版本必须为 Milestone 2');
     hasError = true;
   } else {
-    console.log('[PASS] 扩展展示版本为 Milestone 1');
+    console.log('[PASS] 扩展展示版本为 Milestone 2');
   }
   if (!manifest.permissions?.includes('contextMenus')) {
     console.error('[FAIL] manifest.json 缺少 contextMenus 权限');
