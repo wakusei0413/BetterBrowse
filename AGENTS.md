@@ -50,7 +50,8 @@ BetterBrowse/
     │   │   │   └── message-bus.js    # 统一跨端消息通讯总线 (强类型、安全错误处理)
     │   │   ├── storage/
     │   │   │   ├── storage-adapter.js# Chrome Storage 统一适配器 (local/sync, 变化监听, 默认值合并)
-    │   │   │   └── migration.js      # 数据架构版本迁移器 (保障 Schema 升级向后兼容)
+    │   │   │   ├── indexed-db.js    # IndexedDB 本地主库连接管理器 (惰性重建、跨上下文写锁、分批事务)
+    │   │   │   └── migration.js      # 数据架构版本迁移器 (幂等、失败降级、30 天保留与一键回退)
     │   │   ├── link/
     │   │   │   ├── link-matcher.js   # 域名匹配算法 (精确域名 > 通配符 > 全局后备)
     │   │   │   └── link-service.js   # 链接跳转规则增删改查业务服务
@@ -64,7 +65,8 @@ BetterBrowse/
     │   │   │   └── rule-engine.js    # 规则编排与全量标签评估器
     │   │   └── stash/                # 标签页收纳与持久化仓储
     │   │       ├── stash-service.js  # 收纳与恢复服务主调度
-    │   │       ├── local-stash-repo.js # 本地独立收纳仓储 (CRUD、去重、智能 URL 容错清洗)
+    │   │       ├── local-stash-repo.js # 收纳仓储门面 (IndexedDB 主库优先, chrome.storage 兜底)
+    │   │       ├── indexed-stash-repo.js # IndexedDB 仓储实现 (页面实体+收纳记录两层模型、索引去重、分页检索)
     │   │       └── onetab-converter.js # OneTab 双向数据转换器 (支持纯文本/内部 JSON 互导)
     │   │
     │   ├── background/            # 后台生命周期与调度 (Service Worker 原生 ESM)
@@ -94,8 +96,12 @@ BetterBrowse/
     │   └── icons/                 # 高清图标资源 (16/32/48/128/256/512)
     │
     └── tests/                     # Deno.test 原生自动化集成测试套件
+        ├── helpers/
+        │   └── fake-indexeddb.js  # 测试专用内存版 IndexedDB 模拟器 (宏任务事件派发、事务中止回滚)
         ├── critical-flows.test.js # 核心收纳恢复流程与 URL 容错导入测试
+        ├── indexed-db-stash.test.js # IndexedDB 主库仓储、迁移幂等、回退与并发写库测试
         ├── rules-engine.test.js   # P0~P3 智能规则多级优先级测试
+        ├── stash-settings.test.js # 收纳箱精细化设置与存储迁移测试
         └── threshold-monitor.test.js # 阈值监控与冷却防打扰测试
 ```
 
@@ -200,6 +206,47 @@ BetterBrowse/
 【安全持久化写入】(StorageAdapter)
 ```
 
+### 3.4 本地存储架构：IndexedDB 主库 + chrome.storage 兜底 (v5 起)
+
+> 完整设计决策见 `docs/00-overview.md` 与 `docs/01-local-indexeddb.md`（存储架构改革分册）。
+
+#### 3.4.1 两层数据模型（对象仓储）
+
+| 仓储 | 主键 | 索引 | 用途 |
+| --- | --- | --- | --- |
+| `pages` | `pageId`（URL 指纹） | `url`, `domain`, `updatedAt` | 同一 URL 的页面实体（标题、图标、最后访问） |
+| `stashGroups` | `groupId` | `createdAt`, `name` | 收纳组 |
+| `stashEntries` | `entryId`（`groupId::tabId` 命名空间隔离） | `groupId`, `pageId`, `createdAt` | 组内条目，指向 `pages` |
+| `settings` / `activityStats` | `key` | — | 阶段一仅建表占位（读写仍走 chrome.storage.local） |
+| `deviceEvents` | `eventId` | `deviceId`, `sequence` | 本地操作事件（阶段二跨设备同步复用） |
+
+#### 3.4.2 门面与降级机制 (LocalStashRepository)
+
+```
+[业务调用] (StashService / 选项页 / 右键菜单)
+  │
+  ▼
+【LocalStashRepository 门面】(local-stash-repo.js)
+  │
+  ├── 读操作：IndexedDB 异常时自动降级读取旧存储快照（30 天保留期内）
+  ├── 写操作：失败显式返回错误，绝不降级写旧存储（杜绝双数据源分叉与漏关标签）
+  │
+  ├── 版本 ≥ 5 且未回退 ──► IndexedStashRepository (indexed-stash-repo.js, 主库实现)
+  └── 否则（不支持/迁移中/已回退）──► chrome.storage.local 数组旧路径 (legacy 实现)
+```
+
+- **版本门控**：仅当 `bb_schema_version >= 5` 后 IndexedDB 才是权威数据源；版本切换在迁移写锁内原子完成。
+- **变更通知**：IndexedDB 模式下收纳数据不经过 chrome.storage，门面每次写成功后更新 `bb_stash_revision` 修订号，选项页监听该键实现 0 刷新即时呈现。
+- **旧数据保留**：迁移成功后旧数组保留 30 天再自动清理，期间可调用 `MigrationManager.rollbackFromIndexedDB()` 一键回退（设置 `bb_idb_optout` 后固定使用旧存储）。
+
+#### 3.4.3 MV3 关键约束的处理方式 (IndexedDBManager)
+
+1. **Service Worker 休眠**：连接缓存 `onclose` 后自动置空，下次操作惰性重建（`open()` 幂等重试）；
+2. **多入口并发**：Service Worker 与选项页通过 `Web Locks API`（`bb-idb-write`）跨上下文串行化"读-改-写"，不可用时降级进程内队列；**写锁只在门面与迁移两处顶层获取，严禁嵌套**；
+3. **启动就绪**：所有读写路径先 `await` 数据库打开；迁移随 onInstalled / onStartup / SW 冷启动幂等重试；
+4. **大事务中断**：写入按 500 条/批分事务提交；创建组时组记录最后写入，中断不产生"半可见"组；
+5. **迁移幂等**：entryId/pageId/groupId 全部由源数据主键推导，中断重跑为幂等 upsert，完整性校验失败则版本停在 v4 下次重试。
+
 ---
 
 ## 🚀 4. AI Agent 扩展开发指南（零侵入式加 Feature）
@@ -249,14 +296,20 @@ BetterBrowse/
 
 ### 4.2 如何进行数据存储架构平滑升级？
 
-1. 当修改了存储数据结构或追加了字段时，将 `src/constants/config.js` 中的 `CURRENT_SCHEMA_VERSION` 递增（例如从 `1` 改为 `2`）。
+1. 当修改了存储数据结构或追加了字段时，将 `src/constants/config.js` 中的 `CURRENT_SCHEMA_VERSION` 递增（例如从 `5` 改为 `6`）。
 2. 在 [src/core/storage/migration.js](file:///c:/Users/wakusei/Desktop/BetterBrowse/BetterBrowse/src/core/storage/migration.js) 中编写针对性的版本迁移逻辑：
    ```javascript
-   if (currentVersion < 2) {
-     // 执行从 v1 到 v2 的数据结构转换与补充字段写入
+   if (currentVersion < 6) {
+     // 执行从 v5 到 v6 的数据结构转换与补充字段写入
    }
    ```
 3. 扩展启动时会自动运行迁移，保障老用户无感升级。
+
+> **⚠️ 迁移硬性规范**（v5 IndexedDB 迁移确立的模式，新增版本必须沿用）：
+> - **可重入**：迁移块的写入必须幂等（主键由源数据推导），中断重跑不得产生重复或丢失；
+> - **失败降级**：迁移块失败时 `targetVersion` 不得推进，旧数据完整保留，下次启动自动重试；
+> - **原子切换**：涉及"数据源切换"的迁移（如 v5）必须整体包裹在 `IndexedDBManager.withWriteLock` 临界区内；
+> - **兼容验证**：修改迁移后必须运行 `deno task test`，IndexedDB 相关迁移需在 `tests/indexed-db-stash.test.js` 补充幂等与中断重试用例。
 
 ---
 
@@ -288,5 +341,11 @@ deno task icons
    - 任何涉及阻止单页跳转的行为，必须在 `src/content/main-world-bridge.js` 的**主世界捕获阶段**完成，绝对不能只在隔离世界（Isolated World）里调用 `event.stopPropagation()`，否则无法阻止页面的 Ember/Vue/React 路由。
 3. **内容脚本更新**：
    - 浏览器内容脚本加载的是 `src/content/content-bundle.js`，修改了 `src/content/` 内部拆分源码后，**执行 `deno task bundle` 即可一键合并**。
-4. **编码要求**：
+   - `content-bundle.js` 内联了 `constants/` 下的常量（StorageKeys、CURRENT_SCHEMA_VERSION 等），**修改常量后同样必须重新打包**，否则 `deno task verify` 会因产物不一致而失败。
+4. **IndexedDB 与旧存储双数据源**：
+   - 收纳数据自 v5 起以 IndexedDB 为主库，**任何新功能严禁绕过 `LocalStashRepository` 门面直接读写 `bb_stash_groups` 或 IndexedDB**；
+   - 门面写方法的后端决策发生在写锁临界区内，改动门面时**不得把 `_getBackend()` 决策移出锁外**，否则会引入"决策后版本翻转"竞态导致漏写；
+   - `IndexedStashRepository` 的写方法自身**不持锁**（调用方持锁），直接调用必须自行包裹 `IndexedDBManager.withWriteLock`，且**严禁嵌套获取写锁**（死锁）；
+   - 需要 UI 实时感知 IndexedDB 数据变化时，监听 `bb_stash_revision` 修订号（门面写成功后自动广播），不要依赖 `chrome.storage.onChanged` 的 `bb_stash_groups`。
+5. **编码要求**：
    - 任何新增文件必须以 **UTF-8** 格式保存，且代码注释与文本使用**简体中文**。

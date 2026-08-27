@@ -1,6 +1,6 @@
 /**
  * @file local-stash-repo.js
- * @description 本地标签页收纳仓储（支持分组、星标、锁定、重命名、搜索与 OneTab 无缝双向互导）
+ * @description 本地标签页收纳仓储门面（IndexedDB 主库优先，chrome.storage.local 旧存储兜底；支持分组、星标、锁定、重命名、搜索与 OneTab 无缝双向互导）
  * @encoding UTF-8
  */
 
@@ -8,14 +8,52 @@ import { StorageKeys } from '../../constants/storage-keys.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { OneTabConverter } from './onetab-converter.js';
 import { DefaultConfig } from '../../constants/config.js';
+import { IndexedDBManager } from '../storage/indexed-db.js';
+import { IndexedStashRepository } from './indexed-stash-repo.js';
 
 export class LocalStashRepository {
-  static writeQueue = Promise.resolve();
+  // ============================================================
+  // 存储门面：IndexedDB 主库优先，chrome.storage.local 旧存储兜底
+  // ============================================================
 
-  static enqueueWrite(operation) {
-    const run = this.writeQueue.then(operation, operation);
-    this.writeQueue = run.catch(() => undefined);
-    return run;
+  /**
+   * 解析当前生效的存储后端
+   *
+   * 版本门控说明：仅当 v5 迁移完成（schema 版本 ≥ 5）后 IndexedDB 才是权威数据源。
+   * 版本切换在迁移的跨上下文写锁内原子完成，因此：
+   * - 迁移进行中（版本仍为 4）：读写全部走旧存储，迁移期间的并发写入不会漏拷；
+   * - 迁移完成后（版本 5）：读写全部走 IndexedDB；
+   * - 显式回退（bb_idb_optout）：固定使用旧存储。
+   *
+   * ⚠️ 写方法的后端决策必须发生在写锁临界区内（见各写方法实现），
+   * 否则"决策走旧存储 → 迁移完成切版本 → 写入旧存储"的竞态会导致数据漏写。
+   * @returns {Promise<IndexedStashRepository | null>}
+   */
+  static async _getBackend() {
+    if (!IndexedStashRepository.isSupported()) return null;
+    try {
+      if ((await StorageAdapter.get(StorageKeys.IDB_OPTOUT, false)) === true) return null;
+      const version = Number(await StorageAdapter.get(StorageKeys.SCHEMA_VERSION, 0)) || 0;
+      return version >= 5 ? IndexedStashRepository : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 广播收纳数据变更
+   * IndexedDB 模式下 chrome.storage.onChanged 不再感知收纳变化，
+   * 通过修订号（bb_stash_revision）通知各上下文（选项页监听此键实现 0 刷新即时呈现）。
+   */
+  static async _notifyStashChanged() {
+    try {
+      await StorageAdapter.set(
+        StorageKeys.STASH_REV,
+        `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+      );
+    } catch {
+      // 通知失败不影响主流程
+    }
   }
 
   /**
@@ -86,10 +124,63 @@ export class LocalStashRepository {
   }
 
   /**
+   * 执行自动备份（收纳组创建成功后调用）
+   * 备份仍持久化在 chrome.storage.local，是否迁入 IndexedDB 由 ADR-3 在 M2 末尾单独评审。
+   * @param {number} [now=Date.now()] - 备份快照时间戳
+   */
+  static async _runAutoBackupIfEnabled(now = Date.now()) {
+    try {
+      const config = await StorageAdapter.getUserConfig();
+      const settings = config.stashSettings || {};
+      if (settings.autoBackupEnabled === false) return;
+
+      const currentGroups = await this.getAllGroups();
+      const retentionDays = Math.max(1, Number(settings.backupRetentionDays) || 30);
+      const cutoff = Date.now() - retentionDays * 86400000;
+      const limits = DefaultConfig.autoBackupLimits || {};
+      const stripFavIcons = limits.stripFavIcons !== false;
+
+      const backups = await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, []);
+      const nextBackups = [
+        { createdAt: now, groups: this.createBackupSnapshot(currentGroups, stripFavIcons) },
+        ...(Array.isArray(backups)
+          ? backups
+              .filter((backup) => backup?.createdAt > cutoff)
+              .map((backup) => ({
+                createdAt: backup.createdAt,
+                groups: this.createBackupSnapshot(backup.groups || [], stripFavIcons)
+              }))
+          : [])
+      ];
+
+      await this.persistAutoBackups(nextBackups);
+    } catch (backupErr) {
+      // 自动备份失败绝不影响主收纳流程
+      console.warn('[LocalStashRepository] 自动备份异常，已忽略:', backupErr);
+    }
+  }
+
+  /**
    * 获取所有已保存的收纳标签组列表（默认按时间倒序）
    * @returns {Promise<Array<{ id: string, createdAt: number, title: string, locked?: boolean, starred?: boolean, tabs: Array<{ id: string, url: string, title: string, favIconUrl?: string, pinned?: boolean }> }>>}
    */
   static async getAllGroups() {
+    const backend = await this._getBackend();
+    if (backend) {
+      try {
+        return await backend.getAllGroups();
+      } catch (err) {
+        // 读路径降级：IndexedDB 异常时回退旧存储快照（30 天保留期内仍可读，主库数据不受影响）
+        console.warn('[LocalStashRepository] IndexedDB 读取失败，降级至 chrome.storage.local:', err);
+      }
+    }
+    return await this._legacyGetAllGroups();
+  }
+
+  /**
+   * 旧存储实现：整读 chrome.storage.local 数组并排序
+   */
+  static async _legacyGetAllGroups() {
     const groups = await StorageAdapter.get(StorageKeys.STASH_GROUPS, []);
     if (!Array.isArray(groups)) return [];
     return [...groups].sort((a, b) => {
@@ -111,33 +202,58 @@ export class LocalStashRepository {
       return { success: false };
     }
 
-    return await this.enqueueWrite(async () => {
-      const config = await StorageAdapter.getUserConfig();
-      const settings = config.stashSettings || {};
-      const existingGroups = await this.getAllGroups();
-      let normalizedItems = tabItems.filter((item) => item && item.url);
-      if (settings.allowDuplicates === false) {
-        const existingUrls = new Set(existingGroups.flatMap((group) => (group.tabs || []).map((tab) => tab.url)));
-        const seenIncoming = new Set();
-        normalizedItems = normalizedItems.filter((item) => {
-          if (existingUrls.has(item.url) || seenIncoming.has(item.url)) return false;
-          seenIncoming.add(item.url);
-          return true;
-        });
-        if (settings.existingTabTitleBehavior === 'useLatest') {
-          for (const group of existingGroups) {
-            for (const tab of group.tabs || []) {
-              const incoming = tabItems.find((item) => item?.url === tab.url);
-              if (incoming?.title) tab.title = incoming.title;
-            }
+    // 写锁临界区内完成后端决策与写入，杜绝"决策后版本翻转"竞态
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const config = await StorageAdapter.getUserConfig();
+          const result = await backend.createGroup(tabItems, customTitle, config.stashSettings || {});
+          if (result?.success) {
+            await this._runAutoBackupIfEnabled(Date.now());
+            await this._notifyStashChanged();
           }
-          await StorageAdapter.set(StorageKeys.STASH_GROUPS, existingGroups);
+          return result;
+        } catch (err) {
+          // 写路径不降级：持久化失败必须显式返回失败（上层绝不关闭原标签页），避免双数据源分叉
+          console.error('[LocalStashRepository] IndexedDB 写入收纳组失败:', err);
+          return { success: false, error: err.message || '写入 IndexedDB 主库失败' };
         }
       }
-      if (normalizedItems.length === 0) return { success: true, group: null, skipped: tabItems.length };
+      return await this._legacyCreateGroup(tabItems, customTitle);
+    });
+  }
 
-      const now = Date.now();
-      const dateStr = new Intl.DateTimeFormat('zh-CN', {
+  /**
+   * 旧存储实现：整读 → 改 → 整写（调用方已持有跨上下文写锁）
+   */
+  static async _legacyCreateGroup(tabItems, customTitle = '') {
+    const config = await StorageAdapter.getUserConfig();
+    const settings = config.stashSettings || {};
+    const existingGroups = await this._legacyGetAllGroups();
+    let normalizedItems = tabItems.filter((item) => item && item.url);
+    if (settings.allowDuplicates === false) {
+      const existingUrls = new Set(existingGroups.flatMap((group) => (group.tabs || []).map((tab) => tab.url)));
+      const seenIncoming = new Set();
+      normalizedItems = normalizedItems.filter((item) => {
+        if (existingUrls.has(item.url) || seenIncoming.has(item.url)) return false;
+        seenIncoming.add(item.url);
+        return true;
+      });
+      if (settings.existingTabTitleBehavior === 'useLatest') {
+        for (const group of existingGroups) {
+          for (const tab of group.tabs || []) {
+            const incoming = tabItems.find((item) => item?.url === tab.url);
+            if (incoming?.title) tab.title = incoming.title;
+          }
+        }
+        await StorageAdapter.set(StorageKeys.STASH_GROUPS, existingGroups);
+      }
+    }
+    if (normalizedItems.length === 0) return { success: true, group: null, skipped: tabItems.length };
+
+    const now = Date.now();
+    const dateStr = new Intl.DateTimeFormat('zh-CN', {
       year: 'numeric',
       month: 'numeric',
       day: 'numeric',
@@ -146,7 +262,7 @@ export class LocalStashRepository {
       hour12: false
     }).format(new Date(now));
 
-      const defaultTitle = customTitle || `${dateStr} 收纳 (${normalizedItems.length} 个标签页)`;
+    const defaultTitle = customTitle || `${dateStr} 收纳 (${normalizedItems.length} 个标签页)`;
 
     const newGroup = {
       id: `stash_grp_${now}_${Math.random().toString(36).substring(2, 7)}`,
@@ -163,38 +279,15 @@ export class LocalStashRepository {
       }))
     };
 
-      const currentGroups = await this.getAllGroups();
-      currentGroups.unshift(newGroup);
+    const currentGroups = await this._legacyGetAllGroups();
+    currentGroups.unshift(newGroup);
 
-      const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
-      if (ok && settings.autoBackupEnabled !== false) {
-        try {
-          const backups = await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, []);
-          const retentionDays = Math.max(1, Number(settings.backupRetentionDays) || 30);
-          const cutoff = Date.now() - retentionDays * 86400000;
-          const limits = DefaultConfig.autoBackupLimits || {};
-          const stripFavIcons = limits.stripFavIcons !== false;
-
-          const nextBackups = [
-            { createdAt: now, groups: this.createBackupSnapshot(currentGroups, stripFavIcons) },
-            ...(Array.isArray(backups)
-              ? backups
-                  .filter((backup) => backup?.createdAt > cutoff)
-                  .map((backup) => ({
-                    createdAt: backup.createdAt,
-                    groups: this.createBackupSnapshot(backup.groups || [], stripFavIcons)
-                  }))
-              : [])
-          ];
-
-          await this.persistAutoBackups(nextBackups);
-        } catch (backupErr) {
-          // 自动备份失败绝不影响主收纳流程
-          console.warn('[LocalStashRepository] 自动备份异常，已忽略:', backupErr);
-        }
-      }
-      return { success: ok, group: newGroup };
-    });
+    const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
+    if (ok) {
+      await this._runAutoBackupIfEnabled(now);
+      await this._notifyStashChanged();
+    }
+    return { success: ok, group: newGroup };
   }
 
   /**
@@ -204,18 +297,38 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async updateGroup(groupId, updates) {
-    return await this.enqueueWrite(async () => {
-      const currentGroups = await this.getAllGroups();
-      const target = currentGroups.find((g) => g.id === groupId);
-      if (!target || !updates || typeof updates !== 'object') return false;
-      const allowed = ['title', 'locked', 'starred', 'archived'];
-      for (const key of allowed) {
-        if (Object.prototype.hasOwnProperty.call(updates, key)) {
-          target[key] = key === 'title' ? String(updates[key]).slice(0, 200) : Boolean(updates[key]);
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const ok = await backend.updateGroup(groupId, updates);
+          if (ok) await this._notifyStashChanged();
+          return ok;
+        } catch (err) {
+          console.error('[LocalStashRepository] IndexedDB 更新收纳组失败:', err);
+          return false;
         }
       }
-      return await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
+      return await this._legacyUpdateGroup(groupId, updates);
     });
+  }
+
+  /**
+   * 旧存储实现：更新组属性（调用方已持有跨上下文写锁）
+   */
+  static async _legacyUpdateGroup(groupId, updates) {
+    const currentGroups = await this._legacyGetAllGroups();
+    const target = currentGroups.find((g) => g.id === groupId);
+    if (!target || !updates || typeof updates !== 'object') return false;
+    const allowed = ['title', 'locked', 'starred', 'archived'];
+    for (const key of allowed) {
+      if (Object.prototype.hasOwnProperty.call(updates, key)) {
+        target[key] = key === 'title' ? String(updates[key]).slice(0, 200) : Boolean(updates[key]);
+      }
+    }
+    const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
+    if (ok) await this._notifyStashChanged();
+    return ok;
   }
 
   /**
@@ -225,13 +338,33 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async deleteGroup(groupId, force = false) {
-    return await this.enqueueWrite(async () => {
-      const currentGroups = await this.getAllGroups();
-      const target = currentGroups.find((g) => g.id === groupId);
-      if (target && target.locked && !force) return false;
-      const filtered = currentGroups.filter((g) => g.id !== groupId);
-      return await StorageAdapter.set(StorageKeys.STASH_GROUPS, filtered);
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const ok = await backend.deleteGroup(groupId, force);
+          if (ok) await this._notifyStashChanged();
+          return ok;
+        } catch (err) {
+          console.error('[LocalStashRepository] IndexedDB 删除收纳组失败:', err);
+          return false;
+        }
+      }
+      return await this._legacyDeleteGroup(groupId, force);
     });
+  }
+
+  /**
+   * 旧存储实现：删除收纳组（调用方已持有跨上下文写锁）
+   */
+  static async _legacyDeleteGroup(groupId, force = false) {
+    const currentGroups = await this._legacyGetAllGroups();
+    const target = currentGroups.find((g) => g.id === groupId);
+    if (target && target.locked && !force) return false;
+    const filtered = currentGroups.filter((g) => g.id !== groupId);
+    const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, filtered);
+    if (ok) await this._notifyStashChanged();
+    return ok;
   }
 
   /**
@@ -241,15 +374,35 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async deleteTabItem(groupId, itemId) {
-    return await this.enqueueWrite(async () => {
-      const currentGroups = await this.getAllGroups();
-      const targetGroup = currentGroups.find((g) => g.id === groupId);
-      if (!targetGroup) return false;
-      targetGroup.tabs = targetGroup.tabs.filter((t) => t.id !== itemId);
-      let updatedGroups = currentGroups;
-      if (targetGroup.tabs.length === 0 && !targetGroup.locked) updatedGroups = currentGroups.filter((g) => g.id !== groupId);
-      return await StorageAdapter.set(StorageKeys.STASH_GROUPS, updatedGroups);
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const ok = await backend.deleteTabItem(groupId, itemId);
+          if (ok) await this._notifyStashChanged();
+          return ok;
+        } catch (err) {
+          console.error('[LocalStashRepository] IndexedDB 删除收纳条目失败:', err);
+          return false;
+        }
+      }
+      return await this._legacyDeleteTabItem(groupId, itemId);
     });
+  }
+
+  /**
+   * 旧存储实现：删除收纳组内单个标签项（调用方已持有跨上下文写锁）
+   */
+  static async _legacyDeleteTabItem(groupId, itemId) {
+    const currentGroups = await this._legacyGetAllGroups();
+    const targetGroup = currentGroups.find((g) => g.id === groupId);
+    if (!targetGroup) return false;
+    targetGroup.tabs = targetGroup.tabs.filter((t) => t.id !== itemId);
+    let updatedGroups = currentGroups;
+    if (targetGroup.tabs.length === 0 && !targetGroup.locked) updatedGroups = currentGroups.filter((g) => g.id !== groupId);
+    const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, updatedGroups);
+    if (ok) await this._notifyStashChanged();
+    return ok;
   }
 
   /**
@@ -257,13 +410,38 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async clearAll(includeLocked = false) {
-    return await this.enqueueWrite(async () => {
-      if (includeLocked) return await StorageAdapter.set(StorageKeys.STASH_GROUPS, []);
-      const currentGroups = await this.getAllGroups();
-      return await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups.filter((g) => g.locked));
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const ok = await backend.clearAll(includeLocked);
+          if (ok) await this._notifyStashChanged();
+          return ok;
+        } catch (err) {
+          console.error('[LocalStashRepository] IndexedDB 清空收纳数据失败:', err);
+          return false;
+        }
+      }
+      return await this._legacyClearAll(includeLocked);
     });
   }
 
+  /**
+   * 旧存储实现：清空非锁定收纳数据（调用方已持有跨上下文写锁）
+   */
+  static async _legacyClearAll(includeLocked = false) {
+    const currentGroups = await this._legacyGetAllGroups();
+    const remaining = includeLocked ? [] : currentGroups.filter((g) => g.locked);
+    const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, remaining);
+    if (ok) await this._notifyStashChanged();
+    return ok;
+  }
+
+  /**
+   * 标记收纳组为已归档
+   * @param {string} groupId
+   * @returns {Promise<boolean>}
+   */
   static async markGroupArchived(groupId) {
     return await this.updateGroup(groupId, { archived: true });
   }
@@ -273,8 +451,27 @@ export class LocalStashRepository {
    * @returns {Promise<{ success: boolean, removedCount: number, groupCountAfter: number, error?: string }>}
    */
   static async deduplicateGroups() {
-    return await this.enqueueWrite(async () => {
-      const groups = await this.getAllGroups();
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const res = await backend.deduplicateGroups();
+          if (res?.success && res.removedCount > 0) await this._notifyStashChanged();
+          return res;
+        } catch (err) {
+          console.error('[LocalStashRepository] IndexedDB 去重失败:', err);
+          return { success: false, removedCount: 0, groupCountAfter: 0, error: err.message || '写入 IndexedDB 主库失败' };
+        }
+      }
+      return await this._legacyDeduplicateGroups();
+    });
+  }
+
+  /**
+   * 旧存储实现：清理重复收纳组（调用方已持有跨上下文写锁）
+   */
+  static async _legacyDeduplicateGroups() {
+    const groups = await this._legacyGetAllGroups();
     const seen = new Set();
     const retained = [];
     let removedCount = 0;
@@ -294,17 +491,15 @@ export class LocalStashRepository {
       retained.push(group);
     }
 
-      if (removedCount === 0) return { success: true, removedCount: 0, groupCountAfter: groups.length };
+    if (removedCount === 0) return { success: true, removedCount: 0, groupCountAfter: groups.length };
 
     const saved = await StorageAdapter.set(StorageKeys.STASH_GROUPS, retained);
-      return saved
+    if (saved) await this._notifyStashChanged();
+    return saved
       ? { success: true, removedCount, groupCountAfter: retained.length }
       : { success: false, removedCount: 0, groupCountAfter: groups.length, error: '写入本地收纳仓储失败' };
-    });
   }
 
-  /**
-   * 导出所有收纳数据为 JSON 字符串
   /**
    * 导出所有收纳数据为 JSON 字符串 (基础版)
    * @returns {Promise<string>}
@@ -490,6 +685,7 @@ export class LocalStashRepository {
 
   /**
    * 智能导入收纳数据（自动识别 OneTab 文本、OneTab 内部数据与 Better Browse JSON）
+   * 解析与清洗在锁外完成，写入在写锁临界区内按当前生效后端执行
    * @param {string} rawInputString - 文本或 JSON
    * @returns {Promise<{ success: boolean, importedCount: number, groupCount: number, formatName: string, error?: string }>}
    */
@@ -506,12 +702,59 @@ export class LocalStashRepository {
       };
     }
 
-    const currentGroups = await this.getAllGroups();
-    let importedCount = 0;
-    const validImportedGroups = [];
+    const { validImportedGroups, importedCount } = this._normalizeImportedGroups(result.groups);
+    if (validImportedGroups.length === 0) {
+      return {
+        success: false,
+        importedCount: 0,
+        groupCount: 0,
+        formatName: result.formatName,
+        error: '未能从输入中提取出有效的网页链接'
+      };
+    }
 
-    for (let i = 0; i < result.groups.length; i++) {
-      const grp = result.groups[i];
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const imported = await backend.importGroups(validImportedGroups);
+          if (!imported?.success) {
+            throw new Error(imported?.error || '写入 IndexedDB 失败');
+          }
+          await this._notifyStashChanged();
+          return {
+            success: true,
+            importedCount,
+            groupCount: validImportedGroups.length,
+            formatName: result.formatName
+          };
+        } catch (err) {
+          // 写路径不降级：导入失败显式返回，由用户决定是否重试
+          console.error('[LocalStashRepository] IndexedDB 导入失败:', err);
+          return {
+            success: false,
+            importedCount: 0,
+            groupCount: 0,
+            formatName: result.formatName,
+            error: err.message || '写入 IndexedDB 主库失败'
+          };
+        }
+      }
+      return await this._legacyImportGroups(validImportedGroups, importedCount, result.formatName);
+    });
+  }
+
+  /**
+   * 将解析结果规范化为可入库的组结构（URL 清洗、协议过滤、脏数据剔除）
+   * @param {Array<{ tabs: any[], createdAt?: number, title?: string, id?: string, locked?: boolean, starred?: boolean }>} parsedGroups
+   * @returns {{ validImportedGroups: any[], importedCount: number }}
+   */
+  static _normalizeImportedGroups(parsedGroups) {
+    const validImportedGroups = [];
+    let importedCount = 0;
+
+    for (let i = 0; i < parsedGroups.length; i++) {
+      const grp = parsedGroups[i];
       if (grp && Array.isArray(grp.tabs) && grp.tabs.length > 0) {
         const createdAt = typeof grp.createdAt === 'number' ? grp.createdAt : Date.now() - i * 1000;
         const dateStr = new Intl.DateTimeFormat('zh-CN', {
@@ -554,25 +797,20 @@ export class LocalStashRepository {
       }
     }
 
-    if (validImportedGroups.length === 0) {
-      return {
-        success: false,
-        importedCount: 0,
-        groupCount: 0,
-        formatName: result.formatName,
-        error: '未能从输入中提取出有效的网页链接'
-      };
-    }
+    return { validImportedGroups, importedCount };
+  }
 
+  /**
+   * 旧存储实现：导入组正向拼接进现有数组（调用方已持有跨上下文写锁）
+   */
+  static async _legacyImportGroups(validImportedGroups, importedCount, formatName) {
+    const currentGroups = await this._legacyGetAllGroups();
     // 保持导入组本身的先后顺序（正向拼接在现有组之前）
     const mergedGroups = [...validImportedGroups, ...currentGroups];
-    await StorageAdapter.set(StorageKeys.STASH_GROUPS, mergedGroups);
-
-    return {
-      success: true,
-      importedCount,
-      groupCount: validImportedGroups.length,
-      formatName: result.formatName
-    };
+    const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, mergedGroups);
+    if (ok) await this._notifyStashChanged();
+    return ok
+      ? { success: true, importedCount, groupCount: validImportedGroups.length, formatName }
+      : { success: false, importedCount: 0, groupCount: 0, formatName, error: '写入本地收纳仓储失败' };
   }
 }

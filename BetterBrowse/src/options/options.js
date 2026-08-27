@@ -542,7 +542,15 @@ class StashTabComponent {
    */
   initStorageListener() {
     chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName === 'local' && changes[StorageKeys.STASH_GROUPS]) {
+      if (areaName !== 'local') return;
+      // IndexedDB 主库模式下收纳数据不再经过 chrome.storage，
+      // 通过修订号（bb_stash_revision）感知变化并重新拉取权威数据
+      if (changes[StorageKeys.STASH_REV]) {
+        this.loadData();
+        return;
+      }
+      // 旧存储回退模式：直接使用变更数组即时呈现
+      if (changes[StorageKeys.STASH_GROUPS]) {
         const newGroups = changes[StorageKeys.STASH_GROUPS].newValue || [];
         this.groups = Array.isArray(newGroups) ? newGroups : [];
         this.updateBadge();

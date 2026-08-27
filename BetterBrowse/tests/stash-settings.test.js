@@ -88,6 +88,7 @@ Deno.test("MigrationManager: 从历史 v1 迁移至当前版本平滑补齐 stas
   // v4 起补齐"阶梯式降级收纳"默认配置
   assertEquals(config.tieredStash.enabled, true);
   assertEquals(config.tieredStash.ultimateFallback, true);
+  // 测试环境无 IndexedDB：v5 主库迁移待环境就绪后自动重试，版本停在 v4
   assertEquals(store[StorageKeys.SCHEMA_VERSION], 4);
 });
 

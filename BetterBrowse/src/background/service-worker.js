@@ -69,13 +69,24 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   if (config.stashSettings?.pinnedTabGuard !== false) await StashService.ensureAllAllWindowsPinnedTab();
 });
 
-// 浏览器启动时自动守护
+// 浏览器启动时自动守护 + 迁移失败重试（迁移幂等，已完成时仅一次版本号读取）
 if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(async () => {
+    try {
+      await MigrationManager.runMigrations();
+    } catch (err) {
+      console.warn('[ServiceWorker] 启动迁移重试异常:', err);
+    }
     const config = await StorageAdapter.getUserConfig();
     if (config.stashSettings?.pinnedTabGuard !== false) await StashService.ensureAllAllWindowsPinnedTab();
   });
 }
+
+// Service Worker 冷启动兜底：确保未完成的存储迁移（如上次被休眠打断）尽快重试
+// 迁移幂等可重入，已迁移完成时仅产生一次版本号读取，不影响事件响应
+MigrationManager.runMigrations().catch((err) => {
+  console.warn('[ServiceWorker] 存储迁移重试异常:', err);
+});
 
 /**
  * 向所有活跃标签页广播消息（双通道保障实时生效）

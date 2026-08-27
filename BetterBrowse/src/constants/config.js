@@ -82,4 +82,5 @@ export const DefaultConfig = {
   }
 };
 
-export const CURRENT_SCHEMA_VERSION = 4;
+// v5：收纳组数据迁移至 IndexedDB 本地主库（页面实体 + 收纳记录两层模型）
+export const CURRENT_SCHEMA_VERSION = 5;
