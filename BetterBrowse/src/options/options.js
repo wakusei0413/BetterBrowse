@@ -45,7 +45,7 @@ class Toast {
 }
 
 /**
- * 收纳时间树构建器与聚合算法（年 > 月 > 周 > 日）
+ * 收纳时间线构建器与聚合算法（年 > 月 > 周 > 日）
  */
 class TimeTreeBuilder {
   /**
@@ -85,7 +85,7 @@ class TimeTreeBuilder {
       year: thursday.getFullYear(),
       mondayStr: startStr,
       sundayStr: endStr,
-      label: `第 ${weekNum} 周 · ${startStr}(周一) ~ ${endStr}(周日)`
+      label: `第 ${weekNum} 周 · ${startStr} ~ ${endStr}`
     };
   }
 
@@ -99,10 +99,23 @@ class TimeTreeBuilder {
       return [];
     }
 
+    const now = new Date();
+    const todayYear = now.getFullYear();
+    const todayMonth = now.getMonth() + 1;
+    const todayDay = now.getDate();
+
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    const yesterdayYear = yesterday.getFullYear();
+    const yesterdayMonth = yesterday.getMonth() + 1;
+    const yesterdayDay = yesterday.getDate();
+
+    const currentWeekInfo = this.getWeekInfo(now);
+
     const dayOfWeekNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
     const pad = (n) => String(n).padStart(2, '0');
 
-    // 存储年份节点的 Map: year -> { id, type, key, title, groupCount, tabCount, firstGroupId, groupIds: Set, children: Map(month) }
+    // 存储年份节点的 Map: year -> { id, type, key, title, tag, groupCount, tabCount, firstGroupId, groupIds: Set, children: Map(month) }
     const yearMap = new Map();
 
     for (const group of groups) {
@@ -126,6 +139,8 @@ class TimeTreeBuilder {
           type: 'year',
           key: String(year),
           title: `${year} 年`,
+          tag: year === todayYear ? '今年' : '',
+          isCurrentYear: year === todayYear,
           groupCount: 0,
           tabCount: 0,
           firstGroupId: group.id,
@@ -141,11 +156,14 @@ class TimeTreeBuilder {
       // 2. 月节点
       let monthNode = yearNode.months.get(month);
       if (!monthNode) {
+        const isCurrentMonth = year === todayYear && month === todayMonth;
         monthNode = {
           id: `node_month_${year}_${pad(month)}`,
           type: 'month',
           key: `${year}-${pad(month)}`,
           title: `${pad(month)} 月`,
+          tag: isCurrentMonth ? '本月' : '',
+          isCurrentMonth,
           groupCount: 0,
           tabCount: 0,
           firstGroupId: group.id,
@@ -161,11 +179,14 @@ class TimeTreeBuilder {
       // 3. 周节点
       let weekNode = monthNode.weeks.get(weekKey);
       if (!weekNode) {
+        const isCurrentWeek = weekInfo.year === currentWeekInfo.year && weekInfo.weekNum === currentWeekInfo.weekNum;
         weekNode = {
           id: `node_week_${weekKey}`,
           type: 'week',
           key: weekKey,
           title: weekInfo.label,
+          tag: isCurrentWeek ? '本周' : '',
+          isCurrentWeek,
           groupCount: 0,
           tabCount: 0,
           firstGroupId: group.id,
@@ -181,11 +202,26 @@ class TimeTreeBuilder {
       // 4. 日节点
       let dayNode = weekNode.days.get(dayKey);
       if (!dayNode) {
+        const isToday = year === todayYear && month === todayMonth && day === todayDay;
+        const isYesterday = year === yesterdayYear && month === yesterdayMonth && day === yesterdayDay;
+        let dayTitle = `${pad(month)}-${pad(day)} ${dayName}`;
+        let dayTag = '';
+        if (isToday) {
+          dayTitle = `今天 · ${pad(month)}-${pad(day)} ${dayName}`;
+          dayTag = '今天';
+        } else if (isYesterday) {
+          dayTitle = `昨天 · ${pad(month)}-${pad(day)} ${dayName}`;
+          dayTag = '昨天';
+        }
+
         dayNode = {
           id: `node_day_${dayKey}`,
           type: 'day',
           key: dayKey,
-          title: `${pad(month)}-${pad(day)} ${dayName}`,
+          title: dayTitle,
+          tag: dayTag,
+          isToday,
+          isYesterday,
           groupCount: 0,
           tabCount: 0,
           firstGroupId: group.id,
@@ -225,43 +261,75 @@ class TimeTreeBuilder {
 
     return yearList;
   }
+
+  /**
+   * 将全量收纳组扁平按周聚合为有序的时间切片块列表（按最新到最旧排列）
+   * @param {Array<Object>} groups
+   * @returns {Array<Object>}
+   */
+  static buildFlatChunks(groups) {
+    if (!Array.isArray(groups) || groups.length === 0) return [];
+    const tree = TimeTreeBuilder.buildTree(groups);
+    const chunks = [];
+    let chunkIndex = 0;
+
+    for (const yearNode of tree) {
+      for (const monthNode of yearNode.children || []) {
+        for (const weekNode of monthNode.children || []) {
+          const monthNum = parseInt(monthNode.key.split('-')[1], 10);
+          const weekNum = weekNode.key.split('-W')[1];
+          chunks.push({
+            index: chunkIndex++,
+            type: 'week',
+            key: weekNode.key,
+            yearKey: yearNode.key,
+            monthKey: monthNode.key,
+            title: `${yearNode.key}年 ${monthNum}月 · 第${weekNum}周`,
+            shortTitle: `${monthNum}月 W${weekNum}`,
+            tag: weekNode.tag,
+            groupCount: weekNode.groupCount,
+            tabCount: weekNode.tabCount,
+            firstGroupId: weekNode.firstGroupId,
+            groupIds: weekNode.groupIds
+          });
+        }
+      }
+    }
+    return chunks;
+  }
 }
 
 /**
- * 标签收纳箱右侧时间导航目录组件
+ * 纯单一直线时间轴分块导航条组件 (SingleLineTimelineScrollbar)
+ * - 默认分块：初始进入默认只加载最新的一周
+ * - 滚动切换：通过在时间轴滚轮滚动、拖拽滑块或主列表触底滚动，自动切换加载对应时段
+ * - 宽大舒适热区：125px 独立右侧轨、清晰徽标与圆圈
  */
-class TimeNavigatorComponent {
+class SingleLineTimelineScrollbar {
   /**
    * @param {Object} options
-   * @param {HTMLElement} options.container - 时间树容器 DOM
-   * @param {HTMLElement} options.aside - 右侧 Aside DOM
-   * @param {HTMLElement} options.floatBtn - 窄屏悬浮按钮
-   * @param {HTMLElement} options.backdrop - 抽屉遮罩背景
-   * @param {HTMLElement} options.starredNode - 星标节点 DOM
-   * @param {HTMLElement} options.starredCount - 星标计数 DOM
-   * @param {HTMLElement} options.btnToggleAll - 全部展开/折叠按钮
-   * @param {HTMLElement} options.btnCloseDrawer - 抽屉关闭按钮
-   * @param {Function} options.onNavigate - 点击时间节点导航回调 (groupId, node) => void
-   * @param {Function} options.onFilter - 点击区间筛选回调 (node) => void
-   * @param {Function} options.onNavigateStarred - 点击星标入口回调 () => void
+   * @param {HTMLElement} options.container - 轴线节点容器 DOM
+   * @param {HTMLElement} options.track - 滚动条轨道 DOM
+   * @param {HTMLElement} options.thumb - 时间游标滑块 DOM
+   * @param {HTMLElement} options.thumbText - 游标时间文本 DOM
+   * @param {Function} options.onSelectChunk - 选择分块加载回调 (chunkNode | null) => void
    */
   constructor(options) {
     this.container = options.container;
-    this.aside = options.aside;
-    this.floatBtn = options.floatBtn;
-    this.backdrop = options.backdrop;
-    this.starredNode = options.starredNode;
-    this.starredCount = options.starredCount;
-    this.btnToggleAll = options.btnToggleAll;
-    this.btnCloseDrawer = options.btnCloseDrawer;
-    this.onNavigate = options.onNavigate;
-    this.onFilter = options.onFilter;
-    this.onNavigateStarred = options.onNavigateStarred;
+    this.track = options.track;
+    this.thumb = options.thumb;
+    this.thumbText = options.thumbText;
+    this.onSelectChunk = options.onSelectChunk;
 
-    this.expandedNodeIds = new Set();
-    this.allExpanded = false;
+    this.expandedYears = new Set();
+    this.expandedMonths = new Set();
     this.rawGroups = [];
-    this.activeFilter = null;
+    this.treeData = [];
+    this.chunks = [];
+    this.activeChunkIndex = 0; // 默认最新一周
+    this.isDragging = false;
+    this.bubbleHideTimer = null;
+    this.wheelThrottleTimer = 0;
 
     this.init();
   }
@@ -271,203 +339,353 @@ class TimeNavigatorComponent {
   }
 
   bindEvents() {
-    // 1. 全部展开/折叠切换
-    this.btnToggleAll?.addEventListener('click', () => {
-      this.allExpanded = !this.allExpanded;
-      if (this.allExpanded) {
-        this.expandAllNodes();
-      } else {
-        this.expandedNodeIds.clear();
-      }
-      this.renderTree();
-    });
-
-    // 2. 星标置顶入口点击
-    this.starredNode?.addEventListener('click', () => {
-      this.onNavigateStarred?.();
-      this.closeDrawer();
-    });
-
-    // 3. 窄屏抽屉打开/关闭
-    this.floatBtn?.addEventListener('click', () => this.openDrawer());
-    this.btnCloseDrawer?.addEventListener('click', () => this.closeDrawer());
-    this.backdrop?.addEventListener('click', () => this.closeDrawer());
-
-    // 4. 事件委托处理树节点点击（展开折叠、定位、筛选）
+    // 1. 点击节点项切换分块
     this.container?.addEventListener('click', (e) => {
-      const filterBtn = e.target.closest('.tree-filter-btn');
-      if (filterBtn) {
-        e.stopPropagation();
-        const nodeId = filterBtn.dataset.nodeId;
-        const node = this.findNodeById(nodeId);
-        if (node) {
-          this.onFilter?.(node);
-          this.closeDrawer();
-        }
-        return;
-      }
+      const item = e.target.closest('.timeline-axis-item');
+      if (!item) return;
 
-      const row = e.target.closest('.tree-node-row');
-      if (row) {
-        const nodeId = row.dataset.nodeId;
-        const node = this.findNodeById(nodeId);
-        if (!node) return;
+      const isChevronClick = Boolean(e.target.closest('.axis-chevron'));
+      const { type, key } = item.dataset;
 
-        // 若点击的是箭头区域或具有子节点，切换展开/折叠状态
-        const hasChildren = Array.isArray(node.children) && node.children.length > 0;
-        if (hasChildren) {
-          if (this.expandedNodeIds.has(node.id)) {
-            this.expandedNodeIds.delete(node.id);
+      if (type === 'year') {
+        const yearNode = this.treeData.find((y) => y.key === key);
+        if (!yearNode) return;
+
+        if (isChevronClick) {
+          if (this.expandedYears.has(key)) {
+            this.expandedYears.delete(key);
           } else {
-            this.expandedNodeIds.add(node.id);
+            this.expandedYears.add(key);
           }
-          this.renderTree();
+          this.render();
+          return;
         }
 
-        // 导航至该节点对应首个卡片
-        if (node.firstGroupId) {
-          this.onNavigate?.(node.firstGroupId, node);
-          this.closeDrawer();
+        // 点击年份行：切换至该年份下的首个周分块
+        this.expandedYears.add(key);
+        const targetChunkIndex = this.chunks.findIndex((c) => c.yearKey === key);
+        if (targetChunkIndex !== -1) {
+          this.selectChunk(targetChunkIndex);
+        }
+      } else if (type === 'month') {
+        if (isChevronClick) {
+          if (this.expandedMonths.has(key)) {
+            this.expandedMonths.delete(key);
+          } else {
+            this.expandedMonths.add(key);
+          }
+          this.render();
+          return;
+        }
+
+        // 点击月份行：切换至该月份下的首个周分块
+        this.expandedMonths.add(key);
+        const targetChunkIndex = this.chunks.findIndex((c) => c.monthKey === key);
+        if (targetChunkIndex !== -1) {
+          this.selectChunk(targetChunkIndex);
+        }
+      } else if (type === 'week') {
+        const targetChunkIndex = this.chunks.findIndex((c) => c.key === key);
+        if (targetChunkIndex !== -1) {
+          this.selectChunk(targetChunkIndex);
         }
       }
     });
-  }
 
-  openDrawer() {
-    this.aside?.classList.add('drawer-open');
-    this.backdrop?.classList.remove('hidden');
-  }
+    // 2. 在时间轴滚动条区域滚动滚轮 -> 滚动切换时间分块
+    this.track?.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        const now = Date.now();
+        if (now - this.wheelThrottleTimer < 140) return;
+        this.wheelThrottleTimer = now;
 
-  closeDrawer() {
-    this.aside?.classList.remove('drawer-open');
-    this.backdrop?.classList.add('hidden');
+        if (e.deltaY > 0) {
+          // 向下滚 -> 切换至更早时段 (older chunk)
+          this.stepNextChunk();
+        } else if (e.deltaY < 0) {
+          // 向上滚 -> 切换至更新时段 (newer chunk)
+          this.stepPrevChunk();
+        }
+      },
+      { passive: false }
+    );
+
+    // 3. 拖拽时间线游标滑块 (Scrubber Dragging)
+    if (this.thumb && this.track) {
+      this.thumb.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.isDragging = true;
+        this.thumb.classList.add('is-dragging');
+
+        const onMouseMove = (moveEvt) => {
+          if (!this.isDragging || this.chunks.length === 0) return;
+          moveEvt.preventDefault();
+          const trackRect = this.track.getBoundingClientRect();
+          const relativeY = Math.max(0, Math.min(moveEvt.clientY - trackRect.top, trackRect.height));
+          const ratio = relativeY / (trackRect.height || 1);
+          const targetIndex = Math.min(
+            this.chunks.length - 1,
+            Math.max(0, Math.round(ratio * (this.chunks.length - 1)))
+          );
+          if (targetIndex !== this.activeChunkIndex) {
+            this.selectChunk(targetIndex);
+          }
+        };
+
+        const onMouseUp = () => {
+          if (this.isDragging) {
+            this.isDragging = false;
+            this.thumb.classList.remove('is-dragging');
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+          }
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+      });
+
+      // 点击轨道空白处跳到对应比例分块
+      this.track.addEventListener('click', (e) => {
+        if (e.target.closest('.timeline-axis-item') || e.target.closest('.timeline-scrubber-thumb')) {
+          return;
+        }
+        if (this.chunks.length === 0) return;
+        const trackRect = this.track.getBoundingClientRect();
+        const relativeY = Math.max(0, Math.min(e.clientY - trackRect.top, trackRect.height));
+        const ratio = relativeY / (trackRect.height || 1);
+        const targetIndex = Math.min(
+          this.chunks.length - 1,
+          Math.max(0, Math.round(ratio * (this.chunks.length - 1)))
+        );
+        this.selectChunk(targetIndex);
+      });
+    }
   }
 
   /**
-   * 刷新时间树数据
-   * @param {Array<Object>} allGroups - 全量收纳组数据
-   * @param {Array<Object>} filteredGroups - 当前筛选后的组数据
-   * @param {string} [searchQuery=''] - 搜索关键字
-   * @param {Object} [activeFilter=null] - 当前时间区间过滤器
+   * 刷新全量数据
+   * @param {Array<Object>} allGroups - 全量收纳组
    */
-  update(allGroups, filteredGroups, searchQuery = '', activeFilter = null) {
+  update(allGroups) {
     this.rawGroups = allGroups || [];
-    this.activeFilter = activeFilter;
     this.treeData = TimeTreeBuilder.buildTree(this.rawGroups);
+    this.chunks = TimeTreeBuilder.buildFlatChunks(this.rawGroups);
 
-    // 1. 更新星标置顶入口状态
-    const starredGroups = this.rawGroups.filter((g) => g.starred);
-    if (this.starredNode && this.starredCount) {
-      if (starredGroups.length > 0) {
-        this.starredNode.classList.remove('hidden');
-        this.starredCount.textContent = starredGroups.length;
-      } else {
-        this.starredNode.classList.add('hidden');
-      }
+    // 默认定位到最新的一周分块 (index 0)
+    if (this.activeChunkIndex === undefined || this.activeChunkIndex === null || this.activeChunkIndex >= this.chunks.length) {
+      this.activeChunkIndex = this.chunks.length > 0 ? 0 : -1;
     }
 
-    // 2. 若初次构建，默认自动展开最近的第 1 年及第 1 月
-    if (this.expandedNodeIds.size === 0 && this.treeData.length > 0) {
-      const topYear = this.treeData[0];
-      this.expandedNodeIds.add(topYear.id);
-      if (topYear.children && topYear.children.length > 0) {
-        this.expandedNodeIds.add(topYear.children[0].id);
-      }
+    if (this.activeChunkIndex >= 0 && this.chunks[this.activeChunkIndex]) {
+      const cur = this.chunks[this.activeChunkIndex];
+      this.expandedYears.add(cur.yearKey);
+      this.expandedMonths.add(cur.monthKey);
     }
 
-    this.renderTree();
+    this.render();
+    this.syncThumbPosition();
   }
 
-  expandAllNodes() {
-    const traverse = (nodes) => {
-      for (const n of nodes) {
-        if (n.children && n.children.length > 0) {
-          this.expandedNodeIds.add(n.id);
-          traverse(n.children);
-        }
-      }
-    };
-    traverse(this.treeData || []);
+  /**
+   * 选择并加载指定索引的时间分块
+   * @param {number} index - 分块索引 (0 为最新，-1 为全部)
+   * @param {boolean} [triggerCallback=true]
+   */
+  selectChunk(index, triggerCallback = true) {
+    if (index < -1) index = -1;
+    if (index >= this.chunks.length) index = this.chunks.length - 1;
+
+    this.activeChunkIndex = index;
+
+    if (index >= 0 && this.chunks[index]) {
+      const cur = this.chunks[index];
+      this.expandedYears.add(cur.yearKey);
+      this.expandedMonths.add(cur.monthKey);
+    }
+
+    this.render();
+    this.syncThumbPosition();
+
+    if (triggerCallback) {
+      this.onSelectChunk?.(this.getCurrentChunk());
+    }
   }
 
-  findNodeById(id) {
-    const traverse = (nodes) => {
-      for (const n of nodes) {
-        if (n.id === id) return n;
-        if (n.children) {
-          const found = traverse(n.children);
-          if (found) return found;
-        }
-      }
+  getCurrentChunk() {
+    if (this.activeChunkIndex === -1 || !this.chunks[this.activeChunkIndex]) {
       return null;
-    };
-    return traverse(this.treeData || []);
+    }
+    return this.chunks[this.activeChunkIndex];
   }
 
-  renderTree() {
-    if (!this.container) return;
+  /**
+   * 步进至下一个更早的时间分块
+   */
+  stepNextChunk() {
+    if (this.chunks.length === 0) return;
+    if (this.activeChunkIndex === -1) {
+      this.selectChunk(0);
+      return;
+    }
+    if (this.activeChunkIndex < this.chunks.length - 1) {
+      this.selectChunk(this.activeChunkIndex + 1);
+    }
+  }
 
-    if (!this.treeData || this.treeData.length === 0) {
-      this.container.innerHTML = `
-        <div class="tree-empty-hint">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-          </svg>
-          <span>暂无收纳历史时间记录</span>
-        </div>
-      `;
+  /**
+   * 步进至上一个更新的时间分块
+   */
+  stepPrevChunk() {
+    if (this.chunks.length === 0) return;
+    if (this.activeChunkIndex > 0) {
+      this.selectChunk(this.activeChunkIndex - 1);
+    }
+  }
+
+  /**
+   * 同步游标在轴线上的精确纵向位置
+   */
+  syncThumbPosition() {
+    if (!this.track || !this.thumb) return;
+
+    if (this.chunks.length === 0) {
+      this.thumb.style.transform = 'translateY(6px)';
+      if (this.thumbText) this.thumbText.textContent = '--';
       return;
     }
 
-    const renderNodeHtml = (node, level = 0) => {
-      const hasChildren = Array.isArray(node.children) && node.children.length > 0;
-      const isExpanded = this.expandedNodeIds.has(node.id);
-      const isActive = this.activeFilter && this.activeFilter.key === node.key;
+    if (this.activeChunkIndex === -1) {
+      this.thumb.style.transform = 'translateY(6px)';
+      if (this.thumbText) this.thumbText.textContent = '全部';
+      return;
+    }
 
-      let arrowHtml = '';
-      if (hasChildren) {
-        arrowHtml = `
-          <svg class="tree-arrow ${isExpanded ? 'expanded' : ''}" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="9 18 15 12 9 6"></polyline>
-          </svg>
-        `;
-      } else {
-        arrowHtml = `<span class="tree-arrow empty"></span>`;
+    const curChunk = this.chunks[this.activeChunkIndex];
+    if (this.thumbText) {
+      this.thumbText.textContent = curChunk.shortTitle || curChunk.title;
+    }
+
+    const activeItem = this.container?.querySelector(`.timeline-axis-item[data-key="${CSS.escape(curChunk.key)}"]`);
+    if (activeItem) {
+      const itemTop = activeItem.offsetTop + (activeItem.offsetHeight / 2) - 6;
+      this.thumb.style.transform = `translateY(${Math.max(0, itemTop)}px)`;
+    } else {
+      const trackHeight = this.track.clientHeight || 1;
+      const ratio = this.chunks.length > 1 ? this.activeChunkIndex / (this.chunks.length - 1) : 0;
+      const topPos = Math.max(0, Math.min(ratio * (trackHeight - 16), trackHeight - 16));
+      this.thumb.style.transform = `translateY(${topPos}px)`;
+    }
+
+    // 自动展示气泡 1.5s 后渐隐
+    this.thumb.classList.add('show-bubble');
+    clearTimeout(this.bubbleHideTimer);
+    this.bubbleHideTimer = setTimeout(() => {
+      if (!this.isDragging) {
+        this.thumb.classList.remove('show-bubble');
       }
+    }, 1500);
+  }
 
-      let childrenHtml = '';
-      if (hasChildren) {
-        childrenHtml = `
-          <div class="tree-node-children ${isExpanded ? '' : 'collapsed'}" role="group">
-            ${node.children.map((child) => renderNodeHtml(child, level + 1)).join('')}
+  render() {
+    if (!this.container) return;
+
+    if (!this.treeData || this.treeData.length === 0) {
+      this.container.innerHTML = '';
+      return;
+    }
+
+    const activeChunk = this.getCurrentChunk();
+    const flatItems = [];
+
+    for (const yearNode of this.treeData) {
+      const isYearExpanded = this.expandedYears.has(yearNode.key);
+      const hasMonths = Array.isArray(yearNode.children) && yearNode.children.length > 0;
+      const isYearActive = activeChunk?.yearKey === yearNode.key;
+
+      flatItems.push({
+        type: 'year',
+        key: yearNode.key,
+        label: `${yearNode.key}年`,
+        badge: yearNode.groupCount,
+        isActiveChunk: isYearActive && !activeChunk?.monthKey,
+        hasChildren: hasMonths,
+        isExpanded: isYearExpanded
+      });
+
+      if (isYearExpanded && hasMonths) {
+        for (const monthNode of yearNode.children) {
+          const isMonthExpanded = this.expandedMonths.has(monthNode.key);
+          const hasWeeks = Array.isArray(monthNode.children) && monthNode.children.length > 0;
+          const monthNum = parseInt(monthNode.key.split('-')[1], 10);
+          const isMonthActive = activeChunk?.monthKey === monthNode.key;
+
+          flatItems.push({
+            type: 'month',
+            key: monthNode.key,
+            label: `${monthNum}月`,
+            badge: monthNode.groupCount,
+            isActiveChunk: isMonthActive && !activeChunk?.key,
+            hasChildren: hasWeeks,
+            isExpanded: isMonthExpanded
+          });
+
+          if (isMonthExpanded && hasWeeks) {
+            for (const weekNode of monthNode.children) {
+              const weekNum = weekNode.key.split('-W')[1];
+              const isWeekActive = activeChunk?.key === weekNode.key;
+
+              flatItems.push({
+                type: 'week',
+                key: weekNode.key,
+                label: `第${weekNum}周`,
+                badge: weekNode.groupCount,
+                isActiveChunk: isWeekActive,
+                hasChildren: false,
+                isExpanded: false
+              });
+            }
+          }
+        }
+      }
+    }
+
+    const html = flatItems
+      .map((item) => {
+        let circleHtml = '';
+        if (item.type === 'year') {
+          circleHtml = `<div class="axis-circle circle-year"><div class="circle-core"></div></div>`;
+        } else if (item.type === 'month') {
+          circleHtml = `<div class="axis-circle circle-month"></div>`;
+        } else {
+          circleHtml = `<div class="axis-circle circle-week"></div>`;
+        }
+
+        let chevronHtml = '';
+        if (item.hasChildren) {
+          chevronHtml = `<span class="axis-chevron ${item.isExpanded ? 'is-expanded' : ''}">▶</span>`;
+        }
+
+        return `
+          <div class="timeline-axis-item axis-item-${item.type} ${item.isActiveChunk ? 'is-active-chunk' : ''}"
+               data-type="${item.type}"
+               data-key="${item.key}"
+               title="点击切换分块：${item.label}">
+            ${circleHtml}
+            <div class="axis-main">
+              <span class="axis-label">${item.label}</span>
+              ${chevronHtml}
+            </div>
+            <span class="axis-badge">${item.badge}</span>
           </div>
         `;
-      }
+      })
+      .join('');
 
-      return `
-        <div class="tree-node tree-level-${level}" role="treeitem" aria-expanded="${hasChildren ? isExpanded : 'undefined'}">
-          <div class="tree-node-row ${isActive ? 'is-active' : ''}" data-node-id="${node.id}" title="${node.title} · 共 ${node.groupCount} 组 (${node.tabCount} 个标签)">
-            <div class="tree-node-main">
-              ${arrowHtml}
-              <span class="tree-node-title">${node.title}</span>
-            </div>
-            <div class="tree-node-actions">
-              <button class="tree-filter-btn" data-node-id="${node.id}" title="仅查看此时间段 (${node.title})" type="button" aria-label="仅筛选查看此时间段">
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
-                </svg>
-              </button>
-              <span class="tree-badge">${node.groupCount}组</span>
-            </div>
-          </div>
-          ${childrenHtml}
-        </div>
-      `;
-    };
-
-    this.container.innerHTML = this.treeData.map((node) => renderNodeHtml(node, 0)).join('');
+    this.container.innerHTML = html;
   }
 }
 
@@ -499,32 +717,31 @@ class StashTabComponent {
     this.contextMenu = document.getElementById('stashContextMenu');
     this.activeContextItem = null;
 
-    // 时间导航目录与筛选相关 DOM
+    // 时间筛选横幅与单线时间滚动条相关 DOM
     this.filterBanner = document.getElementById('stashTimeFilterBanner');
     this.filterText = document.getElementById('stashTimeFilterText');
+    this.btnNextChunk = document.getElementById('btnStashNextChunk');
+    this.btnPrevChunk = document.getElementById('btnStashPrevChunk');
     this.btnClearTimeFilter = document.getElementById('btnStashClearTimeFilter');
-    this.timelineAside = document.getElementById('stashTimelineAside');
-    this.timelineTreeContainer = document.getElementById('stashTimeTree');
-    this.timelineFloatBtn = document.getElementById('btnStashTimelineFloat');
-    this.timelineDrawerBackdrop = document.getElementById('stashTimelineDrawerBackdrop');
-    this.timelineStarredNode = document.getElementById('timelineStarredNode');
-    this.timelineStarredCount = document.getElementById('timelineStarredCount');
-    this.btnToggleAllTimeTree = document.getElementById('btnToggleAllTimeTree');
-    this.btnCloseTimelineDrawer = document.getElementById('btnCloseTimelineDrawer');
+    this.btnClearTimeFilterText = document.getElementById('btnStashClearTimeFilterText');
+    this.timelineScrollbarTrack = document.getElementById('timelineScrollbar');
+    this.timelineNodesContainer = document.getElementById('timelineNodesContainer');
+    this.timelineScrubberThumb = document.getElementById('timelineScrubberThumb');
+    this.timelineThumbText = document.getElementById('timelineThumbText');
 
-    // 实例化时间目录导航子组件
-    this.timeNavigator = new TimeNavigatorComponent({
-      container: this.timelineTreeContainer,
-      aside: this.timelineAside,
-      floatBtn: this.timelineFloatBtn,
-      backdrop: this.timelineDrawerBackdrop,
-      starredNode: this.timelineStarredNode,
-      starredCount: this.timelineStarredCount,
-      btnToggleAll: this.btnToggleAllTimeTree,
-      btnCloseDrawer: this.btnCloseTimelineDrawer,
-      onNavigate: (groupId, node) => this.scrollToGroup(groupId),
-      onFilter: (node) => this.setTimeRangeFilter(node),
-      onNavigateStarred: () => this.scrollToStarred()
+    // 实例化单一直线时间轴分块滚动条组件
+    this.timelineScrollbar = new SingleLineTimelineScrollbar({
+      container: this.timelineNodesContainer,
+      track: this.timelineScrollbarTrack,
+      thumb: this.timelineScrubberThumb,
+      thumbText: this.timelineThumbText,
+      onSelectChunk: (node) => {
+        if (node) {
+          this.setTimeRangeFilter(node);
+        } else {
+          this.clearTimeRangeFilter();
+        }
+      }
     });
 
     this.init();
@@ -533,8 +750,70 @@ class StashTabComponent {
   init() {
     this.bindEvents();
     this.initScrollObserver();
+    this.initScrollSpy();
     this.initStorageListener();
     this.loadData();
+  }
+
+  /**
+   * 初始化滚动监听（ScrollSpy），实时驱动右侧时间线活动节点高亮
+   */
+  initScrollSpy() {
+    if (!this.mainColumn) return;
+    let ticking = false;
+    this.mainColumn.addEventListener(
+      'scroll',
+      () => {
+        if (!ticking) {
+          window.requestAnimationFrame(() => {
+            this.checkScrollSpy();
+            ticking = false;
+          });
+          ticking = true;
+        }
+      },
+      { passive: true }
+    );
+  }
+
+  /**
+   * 检查当前位于视口顶部的收纳组并同步高亮时间线对应节点与游标
+   */
+  checkScrollSpy() {
+    if (!this.filteredGroups || this.filteredGroups.length === 0 || !this.mainColumn) return;
+    const maxScroll = this.mainColumn.scrollHeight - this.mainColumn.clientHeight;
+    const ratio = maxScroll > 0 ? this.mainColumn.scrollTop / maxScroll : 0;
+
+    const containerRect = this.mainColumn.getBoundingClientRect();
+    const cards = this.container.querySelectorAll('.stash-group-card');
+    if (cards.length === 0) {
+      this.timelineScrollbar?.syncScrollProgress(ratio, null, '');
+      return;
+    }
+
+    let topCard = null;
+    for (const card of cards) {
+      const rect = card.getBoundingClientRect();
+      // 距离滚动容器顶部 20px 以上，视为主视口顶部活动卡片
+      if (rect.bottom >= containerRect.top + 20) {
+        topCard = card;
+        break;
+      }
+    }
+    if (!topCard && cards.length > 0) {
+      topCard = cards[0];
+    }
+    if (topCard) {
+      const groupId = topCard.dataset.groupId;
+      const group = this.groups.find((g) => g.id === groupId);
+      let timeLabel = '';
+      if (group && group.createdAt) {
+        const d = new Date(group.createdAt);
+        const pad = (n) => String(n).padStart(2, '0');
+        timeLabel = `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+      this.timelineScrollbar?.syncScrollProgress(ratio, groupId, timeLabel);
+    }
   }
 
   /**
@@ -624,10 +903,49 @@ class StashTabComponent {
       this.btnStashNow.disabled = false;
     });
 
-    // 3. 清除时间区间筛选按钮
-    this.btnClearTimeFilter?.addEventListener('click', () => {
-      this.clearTimeRangeFilter();
+    // 3. 较新/更早分块切换与全部模式切换
+    this.btnNextChunk?.addEventListener('click', () => {
+      this.timelineScrollbar.stepPrevChunk();
     });
+
+    this.btnPrevChunk?.addEventListener('click', () => {
+      this.timelineScrollbar.stepNextChunk();
+    });
+
+    this.btnClearTimeFilter?.addEventListener('click', () => {
+      if (this.timelineScrollbar.activeChunkIndex === -1) {
+        this.timelineScrollbar.selectChunk(0);
+      } else {
+        this.timelineScrollbar.selectChunk(-1);
+      }
+    });
+
+    // 主列表边界滚动（触顶或触底继续滚动）自动联动切换时段
+    let lastBoundaryScrollTime = 0;
+    this.mainColumn?.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.timelineScrollbar.activeChunkIndex === -1) return;
+        const now = Date.now();
+        if (now - lastBoundaryScrollTime < 450) return;
+
+        const maxScroll = this.mainColumn.scrollHeight - this.mainColumn.clientHeight;
+        if (this.mainColumn.scrollTop <= 0 && e.deltaY < -30) {
+          if (this.timelineScrollbar.activeChunkIndex > 0) {
+            lastBoundaryScrollTime = now;
+            this.timelineScrollbar.stepPrevChunk();
+            Toast.show(`已切换至：${this.timelineScrollbar.getCurrentChunk().title}`);
+          }
+        } else if (this.mainColumn.scrollTop >= maxScroll - 5 && e.deltaY > 30) {
+          if (this.timelineScrollbar.activeChunkIndex < this.timelineScrollbar.chunks.length - 1) {
+            lastBoundaryScrollTime = now;
+            this.timelineScrollbar.stepNextChunk();
+            Toast.show(`已切换至：${this.timelineScrollbar.getCurrentChunk().title}`);
+          }
+        }
+      },
+      { passive: true }
+    );
 
     // 4. 全局统一左键事件委托
     this.container?.addEventListener('click', (e) => this.handleContainerClick(e));
@@ -665,17 +983,17 @@ class StashTabComponent {
 
     // 8. 监听右键自定义二级菜单
     this.container?.addEventListener('contextmenu', (e) => {
-      const row = e.target.closest('.stash-item-row');
-      if (row) {
+      const itemRow = e.target.closest('.stash-tab-item');
+      if (itemRow) {
         e.preventDefault();
-        const { groupId, itemId } = row.dataset;
-        const link = row.querySelector('.tab-link');
-        const url = link ? link.getAttribute('href') : '';
-        const title = link ? link.textContent.trim() : '';
+        const card = itemRow.closest('.stash-group-card');
+        const groupId = card?.dataset.groupId;
+        const itemId = itemRow.dataset.itemId;
+        const link = itemRow.querySelector('.tab-link');
+        const url = link?.href || '';
+        const title = itemRow.querySelector('.tab-title')?.textContent || '';
 
-        this.showContextMenu({
-          x: e.clientX,
-          y: e.clientY,
+        this.showContextMenu(e.clientX, e.clientY, {
           groupId,
           itemId,
           url,
@@ -731,6 +1049,20 @@ class StashTabComponent {
     const res = await MessageBus.sendToBackground(ActionTypes.GET_STASH_GROUPS);
     if (res.success && Array.isArray(res.data)) {
       this.groups = res.data;
+      this.timelineScrollbar.update(this.groups);
+
+      // 默认只加载最新的一周分块
+      if (!this.activeTimeRangeFilter) {
+        const initialChunk = this.timelineScrollbar.getCurrentChunk();
+        if (initialChunk) {
+          this.activeTimeRangeFilter = {
+            type: 'week',
+            key: initialChunk.key,
+            title: initialChunk.title,
+            groupIds: initialChunk.groupIds
+          };
+        }
+      }
       this.updateBadge();
       this.filterAndRender();
     }
@@ -764,15 +1096,31 @@ class StashTabComponent {
       })
       .filter(Boolean);
 
-    // 2. 更新时间区间提示横幅
+    // 2. 更新时间分块状态提示横幅与切换控件
+    const totalTabs = this.filteredGroups.reduce((sum, g) => sum + (g.tabs?.length || 0), 0);
     if (this.activeTimeRangeFilter) {
-      const totalTabs = this.filteredGroups.reduce((sum, g) => sum + (g.tabs?.length || 0), 0);
       if (this.filterText) {
-        this.filterText.textContent = `当前仅查看：${this.activeTimeRangeFilter.title}（共 ${this.filteredGroups.length} 组 · ${totalTabs} 个标签页）`;
+        this.filterText.textContent = `当前时段：${this.activeTimeRangeFilter.title}（共 ${this.filteredGroups.length} 组 · ${totalTabs} 个标签页）`;
       }
-      this.filterBanner?.classList.remove('hidden');
+      if (this.btnClearTimeFilterText) {
+        this.btnClearTimeFilterText.textContent = '查看全部';
+      }
+      if (this.btnNextChunk) {
+        this.btnNextChunk.disabled = this.timelineScrollbar.activeChunkIndex <= 0;
+      }
+      if (this.btnPrevChunk) {
+        this.btnPrevChunk.disabled =
+          this.timelineScrollbar.activeChunkIndex >= this.timelineScrollbar.chunks.length - 1;
+      }
     } else {
-      this.filterBanner?.classList.add('hidden');
+      if (this.filterText) {
+        this.filterText.textContent = `浏览范围：全部历史记录（共 ${this.groups.length} 组 · ${totalTabs} 个标签页）`;
+      }
+      if (this.btnClearTimeFilterText) {
+        this.btnClearTimeFilterText.textContent = '按周分块查看';
+      }
+      if (this.btnNextChunk) this.btnNextChunk.disabled = true;
+      if (this.btnPrevChunk) this.btnPrevChunk.disabled = true;
     }
 
     // 3. 渲染主列表内容
@@ -787,9 +1135,6 @@ class StashTabComponent {
       this.emptyState.style.display = 'none';
       this.renderNextBatch();
     }
-
-    // 4. 同步更新右侧时间目录导航树
-    this.timeNavigator?.update(this.groups, this.filteredGroups, query, this.activeTimeRangeFilter);
   }
 
   /**
@@ -839,7 +1184,7 @@ class StashTabComponent {
   }
 
   /**
-   * 设置时间区间筛选并切换视图
+   * 设置时间分块加载并切换视图
    * @param {Object} node
    */
   setTimeRangeFilter(node) {
@@ -856,11 +1201,11 @@ class StashTabComponent {
     } else {
       this.container.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-    Toast.show(`已过滤显示：${node.title}`);
+    Toast.show(`已分块加载：${node.title}`);
   }
 
   /**
-   * 清除时间区间筛选并恢复全量视图
+   * 清除时间分块筛选并恢复全量收纳
    */
   clearTimeRangeFilter() {
     this.activeTimeRangeFilter = null;

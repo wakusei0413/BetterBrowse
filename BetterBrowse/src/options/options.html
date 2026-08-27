@@ -110,22 +110,26 @@
           </div>
         </div>
 
-        <!-- 时间区间筛选状态提示横幅 -->
-        <div id="stashTimeFilterBanner" class="time-filter-banner hidden">
+        <!-- 时间分块状态提示横幅与快捷切块控件 -->
+        <div id="stashTimeFilterBanner" class="time-filter-banner">
           <div class="time-filter-info">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="10"></circle>
               <polyline points="12 6 12 12 16 14"></polyline>
             </svg>
-            <span id="stashTimeFilterText">正在查看指定时间段：2026年08月</span>
+            <span id="stashTimeFilterText">正在分块浏览：最新一周</span>
           </div>
-          <button id="btnStashClearTimeFilter" class="btn btn-secondary btn-sm" type="button">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-            <span>清除筛选并查看全部</span>
-          </button>
+          <div class="time-filter-actions">
+            <button id="btnStashNextChunk" class="btn btn-secondary btn-sm" type="button" title="切换到更新的时段">
+              <span>▲ 较新时段</span>
+            </button>
+            <button id="btnStashPrevChunk" class="btn btn-secondary btn-sm" type="button" title="切换到更早的时段">
+              <span>▼ 更早时段</span>
+            </button>
+            <button id="btnStashClearTimeFilter" class="btn btn-secondary btn-sm" type="button">
+              <span id="btnStashClearTimeFilterText">查看全部</span>
+            </button>
+          </div>
         </div>
 
         <!-- 左右分栏容器 -->
@@ -151,50 +155,20 @@
             </div>
           </div>
 
-          <!-- 右侧：时间导航目录吸顶面板 -->
-          <aside id="stashTimelineAside" class="stash-timeline-aside" aria-label="收纳时间导航目录">
-            <div class="timeline-card">
-              <div class="timeline-header">
-                <div class="timeline-title-wrap">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="timeline-icon" aria-hidden="true">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <polyline points="12 6 12 12 16 14"></polyline>
-                  </svg>
-                  <h3 class="timeline-title">时间索引目录</h3>
-                </div>
-                <div class="timeline-header-actions">
-                  <button id="btnToggleAllTimeTree" class="timeline-action-icon-btn" title="全部展开 / 全部收起" type="button" aria-label="全部展开或收起目录">
-                    <svg class="icon-toggle-expand" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="7 13 12 18 17 13"></polyline>
-                      <polyline points="7 6 12 11 17 6"></polyline>
-                    </svg>
-                  </button>
-                  <button id="btnCloseTimelineDrawer" class="timeline-action-icon-btn timeline-drawer-close" title="关闭目录" type="button" aria-label="关闭目录">
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <line x1="18" y1="6" x2="6" y2="18"></line>
-                      <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                  </button>
-                </div>
-              </div>
-
-              <!-- 星标置顶快捷入口 -->
-              <div id="timelineStarredNode" class="timeline-starred-entry hidden" role="button" tabindex="0" title="跳转至置顶星标组">
-                <div class="timeline-starred-main">
-                  <svg class="star-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="none" aria-hidden="true">
-                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
-                  </svg>
-                  <span class="timeline-starred-label">星标置顶标签组</span>
-                </div>
-                <span id="timelineStarredCount" class="tree-badge">0</span>
-              </div>
-
-              <!-- 时间树容器 (年 > 月 > 周 > 日) -->
-              <div id="stashTimeTree" class="stash-time-tree" role="tree" aria-label="收纳时间目录树">
-                <!-- 动态渲染时间树节点 -->
+          <!-- 右侧：高颜值单线时间轴滚动条 (分级收纳、直观日期、可拖拽游标) -->
+          <div id="timelineScrollbar" class="timeline-scrollbar-track" aria-label="时间线滚动条">
+            <div class="timeline-axis-line"></div>
+            <!-- 时间游标滑块 (在轴线上滑动) -->
+            <div id="timelineScrubberThumb" class="timeline-scrubber-thumb" title="按住拖拽快速穿梭">
+              <div class="thumb-cursor-dot"></div>
+              <div class="thumb-bubble" id="timelineThumbBubble">
+                <span id="timelineThumbText">今天</span>
               </div>
             </div>
-          </aside>
+
+            <!-- 纯自然时间树（年 > 月 > 周）单轴节点流容器 -->
+            <div id="timelineNodesContainer" class="timeline-nodes-axis-container"></div>
+          </div>
         </div>
       </section>
 
