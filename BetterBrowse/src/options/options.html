@@ -69,6 +69,27 @@
           </svg>
           <span class="nav-label">数据备份与迁移</span>
         </button>
+
+        <button class="nav-item" data-tab="sync" type="button" id="navTabSync" role="tab" aria-selected="false" aria-controls="tab-sync" tabindex="-1">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 7h-9"></path>
+            <path d="M14 17H5"></path>
+            <circle cx="17" cy="17" r="3"></circle>
+            <circle cx="7" cy="7" r="3"></circle>
+          </svg>
+          <span class="nav-label">云端同步</span>
+        </button>
+
+        <button class="nav-item" data-tab="ai-bridge" type="button" id="navTabAiBridge" role="tab" aria-selected="false" aria-controls="tab-ai-bridge" tabindex="-1">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="7" width="16" height="10" rx="2"></rect>
+            <path d="M12 3v4"></path>
+            <circle cx="9" cy="12" r="1"></circle>
+            <circle cx="15" cy="12" r="1"></circle>
+            <path d="M9 21h6"></path>
+          </svg>
+          <span class="nav-label">AI 桥接</span>
+        </button>
       </nav>
 
       <div class="sidebar-footer">
@@ -157,9 +178,8 @@
 
           <!-- 右侧：高颜值单线时间轴滚动条 (分级收纳、直观日期、可拖拽游标) -->
           <div id="timelineScrollbar" class="timeline-scrollbar-track" aria-label="时间线滚动条">
-            <div class="timeline-axis-line"></div>
-            <!-- 时间游标滑块 (在轴线上滑动) -->
-            <div id="timelineScrubberThumb" class="timeline-scrubber-thumb" title="按住拖拽快速穿梭">
+            <!-- 时间游标滑块 (在轴线上滑动；轴线由节点容器的 ::before 伪元素贯通绘制) -->
+            <div id="timelineScrubberThumb" class="timeline-scrubber-thumb">
               <div class="thumb-cursor-dot"></div>
               <div class="thumb-bubble" id="timelineThumbBubble">
                 <span id="timelineThumbText">今天</span>
@@ -751,7 +771,7 @@
                   </button>
                 </div>
                 <div class="onetab-guide-footer">
-                  ④ 复制完成后，粘贴到上方文本框点击「一键智能解析导入」，时间树目录即可精准恢复所有历史年份与周次！
+                  4. 复制完成后，粘贴到上方文本框点击「一键智能解析导入」，时间树目录即可精准恢复所有历史年份与周次！
                 </div>
               </div>
             </div>
@@ -809,6 +829,188 @@
           </div>
         </div>
       </section>
+
+      <!-- Tab 6: 云端同步 (WebDAV) -->
+      <section id="tab-sync" class="tab-panel" role="tabpanel" aria-labelledby="navTabSync" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">云端同步</h2>
+            <p class="panel-desc">通过你自建的 WebDAV 服务器在多台设备间双向同步收纳数据、配置与规则（阶段二 · 实验特性）。同品牌浏览器账号只镜像偏好，不同步收纳列表。</p>
+          </div>
+        </div>
+
+        <div class="backup-grid">
+          <div class="tip-box">
+            <span class="tip-icon">⚠️</span>
+            <span>隐私提示：启用后将把<strong>完整 URL 列表</strong>上传到你的 WebDAV 服务器。请仅使用你信任的服务器（必须 HTTPS）。WebDAV 登录密码只保存在本机，绝不上传。</span>
+          </div>
+
+          <!-- 0. 浏览器账号偏好 -->
+          <div class="card">
+            <h3 class="card-title">浏览器账号偏好同步</h3>
+            <p class="card-desc">已登录 Chrome 或 Edge 账号的<strong>同品牌</strong>设备会同步阈值、规则开关、收纳箱设置和 WebDAV 地址。收纳列表、域名跳转表、账号和密码不会进入浏览器账号。跨 Chrome / Edge 仍靠 WebDAV。</p>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="chkAccountConfigSync">随浏览器账号同步偏好</label>
+                <span class="setting-hint">关闭后不再把偏好写入 chrome.storage.sync；本机与 WebDAV 不受影响</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkAccountConfigSync" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 1. 连接设置 -->
+          <div class="card">
+            <h3 class="card-title">1. 连接设置</h3>
+            <p class="card-desc">填写 WebDAV 服务器地址与账号。保存后进行连接与 ETag 条件写入探测，能力不足的服务器将拒绝启用自动同步。</p>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="webdavServerUrl">服务器地址</label>
+                <span class="setting-hint">必须以 https:// 开头，例如 https://dav.example.com/dav/</span>
+              </div>
+              <input id="webdavServerUrl" class="text-input" type="url" placeholder="https://dav.example.com/dav/" aria-label="WebDAV 服务器地址">
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="webdavUsername">账号</label>
+                <span class="setting-hint">WebDAV 用户名（仅保存在本机）</span>
+              </div>
+              <input id="webdavUsername" class="text-input" type="text" autocomplete="off" aria-label="WebDAV 账号">
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="webdavPassword">密码</label>
+                <span class="setting-hint">WebDAV 密码（仅保存在本机 IndexedDB，不进入同步与导出）</span>
+              </div>
+              <input id="webdavPassword" class="text-input" type="password" autocomplete="new-password" aria-label="WebDAV 密码">
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="chkWebdavEnabled">启用云端同步</label>
+                <span class="setting-hint">开启后本机变更将自动上传，并定期拉取其他设备的变更</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkWebdavEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="chkWebdavAutoSync">自动同步</label>
+                <span class="setting-hint">变更防抖上传 + 启动/联网/定时拉取；关闭后仅手动同步</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkWebdavAutoSync" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="btn-group">
+              <button id="btnWebdavSave" class="btn btn-primary" type="button">保存凭据</button>
+              <button id="btnWebdavTest" class="btn btn-secondary" type="button">测试连接</button>
+              <button id="btnSyncNow" class="btn btn-secondary" type="button">立即同步</button>
+            </div>
+            <div class="sync-status-row" aria-live="polite">
+              <span class="sync-status-dot" id="syncStatusDot"></span>
+              <span id="syncStatusBadge" class="sync-status-badge">尚未同步</span>
+              <span id="syncStatusMessage" class="sync-status-message"></span>
+            </div>
+            <div class="sync-meta-row">
+              <span>本机设备 ID：<code id="syncDeviceId">-</code></span>
+              <span>待上传操作：<strong id="syncPendingCount">0</strong></span>
+              <span>未裁决冲突：<strong id="syncConflictCount">0</strong></span>
+              <span>上次同步：<span id="syncLastAt">-</span></span>
+            </div>
+          </div>
+
+          <!-- 2. 冲突裁决 -->
+          <div class="card">
+            <h3 class="card-title">2. 冲突裁决</h3>
+            <p class="card-desc">多台设备同时修改同一字段时不会静默覆盖，双方候选值都保留在此，由你选择最终值。</p>
+            <div id="syncConflictsList" class="sync-list">
+              <p class="sync-empty">当前没有待裁决的冲突 🎉</p>
+            </div>
+          </div>
+
+          <!-- 3. 设备管理 -->
+          <div class="card">
+            <h3 class="card-title">3. 设备管理</h3>
+            <p class="card-desc">连续 90 天未同步的设备会自动退役；你也可以在此手动提前退役。退役设备回归时将从最新快照重新配对。</p>
+            <div id="syncDevicesList" class="sync-list">
+              <p class="sync-empty">尚未获取设备列表</p>
+            </div>
+          </div>
+
+          <!-- 4. 跨设备动态 -->
+          <div class="card">
+            <h3 class="card-title">4. 跨设备动态</h3>
+            <p class="card-desc">其他设备的倒计时与收纳事件会在此展示。按设计，只有事件来源设备本身会执行收纳动作。</p>
+            <div id="deviceEventsList" class="sync-list">
+              <p class="sync-empty">暂无跨设备事件</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 7: AI 桥接 (本机 AI Agent 对等操控通道) -->
+      <section id="tab-ai-bridge" class="tab-panel" role="tabpanel" aria-labelledby="navTabAiBridge" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">AI 桥接</h2>
+            <p class="panel-desc">允许本机 AI 助手（如编码代理）经 Native Messaging 与插件通信。AI 与你拥有完全相同的操作能力，走同一条处理路径；不可逆操作需显式确认，凭据只写不可读，每次操作都记录在下方审计列表。</p>
+          </div>
+        </div>
+
+        <div class="backup-grid">
+          <div class="tip-box">
+            <span class="tip-icon">🔒</span>
+            <span>安全边界：桥接仅监听本机回环地址并使用一次性令牌；WebDAV 凭据对 AI 只写不可读；清空、强制删除、恢复备份等破坏性操作 AI 必须携带确认位（等价你的确认弹窗）。关闭开关后所有 AI 请求立即被拒。</span>
+          </div>
+
+          <!-- 1. 桥接开关与状态 -->
+          <div class="card">
+            <h3 class="card-title">1. 桥接开关与状态</h3>
+            <p class="card-desc">开启后插件会按需拉起本机宿主程序（由浏览器托管，浏览器关闭即退出，非常驻服务）。Agent 通过 <code>deno task ai-host-install</code> 完成一次性安装。</p>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="chkAiBridgeEnabled">允许本机 AI 助手操控插件</label>
+                <span class="setting-hint">默认关闭。开启后 AI 的能力与你完全一致（能力清单可随时查询）</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkAiBridgeEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="sync-status-row" aria-live="polite">
+              <span class="sync-status-dot" id="aiBridgeStatusDot"></span>
+              <span id="aiBridgeStatusBadge" class="sync-status-badge">未启用</span>
+              <span id="aiBridgeStatusMessage" class="sync-status-message"></span>
+            </div>
+            <div class="sync-meta-row">
+              <span>扩展 ID：<code id="aiBridgeExtensionId">-</code></span>
+              <span>协议版本：<strong id="aiBridgeProto">-</strong></span>
+              <span>最近连接：<span id="aiBridgeLastAt">-</span></span>
+            </div>
+            <div class="btn-group">
+              <button id="btnAiBridgeCopyId" class="btn btn-secondary" type="button">复制扩展 ID</button>
+              <button id="btnAiBridgeRefresh" class="btn btn-secondary" type="button">刷新状态</button>
+            </div>
+          </div>
+
+          <!-- 2. 审计日志 -->
+          <div class="card">
+            <h3 class="card-title">2. AI 操作审计</h3>
+            <p class="card-desc">本机 AI 经桥接执行的最近 100 条操作（含来源、结果与失败原因）。审计只保存在本机，不进入同步与导出。</p>
+            <div id="aiBridgeAuditList" class="sync-list">
+              <p class="sync-empty">暂无 AI 操作记录</p>
+            </div>
+            <div class="btn-group">
+              <button id="btnAiBridgeClearAudit" class="btn btn-secondary" type="button">清空审计记录</button>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -852,8 +1054,8 @@
     </button>
   </div>
 
-  <!-- 窄屏悬浮呼出时间目录按钮 -->
-  <button id="btnStashTimelineFloat" class="timeline-float-btn" title="查看时间导航目录" type="button" aria-label="查看时间导航目录">
+  <!-- 窄屏悬浮呼出时间目录按钮（已有可见文字与 aria-label，省去原生 title 避免右下角提示被屏幕边缘裁切） -->
+  <button id="btnStashTimelineFloat" class="timeline-float-btn" type="button" aria-label="查看时间导航目录">
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="10"></circle>
       <polyline points="12 6 12 12 16 14"></polyline>

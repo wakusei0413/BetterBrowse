@@ -176,14 +176,16 @@ class TimeTreeBuilder {
       monthNode.tabCount += tabCount;
       monthNode.groupIds.add(group.id);
 
-      // 3. 周节点
+      // 3. 周节点（key/id 以月份为命名空间：同一自然周可跨两个月，
+      //    若仅用 ISO 周号作 key，跨月周会在两个月份节点下产生重复 key/id）
       let weekNode = monthNode.weeks.get(weekKey);
       if (!weekNode) {
         const isCurrentWeek = weekInfo.year === currentWeekInfo.year && weekInfo.weekNum === currentWeekInfo.weekNum;
+        const scopedWeekKey = `${monthNode.key}_${weekKey}`;
         weekNode = {
-          id: `node_week_${weekKey}`,
+          id: `node_week_${scopedWeekKey}`,
           type: 'week',
-          key: weekKey,
+          key: scopedWeekKey,
           title: weekInfo.label,
           tag: isCurrentWeek ? '本周' : '',
           isCurrentWeek,
@@ -392,6 +394,15 @@ class SingleLineTimelineScrollbar {
       }
     });
 
+    // 1.1 键盘可达性：时间轴节点支持 Enter / 空格触发切换（与点击行为一致）
+    this.container?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const item = e.target.closest('.timeline-axis-item');
+      if (!item) return;
+      e.preventDefault();
+      item.click();
+    });
+
     // 2. 在时间轴滚动条区域滚动滚轮 -> 滚动切换时间分块
     this.track?.addEventListener(
       'wheel',
@@ -423,9 +434,11 @@ class SingleLineTimelineScrollbar {
         const onMouseMove = (moveEvt) => {
           if (!this.isDragging || this.chunks.length === 0) return;
           moveEvt.preventDefault();
+          // 按内容坐标系换算（叠加 scrollTop），轨道滚动后拖拽定位依然精准
           const trackRect = this.track.getBoundingClientRect();
-          const relativeY = Math.max(0, Math.min(moveEvt.clientY - trackRect.top, trackRect.height));
-          const ratio = relativeY / (trackRect.height || 1);
+          const contentHeight = this.track.scrollHeight || 1;
+          const relativeY = Math.max(0, Math.min(moveEvt.clientY - trackRect.top + this.track.scrollTop, contentHeight));
+          const ratio = relativeY / contentHeight;
           const targetIndex = Math.min(
             this.chunks.length - 1,
             Math.max(0, Math.round(ratio * (this.chunks.length - 1)))
@@ -448,15 +461,16 @@ class SingleLineTimelineScrollbar {
         document.addEventListener('mouseup', onMouseUp);
       });
 
-      // 点击轨道空白处跳到对应比例分块
+      // 点击轨道空白处跳到对应比例分块（与拖拽一致采用内容坐标系）
       this.track.addEventListener('click', (e) => {
         if (e.target.closest('.timeline-axis-item') || e.target.closest('.timeline-scrubber-thumb')) {
           return;
         }
         if (this.chunks.length === 0) return;
         const trackRect = this.track.getBoundingClientRect();
-        const relativeY = Math.max(0, Math.min(e.clientY - trackRect.top, trackRect.height));
-        const ratio = relativeY / (trackRect.height || 1);
+        const contentHeight = this.track.scrollHeight || 1;
+        const relativeY = Math.max(0, Math.min(e.clientY - trackRect.top + this.track.scrollTop, contentHeight));
+        const ratio = relativeY / contentHeight;
         const targetIndex = Math.min(
           this.chunks.length - 1,
           Math.max(0, Math.round(ratio * (this.chunks.length - 1)))
@@ -472,12 +486,18 @@ class SingleLineTimelineScrollbar {
    */
   update(allGroups) {
     this.rawGroups = allGroups || [];
+    // 重建前记录活动分块 key：数据变化后索引会漂移（同一索引可能指向别的周），按 key 恢复定位
+    const prevActiveKey = this.getCurrentChunk()?.key ?? null;
+    const wasAllChunks = this.activeChunkIndex === -1;
+
     this.treeData = TimeTreeBuilder.buildTree(this.rawGroups);
     this.chunks = TimeTreeBuilder.buildFlatChunks(this.rawGroups);
 
-    // 默认定位到最新的一周分块 (index 0)
-    if (this.activeChunkIndex === undefined || this.activeChunkIndex === null || this.activeChunkIndex >= this.chunks.length) {
-      this.activeChunkIndex = this.chunks.length > 0 ? 0 : -1;
+    if (wasAllChunks) {
+      this.activeChunkIndex = -1;
+    } else {
+      const matchedIndex = prevActiveKey ? this.chunks.findIndex((c) => c.key === prevActiveKey) : -1;
+      this.activeChunkIndex = matchedIndex !== -1 ? matchedIndex : (this.chunks.length > 0 ? 0 : -1);
     }
 
     if (this.activeChunkIndex >= 0 && this.chunks[this.activeChunkIndex]) {
@@ -570,11 +590,15 @@ class SingleLineTimelineScrollbar {
     }
 
     const activeItem = this.container?.querySelector(`.timeline-axis-item[data-key="${CSS.escape(curChunk.key)}"]`);
-    if (activeItem) {
-      const itemTop = activeItem.offsetTop + (activeItem.offsetHeight / 2) - 6;
+    if (activeItem && this.container) {
+      // 用 getBoundingClientRect 换算到轨道内容坐标系（叠加 scrollTop），
+      // 避免依赖 offsetParent 链（节点容器自身为定位元素，直接用 offsetTop 会漏加容器偏移）
+      const trackRect = this.track.getBoundingClientRect();
+      const itemRect = activeItem.getBoundingClientRect();
+      const itemTop = itemRect.top - trackRect.top + this.track.scrollTop + activeItem.offsetHeight / 2 - 6;
       this.thumb.style.transform = `translateY(${Math.max(0, itemTop)}px)`;
     } else {
-      const trackHeight = this.track.clientHeight || 1;
+      const trackHeight = this.track.scrollHeight || this.track.clientHeight || 1;
       const ratio = this.chunks.length > 1 ? this.activeChunkIndex / (this.chunks.length - 1) : 0;
       const topPos = Math.max(0, Math.min(ratio * (trackHeight - 16), trackHeight - 16));
       this.thumb.style.transform = `translateY(${topPos}px)`;
@@ -590,8 +614,45 @@ class SingleLineTimelineScrollbar {
     }, 1500);
   }
 
+  /**
+   * 主列表滚动联动（ScrollSpy）：按当前视口顶部组同步时间轴高亮节点与游标位置。
+   * 仅做视觉同步，不触发 onSelectChunk 重载主列表，避免滚动↔加载循环。
+   * @param {number} ratio - 主列表滚动比例 (0~1)
+   * @param {string|null} groupId - 当前视口顶部组 ID（null 时仅按比例移动游标）
+   * @param {string} timeLabel - 组时间文本（用于游标气泡展示）
+   */
+  syncScrollProgress(ratio, groupId, timeLabel) {
+    if (!this.track || !this.thumb) return;
+
+    if (this.chunks.length === 0) {
+      this.thumb.style.transform = 'translateY(6px)';
+      if (this.thumbText) this.thumbText.textContent = '--';
+      return;
+    }
+
+    if (groupId) {
+      const targetIndex = this.chunks.findIndex((c) => c.groupIds?.has(groupId));
+      if (targetIndex !== -1 && targetIndex !== this.activeChunkIndex) {
+        // 静默切换活动分块：同步展开层级并重绘高亮，但不触发回调重载
+        this.activeChunkIndex = targetIndex;
+        const cur = this.chunks[targetIndex];
+        this.expandedYears.add(cur.yearKey);
+        this.expandedMonths.add(cur.monthKey);
+        this.render();
+      }
+    }
+
+    this.syncThumbPosition();
+    if (timeLabel && this.thumbText) {
+      this.thumbText.textContent = timeLabel;
+    }
+  }
+
   render() {
     if (!this.container) return;
+
+    // 重建前记录键盘焦点所在节点：重建后按 key 恢复焦点，避免键盘用户丢失位置
+    const focusedKey = this.container.querySelector('.timeline-axis-item:focus')?.dataset.key || null;
 
     if (!this.treeData || this.treeData.length === 0) {
       this.container.innerHTML = '';
@@ -669,11 +730,15 @@ class SingleLineTimelineScrollbar {
           chevronHtml = `<span class="axis-chevron ${item.isExpanded ? 'is-expanded' : ''}">▶</span>`;
         }
 
+        // 不再使用原生 title 提示（时间轴贴屏幕右缘时原生提示必然被裁切且悬停噪音大），
+        // 语义信息通过 role + aria-label 提供给读屏器
         return `
           <div class="timeline-axis-item axis-item-${item.type} ${item.isActiveChunk ? 'is-active-chunk' : ''}"
                data-type="${item.type}"
                data-key="${item.key}"
-               title="点击切换分块：${item.label}">
+               role="button"
+               tabindex="0"
+               aria-label="${item.label}，共 ${item.badge} 组">
             ${circleHtml}
             <div class="axis-main">
               <span class="axis-label">${item.label}</span>
@@ -686,6 +751,10 @@ class SingleLineTimelineScrollbar {
       .join('');
 
     this.container.innerHTML = html;
+
+    if (focusedKey) {
+      this.container.querySelector(`.timeline-axis-item[data-key="${CSS.escape(focusedKey)}"]`)?.focus();
+    }
   }
 }
 
@@ -718,7 +787,6 @@ class StashTabComponent {
     this.activeContextItem = null;
 
     // 时间筛选横幅与单线时间滚动条相关 DOM
-    this.filterBanner = document.getElementById('stashTimeFilterBanner');
     this.filterText = document.getElementById('stashTimeFilterText');
     this.btnNextChunk = document.getElementById('btnStashNextChunk');
     this.btnPrevChunk = document.getElementById('btnStashPrevChunk');
@@ -787,7 +855,7 @@ class StashTabComponent {
     const containerRect = this.mainColumn.getBoundingClientRect();
     const cards = this.container.querySelectorAll('.stash-group-card');
     if (cards.length === 0) {
-      this.timelineScrollbar?.syncScrollProgress(ratio, null, '');
+      this.timelineScrollbar.syncScrollProgress(ratio, null, '');
       return;
     }
 
@@ -812,7 +880,7 @@ class StashTabComponent {
         const pad = (n) => String(n).padStart(2, '0');
         timeLabel = `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
       }
-      this.timelineScrollbar?.syncScrollProgress(ratio, groupId, timeLabel);
+      this.timelineScrollbar.syncScrollProgress(ratio, groupId, timeLabel);
     }
   }
 
@@ -820,6 +888,7 @@ class StashTabComponent {
    * 监听收纳数据变更与页面可见性（彻底实现 0 刷新即时呈现）
    */
   initStorageListener() {
+    if (!chrome.storage?.onChanged?.addListener) return;
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== 'local') return;
       // IndexedDB 主库模式下收纳数据不再经过 chrome.storage，
@@ -832,6 +901,8 @@ class StashTabComponent {
       if (changes[StorageKeys.STASH_GROUPS]) {
         const newGroups = changes[StorageKeys.STASH_GROUPS].newValue || [];
         this.groups = Array.isArray(newGroups) ? newGroups : [];
+        this.timelineScrollbar.update(this.groups);
+        this.syncTimeFilterSnapshot();
         this.updateBadge();
         this.filterAndRender();
       }
@@ -993,7 +1064,9 @@ class StashTabComponent {
         const url = link?.href || '';
         const title = itemRow.querySelector('.tab-title')?.textContent || '';
 
-        this.showContextMenu(e.clientX, e.clientY, {
+        this.showContextMenu({
+          x: e.clientX,
+          y: e.clientY,
           groupId,
           itemId,
           url,
@@ -1043,6 +1116,43 @@ class StashTabComponent {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this.hideContextMenu();
     });
+
+    // 11. 窄屏"时间目录"悬浮按钮：点击浮出时间轴抽屉，点击遮罩或按 Esc 关闭
+    this.btnTimelineFloat = document.getElementById('btnStashTimelineFloat');
+    this.timelineDrawerBackdrop = document.getElementById('stashTimelineDrawerBackdrop');
+    this.btnTimelineFloat?.addEventListener('click', () => this.toggleTimelineDrawer(true));
+    this.timelineDrawerBackdrop?.addEventListener('click', () => this.toggleTimelineDrawer(false));
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.toggleTimelineDrawer(false);
+    });
+  }
+
+  /**
+   * 窄屏时间目录抽屉开关（≤1080px 时时间轴收起，经悬浮按钮唤出）
+   * @param {boolean} open
+   */
+  toggleTimelineDrawer(open) {
+    this.timelineScrollbarTrack?.classList.toggle('is-drawer-open', open);
+    this.timelineDrawerBackdrop?.classList.toggle('hidden', !open);
+  }
+
+  /**
+   * 分块重建后按 key 刷新筛选快照的 groupIds（loadData 与旧存储回退路径共用）：
+   * 旧 Set 是选择分块时的快照，不包含本次新收纳的组，会导致新组在当前周视图中"消失"
+   */
+  syncTimeFilterSnapshot() {
+    if (!this.activeTimeRangeFilter) return;
+    const matchedChunk = this.timelineScrollbar.chunks.find((c) => c.key === this.activeTimeRangeFilter.key);
+    if (matchedChunk) {
+      this.activeTimeRangeFilter.groupIds = matchedChunk.groupIds;
+      this.activeTimeRangeFilter.title = matchedChunk.title;
+    } else {
+      // 原 week 分块已不存在（如数据被清空）：回退到最新一周或全部
+      const latest = this.timelineScrollbar.getCurrentChunk();
+      this.activeTimeRangeFilter = latest
+        ? { type: 'week', key: latest.key, title: latest.title, groupIds: latest.groupIds }
+        : null;
+    }
   }
 
   async loadData() {
@@ -1050,9 +1160,10 @@ class StashTabComponent {
     if (res.success && Array.isArray(res.data)) {
       this.groups = res.data;
       this.timelineScrollbar.update(this.groups);
+      this.syncTimeFilterSnapshot();
 
-      // 默认只加载最新的一周分块
-      if (!this.activeTimeRangeFilter) {
+      // 默认只加载最新的一周分块（仅首次加载且时间轴不在"全部"状态时）
+      if (!this.activeTimeRangeFilter && this.timelineScrollbar.activeChunkIndex !== -1) {
         const initialChunk = this.timelineScrollbar.getCurrentChunk();
         if (initialChunk) {
           this.activeTimeRangeFilter = {
@@ -1128,58 +1239,22 @@ class StashTabComponent {
     this.renderedGroupCount = 0;
 
     if (this.filteredGroups.length === 0) {
+      // 区分"真为空"与"搜索无结果"，避免误导用户以为数据被清空
+      const hasSearchQuery = Boolean(query);
+      const titleEl = this.emptyState?.querySelector('.empty-title');
+      const descEl = this.emptyState?.querySelector('.empty-desc');
+      if (titleEl) titleEl.textContent = hasSearchQuery ? '未找到匹配的标签页' : '收纳箱目前是空的';
+      if (descEl) {
+        descEl.textContent = hasSearchQuery
+          ? '请尝试其他关键词，或点击「查看全部」浏览全部历史记录。'
+          : '当您在右上角点击「立即收纳」或标签页数量超出阈值时，未活跃标签将自动保存于此处。';
+      }
       this.container.appendChild(this.emptyState);
       this.emptyState.style.display = 'flex';
       if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
     } else {
       this.emptyState.style.display = 'none';
       this.renderNextBatch();
-    }
-  }
-
-  /**
-   * 平滑滚动并高亮定位至指定收纳组卡片（自动按需加载未渲染批次）
-   * @param {string} groupId
-   */
-  scrollToGroup(groupId) {
-    if (!groupId) return;
-
-    // 若当前处于某个不包含该组的时间区间过滤中，自动重置筛选以保证目标可见
-    if (this.activeTimeRangeFilter && !this.activeTimeRangeFilter.groupIds.has(groupId)) {
-      this.activeTimeRangeFilter = null;
-      this.filterAndRender();
-    }
-
-    const groupIndex = this.filteredGroups.findIndex((g) => g.id === groupId);
-    if (groupIndex === -1) return;
-
-    // 若目标卡片由于无限滚动尚未挂载到 DOM，连续批量渲染至目标卡片所在位置
-    while (this.renderedGroupCount <= groupIndex && this.renderedGroupCount < this.filteredGroups.length) {
-      this.renderNextBatch();
-    }
-
-    // 延时等待 DOM 绘制完毕后执行平滑居中滚动与 1.8s 呼吸高亮
-    setTimeout(() => {
-      const card = this.container.querySelector(`.stash-group-card[data-group-id="${CSS.escape(groupId)}"]`);
-      if (card) {
-        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        card.classList.remove('highlight-pulse');
-        void card.offsetWidth;
-        card.classList.add('highlight-pulse');
-        setTimeout(() => {
-          card.classList.remove('highlight-pulse');
-        }, 1900);
-      }
-    }, 60);
-  }
-
-  /**
-   * 一键定位至置顶星标组
-   */
-  scrollToStarred() {
-    const firstStarred = this.groups.find((g) => g.starred);
-    if (firstStarred) {
-      this.scrollToGroup(firstStarred.id);
     }
   }
 
@@ -1359,7 +1434,7 @@ class StashTabComponent {
                   <span>删除此组</span>
                 </button>
                 <button class="dropdown-item btn-toggle-star" data-id="${safeGroupId}" type="button">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="${group.starred ? '#fbbc04' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <svg viewBox="0 0 24 24" width="14" height="14" style="fill: ${group.starred ? 'var(--star-color)' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
                   </svg>
                   <span>${group.starred ? '取消星标' : '星标此组'}</span>
@@ -1411,7 +1486,8 @@ class StashTabComponent {
     if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
     if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
     if (diffSec < 604800) return `${Math.floor(diffSec / 86400)} 天前`;
-    return `${Math.floor(diffSec / 604800)} 周前`;
+    if (diffSec < 31536000) return `${Math.max(1, Math.floor(diffSec / 2592000))} 个月前`;
+    return `${Math.floor(diffSec / 31536000)} 年前`;
   }
 
   escapeHTML(str) {
@@ -1462,10 +1538,21 @@ class StashTabComponent {
         return;
       }
 
+      // 消费 deleteConfirmation 设置：开启时删除前需二次确认
+      if (await this.shouldConfirmDelete()) {
+        const confirmed = window.confirm(`确定删除收纳组「${targetGroup.title || groupId}」吗？（删除后 5 秒内可撤销）`);
+        if (!confirmed) return;
+      }
+
       this.recentlyDeletedGroups.set(groupId, {
         group: JSON.parse(JSON.stringify(targetGroup)),
         index: this.groups.findIndex((g) => g.id === groupId)
       });
+      // 缓存只保留最近 20 条，避免长时间使用后无界增长
+      while (this.recentlyDeletedGroups.size > 20) {
+        const oldestKey = this.recentlyDeletedGroups.keys().next().value;
+        this.recentlyDeletedGroups.delete(oldestKey);
+      }
 
       await MessageBus.sendToBackground(ActionTypes.DELETE_STASH_GROUP, { groupId });
       await this.loadData();
@@ -1475,15 +1562,18 @@ class StashTabComponent {
         onClick: async () => {
           const cached = this.recentlyDeletedGroups.get(groupId);
           if (cached) {
-            await MessageBus.sendToBackground(ActionTypes.RESTORE_FULL_BACKUP, {
-              jsonString: JSON.stringify({
-                version: 1,
-                groups: [cached.group, ...this.groups]
-              })
+            // 撤销走"单组快照恢复"专用通道：仅写回被删除的这一个组，
+            // 不经过全量备份管线（该管线会追加导入现有组并触发配置/规则恢复）
+            const res = await MessageBus.sendToBackground(ActionTypes.RESTORE_STASH_GROUP_DATA, {
+              group: cached.group
             });
             this.recentlyDeletedGroups.delete(groupId);
             await this.loadData();
-            Toast.show('已成功恢复该收纳组');
+            if (res?.success) {
+              Toast.show('已成功恢复该收纳组');
+            } else {
+              Toast.show(`恢复失败：${res?.error || '存储写入异常'}`);
+            }
           }
         }
       });
@@ -1619,17 +1709,37 @@ class StashTabComponent {
     });
   }
 
+  /**
+   * 读取"删除前二次确认"设置（每次删除时实时读取，保证设置页修改后即时生效）
+   * @returns {Promise<boolean>}
+   */
+  async shouldConfirmDelete() {
+    try {
+      const res = await MessageBus.sendToBackground(ActionTypes.GET_CONFIG);
+      const settings = res?.data?.stashSettings || {};
+      return settings.deleteConfirmation !== false;
+    } catch {
+      return true;
+    }
+  }
+
   handleDeleteItemWithAnimation(groupId, itemId) {
     const row = this.container.querySelector(`.stash-item-row[data-item-id="${CSS.escape(itemId)}"]`);
-    if (row) {
-      row.classList.add('is-deleting');
-      setTimeout(async () => {
-        await MessageBus.sendToBackground(ActionTypes.DELETE_STASH_ITEM, { groupId, itemId });
-        await this.loadData();
-      }, 160);
-    } else {
-      MessageBus.sendToBackground(ActionTypes.DELETE_STASH_ITEM, { groupId, itemId }).then(() => this.loadData());
-    }
+    const runDelete = async () => {
+      await MessageBus.sendToBackground(ActionTypes.DELETE_STASH_ITEM, { groupId, itemId });
+      await this.loadData();
+    };
+    (async () => {
+      if (await this.shouldConfirmDelete()) {
+        if (!window.confirm('确定从收纳箱中删除此网页吗？')) return;
+      }
+      if (row) {
+        row.classList.add('is-deleting');
+        setTimeout(runDelete, 160);
+      } else {
+        runDelete();
+      }
+    })();
   }
 
   showContextMenu({ x, y, groupId, itemId, url, title }) {
@@ -2145,7 +2255,8 @@ class DomainRulesComponent {
 
   escapeHTML(str) {
     if (typeof str !== 'string') return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    // 与 StashTabComponent 的实现保持一致（含单引号转义），防止单引号属性场景下的注入
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
   }
 }
 
@@ -2291,6 +2402,8 @@ class BackupComponent {
         a.click();
         URL.revokeObjectURL(url);
         Toast.show('OneTab 格式纯文本已成功导出');
+      } else {
+        Toast.show(`导出失败：${res?.error || '后台服务异常，请稍后重试'}`);
       }
     });
 
@@ -2300,6 +2413,8 @@ class BackupComponent {
       if (res.success && typeof res.data === 'string') {
         await navigator.clipboard.writeText(res.data);
         Toast.show('OneTab 格式文本已复制到剪贴板');
+      } else {
+        Toast.show(`导出失败：${res?.error || '后台服务异常，请稍后重试'}`);
       }
     });
 
@@ -2366,6 +2481,421 @@ class BackupComponent {
 }
 
 /**
+ * 云端同步 (WebDAV) 组件：凭据、连接探测、状态、冲突裁决、设备管理与跨设备动态
+ */
+class WebdavSyncComponent {
+  constructor() {
+    this.$serverUrl = document.getElementById('webdavServerUrl');
+    this.$username = document.getElementById('webdavUsername');
+    this.$password = document.getElementById('webdavPassword');
+    this.$enabled = document.getElementById('chkWebdavEnabled');
+    this.$autoSync = document.getElementById('chkWebdavAutoSync');
+    this.$accountConfigSync = document.getElementById('chkAccountConfigSync');
+    this.$btnSave = document.getElementById('btnWebdavSave');
+    this.$btnTest = document.getElementById('btnWebdavTest');
+    this.$btnSyncNow = document.getElementById('btnSyncNow');
+    this.$statusDot = document.getElementById('syncStatusDot');
+    this.$statusBadge = document.getElementById('syncStatusBadge');
+    this.$statusMessage = document.getElementById('syncStatusMessage');
+    this.$deviceId = document.getElementById('syncDeviceId');
+    this.$pendingCount = document.getElementById('syncPendingCount');
+    this.$conflictCount = document.getElementById('syncConflictCount');
+    this.$lastAt = document.getElementById('syncLastAt');
+    this.$conflictsList = document.getElementById('syncConflictsList');
+    this.$devicesList = document.getElementById('syncDevicesList');
+    this.$eventsList = document.getElementById('deviceEventsList');
+    this.init();
+  }
+
+  init() {
+    this.$btnSave?.addEventListener('click', () => this.saveCredentials());
+    this.$btnTest?.addEventListener('click', () => this.testConnection());
+    this.$btnSyncNow?.addEventListener('click', () => this.syncNow());
+    this.$enabled?.addEventListener('change', () => this.saveCredentials());
+    this.$autoSync?.addEventListener('change', () => this.saveCredentials());
+    this.$accountConfigSync?.addEventListener('change', () => this.saveAccountConfigSync());
+    this.loadAll();
+  }
+
+  async loadAll() {
+    await Promise.all([
+      this.loadStatus(),
+      this.loadConflicts(),
+      this.loadDevices(),
+      this.loadEvents()
+    ]);
+  }
+
+  async loadStatus() {
+    await this.loadAccountConfigSync();
+    const res = await MessageBus.sendToBackground(ActionTypes.GET_SYNC_STATUS);
+    if (!res?.success || !res.data) return;
+    const status = res.data;
+    if (this.$serverUrl && !this.$serverUrl.value) this.$serverUrl.value = status.serverUrl || '';
+    if (this.$username && !this.$username.value) this.$username.value = status.username || '';
+    if (this.$enabled) this.$enabled.checked = status.enabled === true;
+    if (this.$autoSync) this.$autoSync.checked = status.autoSync !== false;
+    if (this.$deviceId) this.$deviceId.textContent = status.deviceId || '-';
+    if (this.$pendingCount) this.$pendingCount.textContent = String(status.pendingCount ?? 0);
+    if (this.$conflictCount) this.$conflictCount.textContent = String(status.conflictCount ?? 0);
+    if (this.$lastAt) {
+      this.$lastAt.textContent = status.lastSyncAt ? new Date(status.lastSyncAt).toLocaleString('zh-CN') : '-';
+    }
+    const labelMap = {
+      synced: '已同步',
+      pending: '离线待上传',
+      auth_failed: '认证失败',
+      capability_missing: '服务器能力不足',
+      conflict: '条件写入冲突',
+      corrupt: '数据损坏',
+      unknown: '未知错误',
+      idle: '尚未同步'
+    };
+    if (this.$statusBadge) this.$statusBadge.textContent = labelMap[status.status] || '尚未同步';
+    if (this.$statusDot) this.$statusDot.dataset.status = status.status || 'idle';
+    if (this.$statusMessage) this.$statusMessage.textContent = status.message || '';
+  }
+
+  async loadAccountConfigSync() {
+    const configRes = await MessageBus.sendToBackground(ActionTypes.GET_CONFIG);
+    if (!this.$accountConfigSync || !configRes?.success || !configRes.data) return;
+    this.$accountConfigSync.checked = configRes.data.accountConfigSync?.enabled !== false;
+  }
+
+  async saveAccountConfigSync() {
+    const enabled = this.$accountConfigSync?.checked !== false;
+    const res = await MessageBus.sendToBackground(ActionTypes.UPDATE_CONFIG, {
+      accountConfigSync: { enabled }
+    });
+    Toast.show(res?.success ? (enabled ? '已开启浏览器账号偏好同步' : '已关闭浏览器账号偏好同步') : (res?.error || '保存失败'));
+  }
+
+  async saveCredentials() {
+    const payload = {
+      serverUrl: this.$serverUrl?.value.trim() || '',
+      username: this.$username?.value.trim() || '',
+      enabled: this.$enabled?.checked === true,
+      autoSync: this.$autoSync?.checked !== false
+    };
+    const password = this.$password?.value || '';
+    if (password) payload.password = password;
+    const res = await MessageBus.sendToBackground(ActionTypes.SAVE_WEBDAV_CREDENTIALS, payload);
+    if (!res?.success) {
+      Toast.show(res?.error || '保存失败');
+      return;
+    }
+    this.$password.value = '';
+    Toast.show('WebDAV 凭据已保存到本机');
+    await this.loadStatus();
+  }
+
+  async testConnection() {
+    Toast.show('正在探测服务器 ETag 条件写入能力…');
+    const res = await MessageBus.sendToBackground(ActionTypes.TEST_WEBDAV_CONNECTION);
+    // 消息总线会把处理器返回值包装为 { success, data }，真实结果在 data 内
+    const data = res?.data || {};
+    if (res?.success && data.success !== false) {
+      Toast.show(data.message || '连接与条件写入探测通过');
+    } else {
+      Toast.show(data.error || res?.error || '连接失败');
+    }
+    await this.loadStatus();
+  }
+
+  async syncNow() {
+    Toast.show('正在同步…');
+    const res = await MessageBus.sendToBackground(ActionTypes.RUN_SYNC_NOW);
+    // 消息总线会把处理器返回值包装为 { success, data }，真实结果在 data 内
+    const data = res?.data || {};
+    if (res?.success && data.success !== false) {
+      Toast.show(data.pendingCount > 0
+        ? `同步完成（待上传 ${data.pendingCount} 条）`
+        : '同步完成，云端已是最新');
+    } else {
+      Toast.show(data.error || res?.error || '同步失败');
+    }
+    await this.loadAll();
+  }
+
+  async loadConflicts() {
+    const res = await MessageBus.sendToBackground(ActionTypes.LIST_SYNC_CONFLICTS);
+    const conflicts = res?.success && Array.isArray(res.data) ? res.data : [];
+    if (!this.$conflictsList) return;
+    if (conflicts.length === 0) {
+      this.$conflictsList.innerHTML = '<p class="sync-empty">当前没有待裁决的冲突 🎉</p>';
+      return;
+    }
+    this.$conflictsList.innerHTML = '';
+    for (const conflict of conflicts) {
+      const item = document.createElement('div');
+      item.className = 'conflict-item';
+      const head = document.createElement('div');
+      head.className = 'conflict-head';
+      head.textContent = `${conflict.entityType} · ${conflict.field}`;
+      const values = document.createElement('div');
+      values.className = 'conflict-values';
+      const local = document.createElement('code');
+      local.textContent = `本机：${this._preview(conflict.localValue)}`;
+      const incoming = document.createElement('code');
+      incoming.textContent = `云端：${this._preview(conflict.incomingValue)}`;
+      values.append(local, incoming);
+      const actions = document.createElement('div');
+      actions.className = 'btn-group';
+      const keepLocal = document.createElement('button');
+      keepLocal.className = 'btn btn-secondary btn-sm';
+      keepLocal.type = 'button';
+      keepLocal.textContent = '保留本机值';
+      keepLocal.addEventListener('click', () => this.resolveConflict(conflict.conflictId, 'local'));
+      const useCloud = document.createElement('button');
+      useCloud.className = 'btn btn-primary btn-sm';
+      useCloud.type = 'button';
+      useCloud.textContent = '采用云端值';
+      useCloud.addEventListener('click', () => this.resolveConflict(conflict.conflictId, 'incoming'));
+      actions.append(keepLocal, useCloud);
+      item.append(head, values, actions);
+      this.$conflictsList.appendChild(item);
+    }
+  }
+
+  _preview(value) {
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    const plain = String(text ?? '');
+    return plain.length > 60 ? `${plain.slice(0, 60)}…` : plain;
+  }
+
+  async resolveConflict(conflictId, choice) {
+    const res = await MessageBus.sendToBackground(ActionTypes.RESOLVE_SYNC_CONFLICT, { conflictId, choice });
+    const data = res?.data || {};
+    Toast.show(res?.success && data.success !== false ? '已裁决并写入同步队列' : (data.error || res?.error || '裁决失败'));
+    await this.loadAll();
+  }
+
+  async loadDevices() {
+    const res = await MessageBus.sendToBackground(ActionTypes.LIST_SYNC_DEVICES);
+    const devices = res?.success && Array.isArray(res.data) ? res.data : [];
+    if (!this.$devicesList) return;
+    if (devices.length === 0) {
+      this.$devicesList.innerHTML = '<p class="sync-empty">尚未获取设备列表（首次同步后出现）</p>';
+      return;
+    }
+    this.$devicesList.innerHTML = '';
+    for (const device of devices) {
+      const item = document.createElement('div');
+      item.className = 'device-item';
+      const info = document.createElement('div');
+      info.className = 'device-info';
+      const name = document.createElement('span');
+      name.textContent = `${device.isSelf ? '本机' : '设备'} · ${String(device.deviceId).slice(0, 18)}…`;
+      const meta = document.createElement('span');
+      meta.className = 'device-meta';
+      meta.textContent = [
+        device.retired ? '已退役' : '活跃',
+        device.lastSeenAt ? `最近同步 ${new Date(device.lastSeenAt).toLocaleString('zh-CN')}` : ''
+      ].filter(Boolean).join(' · ');
+      info.append(name, meta);
+      const actions = document.createElement('div');
+      actions.className = 'btn-group';
+      if (!device.retired && !device.isSelf) {
+        const retireBtn = document.createElement('button');
+        retireBtn.className = 'btn btn-danger btn-sm';
+        retireBtn.type = 'button';
+        retireBtn.textContent = '退役';
+        retireBtn.addEventListener('click', () => this.retireDevice(device.deviceId));
+        actions.appendChild(retireBtn);
+      }
+      item.append(info, actions);
+      this.$devicesList.appendChild(item);
+    }
+  }
+
+  async retireDevice(deviceId) {
+    if (!window.confirm('确定将该设备退役吗？退役设备回归时将从最新快照重新配对。')) return;
+    const res = await MessageBus.sendToBackground(ActionTypes.RETIRE_SYNC_DEVICE, { deviceId });
+    const data = res?.data || {};
+    Toast.show(res?.success && data.success !== false ? '设备已退役' : (data.error || res?.error || '操作失败'));
+    await this.loadDevices();
+  }
+
+  async loadEvents() {
+    const res = await MessageBus.sendToBackground(ActionTypes.LIST_DEVICE_EVENTS);
+    const events = res?.success && Array.isArray(res.data) ? res.data : [];
+    if (!this.$eventsList) return;
+    if (events.length === 0) {
+      this.$eventsList.innerHTML = '<p class="sync-empty">暂无跨设备事件</p>';
+      return;
+    }
+    const typeLabels = {
+      countdown_start: '开始收纳倒计时',
+      countdown_cancel: '取消收纳倒计时',
+      countdown_confirm: '确认智能收纳',
+      stash_executed: '执行了智能收纳'
+    };
+    this.$eventsList.innerHTML = '';
+    for (const event of events) {
+      const item = document.createElement('div');
+      item.className = 'event-item';
+      const text = document.createElement('span');
+      text.textContent = `${event.originDeviceId === event.deviceId ? '本机' : '其他设备'} ${typeLabels[event.type] || event.type}`;
+      const time = document.createElement('time');
+      time.textContent = event.createdAt ? new Date(event.createdAt).toLocaleString('zh-CN') : '';
+      item.append(text, time);
+      this.$eventsList.appendChild(item);
+    }
+  }
+}
+
+/**
+ * AI 桥接组件 (AIBridgeComponent)
+ * 桥接开关 / 连接状态 / 扩展 ID 复制 / AI 操作审计（docs/03-ai-skill-bridge.md）
+ */
+class AIBridgeComponent {
+  constructor() {
+    this.$enabled = document.getElementById('chkAiBridgeEnabled');
+    this.$statusDot = document.getElementById('aiBridgeStatusDot');
+    this.$statusBadge = document.getElementById('aiBridgeStatusBadge');
+    this.$statusMessage = document.getElementById('aiBridgeStatusMessage');
+    this.$extensionId = document.getElementById('aiBridgeExtensionId');
+    this.$proto = document.getElementById('aiBridgeProto');
+    this.$lastAt = document.getElementById('aiBridgeLastAt');
+    this.$auditList = document.getElementById('aiBridgeAuditList');
+    this.$btnCopyId = document.getElementById('btnAiBridgeCopyId');
+    this.$btnRefresh = document.getElementById('btnAiBridgeRefresh');
+    this.$btnClearAudit = document.getElementById('btnAiBridgeClearAudit');
+    this.init();
+  }
+
+  init() {
+    this.$enabled?.addEventListener('change', () => this.saveEnabled());
+    this.$btnCopyId?.addEventListener('click', () => this.copyExtensionId());
+    this.$btnRefresh?.addEventListener('click', () => this.loadAll());
+    this.$btnClearAudit?.addEventListener('click', () => this.clearAudit());
+    this.loadAll();
+  }
+
+  async loadAll() {
+    await Promise.all([this.loadConfig(), this.loadStatus()]);
+  }
+
+  async loadConfig() {
+    const res = await MessageBus.sendToBackground(ActionTypes.GET_CONFIG);
+    if (this.$enabled && res?.success && res.data) {
+      this.$enabled.checked = res.data.aiBridge?.enabled === true;
+    }
+  }
+
+  async loadStatus() {
+    const res = await MessageBus.sendToBackground(ActionTypes.GET_AI_BRIDGE_STATUS);
+    if (!res?.success || !res.data) return;
+    const status = res.data;
+
+    const stateLabelMap = {
+      disabled: '未启用',
+      connecting: '正在连接宿主…',
+      connected: '宿主已连接',
+      reconnecting: '宿主连接中断，重连中…',
+      host_missing: '宿主未安装',
+      error: '连接异常',
+      unsupported: '当前环境不支持'
+    };
+    const dotStatusMap = {
+      connected: 'synced',
+      connecting: 'pending',
+      reconnecting: 'pending',
+      host_missing: 'auth_failed',
+      error: 'auth_failed',
+      unsupported: 'auth_failed',
+      disabled: 'idle'
+    };
+    if (this.$statusBadge) this.$statusBadge.textContent = stateLabelMap[status.state] || '未启用';
+    if (this.$statusDot) this.$statusDot.dataset.status = dotStatusMap[status.state] || 'idle';
+    if (this.$statusMessage) {
+      this.$statusMessage.textContent = status.state === 'host_missing'
+        ? '请先执行 deno task ai-host-install 安装本机宿主（扩展 ID 见下方）'
+        : (status.lastError || '');
+    }
+    if (this.$extensionId) this.$extensionId.textContent = status.extensionId || chrome.runtime.id || '-';
+    if (this.$proto) this.$proto.textContent = `v${status.protocol ?? 1}`;
+    if (this.$lastAt) {
+      this.$lastAt.textContent = status.lastConnectedAt
+        ? new Date(status.lastConnectedAt).toLocaleString('zh-CN')
+        : '-';
+    }
+    this.renderAudit(Array.isArray(status.audit) ? status.audit : []);
+  }
+
+  renderAudit(audit) {
+    if (!this.$auditList) return;
+    this.$auditList.innerHTML = '';
+    if (audit.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'sync-empty';
+      empty.textContent = '暂无 AI 操作记录';
+      this.$auditList.appendChild(empty);
+      return;
+    }
+    for (const entry of audit) {
+      const item = document.createElement('div');
+      item.className = 'ai-audit-item';
+
+      const dot = document.createElement('span');
+      dot.className = 'ai-audit-dot';
+      dot.dataset.ok = entry.ok ? 'true' : 'false';
+
+      const main = document.createElement('div');
+      main.className = 'ai-audit-main';
+
+      const line1 = document.createElement('div');
+      line1.className = 'ai-audit-action';
+      line1.textContent = `${entry.action}${entry.ok ? '' : ' · 失败'}`;
+
+      const line2 = document.createElement('div');
+      line2.className = 'ai-audit-detail';
+      line2.textContent = entry.ok ? (entry.summary || '-') : (entry.error || entry.summary || '-');
+
+      main.append(line1, line2);
+
+      const time = document.createElement('time');
+      time.textContent = entry.ts ? new Date(entry.ts).toLocaleString('zh-CN') : '';
+
+      item.append(dot, main, time);
+      this.$auditList.appendChild(item);
+    }
+  }
+
+  async saveEnabled() {
+    const enabled = this.$enabled?.checked === true;
+    const res = await MessageBus.sendToBackground(ActionTypes.UPDATE_CONFIG, {
+      aiBridge: { enabled }
+    });
+    Toast.show(res?.success
+      ? (enabled ? 'AI 桥接已开启，本机宿主将按需拉起' : 'AI 桥接已关闭，本机通道已断开')
+      : (res?.error || '保存失败'));
+    await this.loadStatus();
+  }
+
+  async copyExtensionId() {
+    const res = await MessageBus.sendToBackground(ActionTypes.GET_AI_BRIDGE_STATUS);
+    const extensionId = res?.data?.extensionId || chrome.runtime.id || '';
+    if (!extensionId) {
+      Toast.show('无法获取扩展 ID');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(extensionId);
+      Toast.show('扩展 ID 已复制，安装宿主时使用 --ext-id 参数传入');
+    } catch {
+      Toast.show('复制失败，请手动选择并复制');
+    }
+  }
+
+  async clearAudit() {
+    const res = await MessageBus.sendToBackground(ActionTypes.CLEAR_AI_AUDIT_LOG);
+    Toast.show(res?.success ? '审计记录已清空' : (res?.error || '清空失败'));
+    await this.loadStatus();
+  }
+}
+
+/**
  * 仪表盘总协调应用 (OptionsApp)
  */
 class OptionsApp {
@@ -2383,6 +2913,8 @@ class OptionsApp {
     const stashSettingsComponent = new StashSettingsComponent();
     const rulesComponent = new RulesConfigComponent();
     const domainComponent = new DomainRulesComponent();
+    const syncComponent = new WebdavSyncComponent();
+    const aiBridgeComponent = new AIBridgeComponent();
     new BackupComponent(() => {
       stashComponent.loadData();
       stashSettingsComponent.loadSettings();
@@ -2404,6 +2936,10 @@ class OptionsApp {
       } else if (message.action === ActionTypes.NOTIFY_CONFIG_UPDATED) {
         stashSettingsComponent.loadSettings();
         rulesComponent.loadConfig();
+        syncComponent.loadAccountConfigSync();
+        aiBridgeComponent.loadConfig();
+      } else if (message.action === ActionTypes.NOTIFY_SYNC_UPDATED) {
+        syncComponent.loadAll();
       }
       return false;
     });

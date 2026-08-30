@@ -13,7 +13,6 @@
   --bg-secondary: #f1f5f9;
   --bg-card: #ffffff;
   --bg-hover: #f1f5f9;
-  --bg-active: #eff6ff;
   
   /* 文本系统 */
   --text-primary: #0f172a;
@@ -24,31 +23,26 @@
   /* 品牌色 */
   --accent-color: #2563eb;
   --accent-hover: #1d4ed8;
-  --accent-light: #eff6ff;
-  --accent-glow: rgba(37, 99, 235, 0.18);
   
   /* 边框系统 */
   --border-color: #e2e8f0;
-  --border-light: #f1f5f9;
-  --border-active: #2563eb;
   
   /* 语义色彩 */
   --success-color: #10b981;
-  --warning-color: #f59e0b;
   --danger-color: #ef4444;
+  --danger-light: #fef2f2;
+  --danger-border: rgba(239, 68, 68, 0.3);
   --badge-bg: #f1f5f9;
   
   /* 几何与圆角 */
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 10px;
-  --radius-lg: 14px;
   --radius-full: 9999px;
   
   /* 阴影 */
   --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
   --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.03);
-  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
   
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -60,7 +54,6 @@
     --bg-secondary: #1f2937;
     --bg-card: #1e293b;
     --bg-hover: #334155;
-    --bg-active: #1e3a5f;
     
     --text-primary: #f8fafc;
     --text-secondary: #cbd5e1;
@@ -69,21 +62,17 @@
     
     --accent-color: #60a5fa;
     --accent-hover: #93c5fd;
-    --accent-light: rgba(96, 165, 250, 0.14);
-    --accent-glow: rgba(96, 165, 250, 0.25);
     
     --border-color: #334155;
-    --border-light: #253347;
-    --border-active: #60a5fa;
     
     --success-color: #34d399;
-    --warning-color: #fbbf24;
     --danger-color: #f87171;
+    --danger-light: rgba(239, 68, 68, 0.15);
+    --danger-border: rgba(248, 113, 113, 0.3);
     --badge-bg: #283548;
     
     --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
   }
 }
 

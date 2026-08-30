@@ -16,7 +16,6 @@
   --bg-app: #f8fafc;
   --bg-sidebar: #ffffff;
   --bg-card: #ffffff;
-  --bg-card-hover: #ffffff;
   --bg-hover: #f1f5f9;
   --bg-active: #eff6ff;
   
@@ -30,13 +29,11 @@
   --accent-color: #2563eb;
   --accent-hover: #1d4ed8;
   --accent-light: #eff6ff;
-  --accent-subtle: rgba(37, 99, 235, 0.08);
   --accent-glow: rgba(37, 99, 235, 0.18);
   
   /* 边框体系 */
   --border-color: #e2e8f0;
   --border-light: #f1f5f9;
-  --border-active: #2563eb;
   --border-focus: rgba(37, 99, 235, 0.35);
   
   /* 语义色彩体系 */
@@ -57,7 +54,6 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
-  --radius-xl: 18px;
   --radius-full: 9999px;
   
   /* 极简精致阴影体系 */
@@ -78,7 +74,6 @@
     --bg-app: #0b0f19;
     --bg-sidebar: #111827;
     --bg-card: #1e293b;
-    --bg-card-hover: #243247;
     --bg-hover: #2d3d54;
     --bg-active: #1e3a5f;
     
@@ -90,12 +85,10 @@
     --accent-color: #60a5fa;
     --accent-hover: #93c5fd;
     --accent-light: rgba(96, 165, 250, 0.14);
-    --accent-subtle: rgba(96, 165, 250, 0.08);
     --accent-glow: rgba(96, 165, 250, 0.25);
     
     --border-color: #334155;
     --border-light: #253347;
-    --border-active: #60a5fa;
     --border-focus: rgba(96, 165, 250, 0.4);
     
     --danger-color: #f87171;
@@ -394,10 +387,10 @@ a:focus-visible,
   background-color: var(--bg-card);
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px var(--accent-glow);
-  width: 320px;
 }
 
-.search-input:focus + .search-box-icon {
+/* 聚焦时放大镜图标同步高亮（搜索图标在输入框之前，兄弟选择器无法反向选中，须借助 focus-within） */
+.search-box-wrapper:focus-within .search-box-icon {
   color: var(--accent-color);
 }
 
@@ -430,6 +423,8 @@ a:focus-visible,
 
 /* 自动同步提示徽标 */
 .autosave-badge {
+  opacity: 0.35;
+  transition: opacity 0.25s ease;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -440,6 +435,16 @@ a:focus-visible,
   padding: 4px 10px;
   border-radius: var(--radius-full);
   border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.autosave-badge.visible {
+  animation: autosave-badge-flash 2s ease forwards;
+}
+
+@keyframes autosave-badge-flash {
+  0% { opacity: 0.35; transform: scale(0.96); }
+  15% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 0.35; transform: scale(1); }
 }
 
 /* ==========================================================================
@@ -772,15 +777,6 @@ a:focus-visible,
   color: var(--accent-color);
 }
 
-.dropdown-item-danger {
-  color: var(--danger-color);
-}
-
-.dropdown-item-danger:hover {
-  background-color: var(--danger-light);
-  color: var(--danger-hover);
-}
-
 .dropdown-divider {
   height: 1px;
   background-color: var(--border-light);
@@ -935,8 +931,19 @@ a:focus-visible,
   border-radius: var(--radius-full);
 }
 
-/* 贯穿上下的垂直细轴线 (位于左侧 16px 处) */
-.timeline-axis-line {
+/* 贯穿上下的垂直细轴线（位于左侧 16px 处）：
+   以节点容器的伪元素绘制而非轨道绝对定位子元素，
+   确保轨道纵向滚动时轴线跟随内容延伸到最底部而不是只在首屏断裂 */
+.timeline-nodes-axis-container {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: 5;
+  gap: 2px;
+}
+
+.timeline-nodes-axis-container::before {
+  content: "";
   position: absolute;
   left: 16px;
   top: 12px;
@@ -947,15 +954,6 @@ a:focus-visible,
   border-radius: 1px;
   transform: translateX(-50%);
   pointer-events: none;
-}
-
-/* 单轴节点流容器 */
-.timeline-nodes-axis-container {
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  z-index: 5;
-  gap: 2px;
 }
 
 /* 节点条目行 (舒适的点击热区，宽 100%，高 30px) */
@@ -970,6 +968,7 @@ a:focus-visible,
   padding: 4px 6px 4px 28px; /* 留出左侧 28px 给轴线和圆圈 */
   transition: all 0.15s ease;
   font-size: 12px;
+  user-select: none;
 }
 
 .timeline-axis-item:hover {
@@ -1159,7 +1158,9 @@ a:focus-visible,
 
 .thumb-bubble {
   position: absolute;
-  right: 18px;
+  /* 必须挂在圆点右侧（left）而非左侧（right）：轨道有 overflow-x: hidden，
+     向左延伸会被轨道左边界裁切到只剩细条 */
+  left: 18px;
   background-color: var(--text-primary);
   color: var(--bg-card);
   font-size: 11px;
@@ -1173,12 +1174,14 @@ a:focus-visible,
   align-items: center;
   line-height: 1.3;
   opacity: 0;
-  transform: translateX(4px);
+  transform: translateX(-4px);
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
+/* 气泡仅在三种时机显示：切换分块后的短暂确认、拖拽游标中、直接悬停圆点。
+   不随"悬停整条轨道"常驻显示，避免黑色气泡长时间压住节点行文字 */
 .timeline-scrubber-thumb.show-bubble .thumb-bubble,
-.timeline-scrollbar-track:hover .thumb-bubble,
+.timeline-scrubber-thumb:hover .thumb-bubble,
 .timeline-scrubber-thumb.is-dragging .thumb-bubble {
   opacity: 1;
   transform: translateX(0);
@@ -1207,6 +1210,37 @@ a:focus-visible,
   animation: cardFocusGlow 1.8s cubic-bezier(0.2, 0, 0, 1) forwards;
   z-index: 10;
   position: relative;
+}
+
+/* ==========================================================================
+   8.5 收纳箱列表展示密度 (Display Density: comfortable / compact)
+   收纳箱设置中的密度选项通过 html[data-display-density] 驱动，紧凑模式收紧行高与间距
+   ========================================================================== */
+[data-display-density='compact'] .stash-group-card {
+  padding: 10px 16px;
+}
+
+[data-display-density='compact'] .stash-group-header {
+  margin-bottom: 6px;
+  padding-bottom: 5px;
+}
+
+[data-display-density='compact'] .title-text {
+  font-size: 15px;
+}
+
+[data-display-density='compact'] .stash-item-row {
+  padding: 2px 8px;
+  max-height: 30px;
+}
+
+[data-display-density='compact'] .tab-link {
+  font-size: 12.5px;
+}
+
+[data-display-density='compact'] .stash-main-column,
+[data-display-density='compact'] .stash-groups-container {
+  gap: 10px;
 }
 
 /* ==========================================================================
@@ -1596,17 +1630,6 @@ input:checked + .slider:before {
   font-weight: 500;
 }
 
-.mode-badge {
-  font-size: 11.5px;
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-  font-weight: 500;
-}
-
-.mode-badge.new { background-color: rgba(37, 99, 235, 0.12); color: var(--accent-color); }
-.mode-badge.current { background-color: rgba(245, 158, 11, 0.12); color: var(--warning-color); }
-.mode-badge.auto { background-color: var(--badge-bg); color: var(--text-secondary); }
-
 .add-rule-form {
   display: flex;
   gap: 10px;
@@ -1941,6 +1964,21 @@ input:checked + .slider:before {
   opacity: 0;
 }
 
+/* 窄屏抽屉态：时间轴以固定面板自右侧浮出 */
+.timeline-scrollbar-track.is-drawer-open {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 190px;
+  max-height: none;
+  background-color: var(--bg-sidebar);
+  border-left: 1px solid var(--border-color);
+  box-shadow: var(--shadow-lg);
+  z-index: 996;
+  padding: 20px 10px 24px 10px;
+}
+
 /* ==========================================================================
    12. 响应式断点与无障碍适配 (Responsive & A11y)
    ========================================================================== */
@@ -2074,4 +2112,180 @@ input:checked + .slider:before {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ==========================================================================
+   云端同步 (WebDAV) 面板
+   ========================================================================== */
+.sync-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 10px 14px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+}
+
+.sync-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.sync-status-dot[data-status="synced"] { background: var(--success-color); }
+.sync-status-dot[data-status="pending"] { background: var(--warning-color); }
+.sync-status-dot[data-status="conflict"] { background: var(--warning-color); }
+.sync-status-dot[data-status="auth_failed"],
+.sync-status-dot[data-status="corrupt"],
+.sync-status-dot[data-status="unknown"] { background: var(--danger-color); }
+.sync-status-dot[data-status="capability_missing"] { background: var(--warning-color); }
+
+.sync-status-badge {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.sync-status-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.sync-meta-row code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.sync-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sync-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 14px 0;
+}
+
+.conflict-item,
+.device-item,
+.event-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.conflict-item {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.conflict-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.conflict-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.conflict-values code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.device-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.event-item {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.event-item time {
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ============ AI 桥接（阶段三）============ */
+.ai-audit-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ai-audit-item:last-child {
+  border-bottom: none;
+}
+
+.ai-audit-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.ai-audit-dot[data-ok="true"] { background: var(--success-color); }
+.ai-audit-dot[data-ok="false"] { background: var(--danger-color); }
+
+.ai-audit-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-audit-action {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+  word-break: break-all;
+}
+
+.ai-audit-detail {
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+  margin-top: 2px;
 }
