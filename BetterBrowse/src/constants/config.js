@@ -14,8 +14,7 @@ export const RulePriorities = {
   P0: 0, // 最高优先级（媒体播放、表单输入中）
   P1: 1, // 高优先级（最近访问）
   P2: 2, // 中优先级（高使用频率）
-  P3: 3, // 低优先级（固定标签页）
-  DEFAULT: 99 // 默认收纳
+  P3: 3  // 低优先级（固定标签页）
 };
 
 export const DefaultConfig = {
@@ -70,6 +69,24 @@ export const DefaultConfig = {
     stripFavIcons: true         // 快照中剔除 favIconUrl 以显著减小体积
   },
 
+  // === WebDAV 云端同步（非机密项；密码见 bb_webdav_credentials）===
+  webdavSync: {
+    enabled: false,
+    autoSync: true,
+    serverUrl: ''
+  },
+
+  // === 浏览器账号偏好同步（chrome.storage.sync；不含收纳列表 / 域名表 / 凭据）===
+  accountConfigSync: {
+    enabled: true             // 同品牌、已登录账号的设备之间镜像阈值与规则等偏好
+  },
+
+  // === AI 桥接（阶段三：本机 AI Agent 经 Native Messaging 与人类能力对等操控插件）===
+  // 设备本地偏好：不进入 chrome.storage.sync 账号镜像、不进入 WebDAV 同步与任何导出
+  aiBridge: {
+    enabled: false           // 总开关（默认关闭）：开启后扩展按需拉起本机宿主并接受 Agent 指令
+  },
+
   // === 阶梯式降级收纳（Tiered Escalation Stash）===
   // 当一轮智能收纳后标签页数量仍超过阈值时，逐级放宽"软性保护"
   // （最近访问窗口逐级缩短、高频访问门槛逐级提高），直至降到阈值以下。
@@ -83,4 +100,7 @@ export const DefaultConfig = {
 };
 
 // v5：收纳组数据迁移至 IndexedDB 本地主库（页面实体 + 收纳记录两层模型）
-export const CURRENT_SCHEMA_VERSION = 5;
+// v6：修复历史恢复操作产生的双前缀重复条目并清理孤儿条目（见 MigrationManager.repairIndexedEntries）
+// v7：配置、链接规则、活动统计与自动备份迁入 IndexedDB（阶段一 M2 全量）
+// v8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
+export const CURRENT_SCHEMA_VERSION = 8;

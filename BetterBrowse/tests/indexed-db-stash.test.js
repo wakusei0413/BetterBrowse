@@ -6,12 +6,13 @@
 
 import { assertEquals } from "@std/assert";
 import { StorageKeys } from "../src/constants/storage-keys.js";
+import { CURRENT_SCHEMA_VERSION } from "../src/constants/config.js";
 import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
 import { MigrationManager } from "../src/core/storage/migration.js";
 import { IndexedDBManager, IDBStores } from "../src/core/storage/indexed-db.js";
 import { LocalStashRepository } from "../src/core/stash/local-stash-repo.js";
 import { IndexedStashRepository } from "../src/core/stash/indexed-stash-repo.js";
-import { installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
+import { countStoreRecords, installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
 
 /**
  * 安装 chrome.storage 内存模拟（与 stash-settings.test.js 保持同一模式）
@@ -64,15 +65,6 @@ function installMockStorage(initialData = {}) {
   return store;
 }
 
-/**
- * 统计 IndexedDB 指定仓储的记录数（直接验证三层模型数据布局）
- */
-async function countStoreRecords(storeName) {
-  return await IndexedDBManager.runTransaction([storeName], 'readonly', async (tx) => {
-    return await IndexedDBManager.requestToPromise(tx.objectStore(storeName).count());
-  });
-}
-
 Deno.test("IndexedStashRepository: createGroup 三层模型写入与 getAllGroups 完整还原（同一 URL 复用页面实体）", async () => {
   const idb = installFakeIndexedDB();
   const store = installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 5 });
@@ -106,9 +98,9 @@ Deno.test("IndexedStashRepository: createGroup 三层模型写入与 getAllGroup
     assertEquals(groups[1].tabs[0].favIconUrl, "https://example.com/favicon.ico");
 
     // 三层模型数据布局：2 个不同 URL 仅产生 2 条页面实体（重复 URL 复用），3 条收纳记录、2 个组
-    assertEquals(await countStoreRecords(IDBStores.PAGES), 2);
-    assertEquals(await countStoreRecords(IDBStores.STASH_ENTRIES), 3);
-    assertEquals(await countStoreRecords(IDBStores.STASH_GROUPS), 2);
+    assertEquals(await countStoreRecords(IndexedDBManager, IDBStores.PAGES), 2);
+    assertEquals(await countStoreRecords(IndexedDBManager, IDBStores.STASH_ENTRIES), 3);
+    assertEquals(await countStoreRecords(IndexedDBManager, IDBStores.STASH_GROUPS), 2);
 
     // IndexedDB 模式下通过修订号广播变更
     assertEquals(typeof store[StorageKeys.STASH_REV], "string");
@@ -277,7 +269,7 @@ Deno.test("MigrationManager: v4 旧数组完整迁移至 IndexedDB 主库（v5�
     await MigrationManager.runMigrations();
 
     // 版本推进至 v5 并记录迁移时间
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], 5);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
     assertEquals(typeof store[StorageKeys.IDB_MIGRATED_AT], "number");
 
     // 数据经门面（IndexedDB 权威数据源）完整还原
@@ -300,7 +292,7 @@ Deno.test("MigrationManager: v4 旧数组完整迁移至 IndexedDB 主库（v5�
     const afterRetry = await LocalStashRepository.getAllGroups();
     assertEquals(afterRetry.length, 2);
     assertEquals(afterRetry[0].tabs.length, 2);
-    assertEquals(await countStoreRecords(IDBStores.STASH_ENTRIES), 3);
+    assertEquals(await countStoreRecords(IndexedDBManager, IDBStores.STASH_ENTRIES), 3);
   } finally {
     await idb.restore();
   }
@@ -329,7 +321,7 @@ Deno.test("MigrationManager: 迁移执行失败时版本停在 v4 且旧数据�
     // 环境恢复后重试成功
     IndexedStashRepository.importGroups = originalImport;
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], 5);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
     const groups = await LocalStashRepository.getAllGroups();
     assertEquals(groups.length, 1);
     assertEquals(groups[0].tabs[0].url, "https://retry.com");
@@ -349,7 +341,7 @@ Deno.test("MigrationManager: rollbackFromIndexedDB 一键回退至旧存储且 o
   });
   try {
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], 5);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
 
     // 迁移后在 IndexedDB 模式下新增一组
     const created = await LocalStashRepository.createGroup([{ url: "https://new.com", title: "新页面" }], "主库新增组");
@@ -374,7 +366,7 @@ Deno.test("MigrationManager: rollbackFromIndexedDB 一键回退至旧存储且 o
     // optout 生效：即使版本回拨到 v4，迁移也不会重新切回 IndexedDB
     store[StorageKeys.SCHEMA_VERSION] = 4;
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], 5);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
     const groups = await LocalStashRepository.getAllGroups();
     assertEquals(groups.some((g) => g.title === "回退后新组"), true);
   } finally {
@@ -477,6 +469,136 @@ Deno.test("IndexedDB 故障降级：读取回退旧存储快照，写入显式�
     assertEquals(store[StorageKeys.STASH_GROUPS].length, 1);
 
     idb.factory.open = originalOpen;
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("MigrationManager: v7 将配置/规则/备份/活跃度迁入 IndexedDB，读写不再回写旧存储", async () => {
+  const idb = installFakeIndexedDB();
+  const store = installMockStorage({
+    [StorageKeys.SCHEMA_VERSION]: 6,
+    [StorageKeys.USER_CONFIG]: { tabThreshold: 42, stashSettings: { allowDuplicates: false } },
+    [StorageKeys.LINK_RULES]: { "example.com": "new" },
+    [StorageKeys.AUTO_BACKUPS]: [{ createdAt: 1000, groups: [] }],
+    [StorageKeys.ACTIVITY_STATS]: { 7: { lastActivated: 123, activationTimestamps: [123] } }
+  });
+  try {
+    await MigrationManager.runMigrations();
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    assertEquals(typeof store[StorageKeys.IDB_SETTINGS_MIGRATED_AT], "number");
+
+    // 旧 chrome.storage 快照在 30 天内原样保留
+    assertEquals(store[StorageKeys.USER_CONFIG].tabThreshold, 42);
+    assertEquals(store[StorageKeys.LINK_RULES]["example.com"], "new");
+
+    const config = await StorageAdapter.getUserConfig();
+    assertEquals(config.tabThreshold, 42);
+    assertEquals(config.stashSettings.allowDuplicates, false);
+    assertEquals((await StorageAdapter.get(StorageKeys.LINK_RULES, {}))["example.com"], "new");
+    assertEquals((await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, [])).length, 1);
+    // v8 起活跃度按 pageId 存储：无法映射 URL 的旧 tabId 记录（键 "7"）已被清理
+    const stats = await StorageAdapter.get(StorageKeys.ACTIVITY_STATS, {});
+    assertEquals(stats["7"], undefined);
+
+    // 写入走 IndexedDB：旧存储快照不得被覆盖
+    await StorageAdapter.updateUserConfig({ tabThreshold: 88 });
+    await StorageAdapter.set(StorageKeys.LINK_RULES, { "foo.dev": "current" });
+    assertEquals(store[StorageKeys.USER_CONFIG].tabThreshold, 42);
+    assertEquals(store[StorageKeys.LINK_RULES]["example.com"], "new");
+    assertEquals((await StorageAdapter.getUserConfig()).tabThreshold, 88);
+    assertEquals((await StorageAdapter.get(StorageKeys.LINK_RULES, {}))["foo.dev"], "current");
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("MigrationManager: v7 迁移失败时版本停在 v6，恢复后重试成功且幂等", async () => {
+  const idb = installFakeIndexedDB();
+  const store = installMockStorage({
+    [StorageKeys.SCHEMA_VERSION]: 6,
+    [StorageKeys.USER_CONFIG]: { tabThreshold: 33 },
+    [StorageKeys.LINK_RULES]: { "retry.dev": "current" }
+  });
+  const originalSet = StorageAdapter._setIdbValue;
+  try {
+    StorageAdapter._setIdbValue = async () => {
+      throw new Error("模拟 v7 写入中断");
+    };
+    await MigrationManager.runMigrations();
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], 6);
+    assertEquals(store[StorageKeys.USER_CONFIG].tabThreshold, 33);
+    assertEquals(store[StorageKeys.IDB_SETTINGS_MIGRATED_AT], undefined);
+
+    StorageAdapter._setIdbValue = originalSet;
+    await MigrationManager.runMigrations();
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    assertEquals((await StorageAdapter.getUserConfig()).tabThreshold, 33);
+
+    // 幂等重跑不得覆盖已写入的主库新值
+    await StorageAdapter.updateUserConfig({ tabThreshold: 55 });
+    store[StorageKeys.SCHEMA_VERSION] = 6;
+    await MigrationManager.runMigrations();
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    assertEquals((await StorageAdapter.getUserConfig()).tabThreshold, 55);
+  } finally {
+    StorageAdapter._setIdbValue = originalSet;
+    await idb.restore();
+  }
+});
+
+Deno.test("MigrationManager: v7 迁移成功 30 天后清理旧配置快照，保留期内不动", async () => {
+  const idb = installFakeIndexedDB();
+  try {
+    const expired = installMockStorage({
+      [StorageKeys.SCHEMA_VERSION]: 7,
+      [StorageKeys.IDB_SETTINGS_MIGRATED_AT]: Date.now() - 31 * 86400000,
+      [StorageKeys.USER_CONFIG]: { tabThreshold: 9 },
+      [StorageKeys.LINK_RULES]: { "old.com": "new" },
+      [StorageKeys.AUTO_BACKUPS]: [{ createdAt: 1, groups: [] }],
+      [StorageKeys.ACTIVITY_STATS]: { 1: { lastActivated: 1, activationTimestamps: [1] } }
+    });
+    await MigrationManager.runMigrations();
+    assertEquals(Object.keys(expired[StorageKeys.USER_CONFIG] || {}).length, 0);
+    assertEquals(Object.keys(expired[StorageKeys.LINK_RULES] || {}).length, 0);
+    assertEquals((expired[StorageKeys.AUTO_BACKUPS] || []).length, 0);
+
+    const fresh = installMockStorage({
+      [StorageKeys.SCHEMA_VERSION]: 7,
+      [StorageKeys.IDB_SETTINGS_MIGRATED_AT]: Date.now(),
+      [StorageKeys.USER_CONFIG]: { tabThreshold: 9 },
+      [StorageKeys.LINK_RULES]: { "old.com": "new" }
+    });
+    await MigrationManager.runMigrations();
+    assertEquals(fresh[StorageKeys.USER_CONFIG].tabThreshold, 9);
+    assertEquals(fresh[StorageKeys.LINK_RULES]["old.com"], "new");
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("MigrationManager: 一键回退同时导回 v7 配置主库", async () => {
+  const idb = installFakeIndexedDB();
+  const store = installMockStorage({
+    [StorageKeys.SCHEMA_VERSION]: 6,
+    [StorageKeys.USER_CONFIG]: { tabThreshold: 21 },
+    [StorageKeys.LINK_RULES]: { "back.com": "new" }
+  });
+  try {
+    await MigrationManager.runMigrations();
+    await LocalStashRepository.createGroup([{ url: "https://back.com", title: "页" }], "回退组");
+    await StorageAdapter.updateUserConfig({ tabThreshold: 77 });
+    await StorageAdapter.set(StorageKeys.LINK_RULES, { "after.com": "current" });
+
+    const rollback = await MigrationManager.rollbackFromIndexedDB();
+    assertEquals(rollback.success, true);
+    assertEquals(store[StorageKeys.IDB_OPTOUT], true);
+    assertEquals(store[StorageKeys.USER_CONFIG].tabThreshold, 77);
+    assertEquals(store[StorageKeys.LINK_RULES]["after.com"], "current");
+
+    // 回退后新写入落在 chrome.storage
+    await StorageAdapter.updateUserConfig({ tabThreshold: 90 });
+    assertEquals(store[StorageKeys.USER_CONFIG].tabThreshold, 90);
   } finally {
     await idb.restore();
   }

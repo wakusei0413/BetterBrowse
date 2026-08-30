@@ -34,6 +34,32 @@ export class StashService {
   }
 
   /**
+   * 安全批量关闭标签页（容忍收纳评估期间标签页已被用户手动关闭的竞态）
+   * 批量 chrome.tabs.remove 中只要有一个 ID 已不存在就会整体抛出
+   * "No tab with id" 并使整个收纳流程失败，此处降级为逐个关闭并跳过已消失的标签。
+   * @param {number[]} tabIds - 待关闭的标签页 ID 列表
+   * @returns {Promise<number>} 实际成功关闭的标签页数量
+   */
+  static async closeTabsSafely(tabIds) {
+    if (!Array.isArray(tabIds) || tabIds.length === 0) return 0;
+    try {
+      await chrome.tabs.remove(tabIds);
+      return tabIds.length;
+    } catch {
+      let closedCount = 0;
+      for (const tabId of tabIds) {
+        try {
+          await chrome.tabs.remove([tabId]);
+          closedCount += 1;
+        } catch {
+          // 标签页已关闭或不存在的竞态，直接跳过
+        }
+      }
+      return closedCount;
+    }
+  }
+
+  /**
    * 确保指定窗口（或当前窗口）第 1 位常驻固定小标签页（Pinned Tab，无字图标常驻模式）死死占位存在
    * @param {boolean} [activate=true]
    * @param {number} [targetWindowId]
@@ -154,22 +180,29 @@ export class StashService {
         return { success: false, stashedCount: 0, error: createRes?.error || '写入本地收纳仓储失败' };
       }
 
-      // 2. 唤起并置顶第 1 个位置的常驻固定小标签页（Pinned Tab）
+      // 2. 仅关闭 URL 确实已持久化的标签页：
+      //    allowDuplicates=false 时重复项会被仓储跳过（group 可能为 null），绝不关闭未保存的标签
+      const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
+      const closableTabs = tabsToStash.filter((tab) => savedUrls.has(tab.url));
+
+      if (closableTabs.length === 0) {
+        return { success: true, stashedCount: 0 };
+      }
+
+      // 3. 唤起并置顶第 1 个位置的常驻固定小标签页（Pinned Tab）
       const settings = (await StorageAdapter.getUserConfig()).stashSettings || {};
       await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
 
-      // 3. 关闭所有被收纳的标签页
-      const tabIdsToClose = tabsToStash
+      // 4. 关闭所有被收纳的标签页（容忍收纳期间被用户手动关闭的竞态）
+      const tabIdsToClose = closableTabs
         .map((tab) => tab.id)
         .filter((id) => typeof id === 'number');
 
-      if (tabIdsToClose.length > 0) {
-        await chrome.tabs.remove(tabIdsToClose);
-      }
+      const closedCount = await StashService.closeTabsSafely(tabIdsToClose);
 
       return {
         success: true,
-        stashedCount: tabIdsToClose.length
+        stashedCount: closedCount
       };
     } catch (err) {
       console.error('[StashService] 全量收纳执行异常:', err);
@@ -337,20 +370,35 @@ export class StashService {
       };
     }
 
-    // 2. 确保首位常驻固定小标签存在（静默后台处理，activate: false 绝不抢占用户焦点）
+    // 2. 仅关闭 URL 确实已持久化的标签页：
+    //    allowDuplicates=false 时重复项会被仓储跳过（group 可能为 null），
+    //    此时若照常关闭，被跳过的 URL 将既不在任何可见收纳组中、标签也被关闭，造成数据静默丢失
+    const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
+    const closableStash = tabsToStash.filter(({ tab }) => savedUrls.has(tab.url));
+
+    if (closableStash.length === 0) {
+      return {
+        success: true,
+        stashedCount: 0,
+        keptCount: tabsToKeep.length,
+        tierLevel: finalTierLevel,
+        reachedTarget,
+        note: '所选标签页均已存在于收纳箱中（跳过重复项），未关闭任何标签页'
+      };
+    }
+
+    // 3. 确保首位常驻固定小标签存在（静默后台处理，activate: false 绝不抢占用户焦点）
     const settings = config.stashSettings || {};
     await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
 
-    // 3. 安全关闭所有被收纳的闲置标签页
-    const tabIdsToClose = tabsToStash
+    // 4. 安全关闭所有被收纳的闲置标签页（容忍收纳期间被用户手动关闭的竞态）
+    const tabIdsToClose = closableStash
       .map(({ tab }) => tab.id)
       .filter((id) => typeof id === 'number');
 
-    if (tabIdsToClose.length > 0) {
-      await chrome.tabs.remove(tabIdsToClose);
-    }
+    const closedCount = await StashService.closeTabsSafely(tabIdsToClose);
 
-    // 4. 确保用户当前浏览的前台页面稳固保持激活，实现 100% 无感浏览体验
+    // 5. 确保用户当前浏览的前台页面稳固保持激活，实现 100% 无感浏览体验
     if (currentActiveTab && typeof currentActiveTab.id === 'number' && !tabIdsToClose.includes(currentActiveTab.id)) {
       try {
         await chrome.tabs.update(currentActiveTab.id, { active: true });
@@ -359,7 +407,7 @@ export class StashService {
 
     return {
       success: true,
-      stashedCount: tabIdsToClose.length,
+      stashedCount: closedCount,
       keptCount: tabsToKeep.length,
       tierLevel: finalTierLevel,
       reachedTarget

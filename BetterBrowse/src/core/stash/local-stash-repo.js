@@ -125,7 +125,7 @@ export class LocalStashRepository {
 
   /**
    * 执行自动备份（收纳组创建成功后调用）
-   * 备份仍持久化在 chrome.storage.local，是否迁入 IndexedDB 由 ADR-3 在 M2 末尾单独评审。
+   * v7 起备份写入 IndexedDB settings 仓储（StorageAdapter 按版本门控路由），失败不影响主收纳。
    * @param {number} [now=Date.now()] - 备份快照时间戳
    */
   static async _runAutoBackupIfEnabled(now = Date.now()) {
@@ -406,6 +406,125 @@ export class LocalStashRepository {
   }
 
   /**
+   * 向既有收纳组追加单个条目（AI 增强通道：URL 经 OneTabConverter.sanitizeUrl 清洗，按设置去重）
+   * @param {string} groupId - 组 ID
+   * @param {{ url: string, title?: string, favIconUrl?: string, pinned?: boolean }} tabItem
+   * @returns {Promise<{ success: boolean, added?: boolean, item?: any, skipped?: number, error?: string }>}
+   */
+  static async addTabItemToGroup(groupId, tabItem) {
+    if (!tabItem || typeof tabItem !== 'object') {
+      return { success: false, error: '条目数据无效' };
+    }
+    const cleanUrl = OneTabConverter.sanitizeUrl(tabItem.url);
+    if (!cleanUrl) return { success: false, error: 'URL 无效或包含不支持的协议' };
+    const normalized = {
+      url: cleanUrl,
+      title: typeof tabItem.title === 'string' ? tabItem.title : '',
+      favIconUrl: OneTabConverter.sanitizeUrl(tabItem.favIconUrl) || '',
+      pinned: Boolean(tabItem.pinned)
+    };
+
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const config = await StorageAdapter.getUserConfig();
+          const res = await backend.addTabItemToGroup(groupId, normalized, config.stashSettings || {});
+          if (res?.success && res.added) await this._notifyStashChanged();
+          return res;
+        } catch (err) {
+          console.error('[LocalStashRepository] IndexedDB 追加收纳条目失败:', err);
+          return { success: false, error: err.message || '写入 IndexedDB 主库失败' };
+        }
+      }
+      return await this._legacyAddTabItemToGroup(groupId, normalized);
+    });
+  }
+
+  /**
+   * 旧存储实现：向既有组追加条目（调用方已持有跨上下文写锁）
+   */
+  static async _legacyAddTabItemToGroup(groupId, normalized) {
+    const currentGroups = await this._legacyGetAllGroups();
+    const target = currentGroups.find((g) => g.id === groupId);
+    if (!target) return { success: false, error: '收纳组不存在' };
+
+    const config = await StorageAdapter.getUserConfig();
+    if (config.stashSettings?.allowDuplicates === false) {
+      const exists = currentGroups.some((g) => (g.tabs || []).some((t) => t.url === normalized.url));
+      if (exists) return { success: true, added: false, skipped: 1 };
+    }
+
+    const newItem = {
+      id: `tab_item_${Math.random().toString(36).substring(2, 9)}`,
+      url: normalized.url,
+      title: normalized.title || normalized.url || '无标题页面',
+      favIconUrl: normalized.favIconUrl || '',
+      pinned: Boolean(normalized.pinned)
+    };
+    target.tabs = [...(target.tabs || []), newItem];
+    const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
+    if (!ok) return { success: false, error: '写入本地收纳仓储失败' };
+    await this._notifyStashChanged();
+    return { success: true, added: true, item: newItem };
+  }
+
+  /**
+   * 编辑既有收纳条目（AI 增强通道）
+   * 标题遵循两层模型语义：title 属于页面实体（同 URL 条目共享）；
+   * 修改 url 会将条目重新指向新 URL 的页面实体。
+   * @param {string} groupId - 组 ID
+   * @param {string} itemId - 条目 ID
+   * @param {Partial<{ title: string, url: string, pinned: boolean, archived: boolean }>} updates
+   * @returns {Promise<boolean>}
+   */
+  static async updateTabItem(groupId, itemId, updates) {
+    if (!itemId || !updates || typeof updates !== 'object') return false;
+    const normalized = {};
+    if (typeof updates.url === 'string') {
+      const cleanUrl = OneTabConverter.sanitizeUrl(updates.url);
+      if (!cleanUrl) return false;
+      normalized.url = cleanUrl;
+    }
+    if (typeof updates.title === 'string') normalized.title = updates.title;
+    if (typeof updates.pinned === 'boolean') normalized.pinned = updates.pinned;
+    if (typeof updates.archived === 'boolean') normalized.archived = updates.archived;
+    if (Object.keys(normalized).length === 0) return false;
+
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const ok = await backend.updateTabItem(groupId, itemId, normalized);
+          if (ok) await this._notifyStashChanged();
+          return ok;
+        } catch (err) {
+          console.error('[LocalStashRepository] IndexedDB 编辑收纳条目失败:', err);
+          return false;
+        }
+      }
+      return await this._legacyUpdateTabItem(groupId, itemId, normalized);
+    });
+  }
+
+  /**
+   * 旧存储实现：编辑条目（调用方已持有跨上下文写锁）
+   */
+  static async _legacyUpdateTabItem(groupId, itemId, normalized) {
+    const currentGroups = await this._legacyGetAllGroups();
+    const targetGroup = currentGroups.find((g) => g.id === groupId);
+    const target = targetGroup?.tabs?.find((t) => t.id === itemId);
+    if (!target) return false;
+    if (normalized.url !== undefined) target.url = normalized.url;
+    if (normalized.title !== undefined) target.title = normalized.title.slice(0, 4096) || target.url;
+    if (normalized.pinned !== undefined) target.pinned = normalized.pinned;
+    if (normalized.archived !== undefined) target.archived = normalized.archived;
+    const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
+    if (ok) await this._notifyStashChanged();
+    return ok;
+  }
+
+  /**
    * 清空所有非锁定的历史收纳数据
    * @returns {Promise<boolean>}
    */
@@ -501,6 +620,145 @@ export class LocalStashRepository {
   }
 
   /**
+   * 按关键字全局检索收纳条目（标题 / URL 模糊匹配；AI 增强读取通道）
+   * @param {string} keyword
+   * @param {number} [limit=100]
+   * @returns {Promise<Array<{ groupId: string, itemId: string, url: string, title: string }>>}
+   */
+  static async searchStash(keyword, limit = 100) {
+    const backend = await this._getBackend();
+    if (backend) {
+      try {
+        return await backend.searchEntries(keyword, { limit });
+      } catch (err) {
+        console.warn('[LocalStashRepository] IndexedDB 检索失败，降级至内存检索:', err);
+      }
+    }
+    return await this._legacySearchStash(keyword, limit);
+  }
+
+  /**
+   * 旧存储实现：整读后内存检索
+   */
+  static async _legacySearchStash(keyword, limit = 100) {
+    const kw = String(keyword || '').trim().toLowerCase();
+    if (!kw) return [];
+    const groups = await this._legacyGetAllGroups();
+    const results = [];
+    for (const group of groups) {
+      for (const tab of group.tabs || []) {
+        if (
+          String(tab.title || '').toLowerCase().includes(kw) ||
+          String(tab.url || '').toLowerCase().includes(kw)
+        ) {
+          results.push({ groupId: group.id, itemId: tab.id, url: tab.url, title: tab.title });
+          if (results.length >= limit) return results;
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
+   * 分页读取指定收纳组的条目（AI 增强读取通道，支撑超长组）
+   * @param {string} groupId
+   * @param {{ offset?: number, limit?: number }} [options]
+   * @returns {Promise<{ items: any[], total: number, offset: number, limit: number }>}
+   */
+  static async getGroupPage(groupId, { offset = 0, limit = 50 } = {}) {
+    const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
+    const safeLimit = Math.min(500, Math.max(1, Math.floor(Number(limit) || 50)));
+    const backend = await this._getBackend();
+    if (backend) {
+      try {
+        return await backend.getGroupPage(groupId, { offset: safeOffset, limit: safeLimit });
+      } catch (err) {
+        console.warn('[LocalStashRepository] IndexedDB 分页读取失败，降级至旧存储:', err);
+      }
+    }
+    const groups = await this._legacyGetAllGroups();
+    const group = groups.find((g) => g.id === groupId);
+    const tabs = group ? group.tabs || [] : [];
+    const items = tabs.slice(safeOffset, safeOffset + safeLimit).map((tab) => ({
+      id: tab.id,
+      url: tab.url,
+      title: tab.title,
+      favIconUrl: tab.favIconUrl || '',
+      pinned: Boolean(tab.pinned)
+    }));
+    return { items, total: tabs.length, offset: safeOffset, limit: safeLimit };
+  }
+
+  /**
+   * 列出本地自动备份快照摘要（AI 增强读取通道；不返回快照正文以控制响应体积）
+   * @returns {Promise<Array<{ createdAt: number, groupCount: number, entryCount: number, sizeBytes: number }>>}
+   */
+  static async listAutoBackups() {
+    const backups = await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, []);
+    if (!Array.isArray(backups)) return [];
+    return backups.map((backup) => ({
+      createdAt: backup?.createdAt || 0,
+      groupCount: Array.isArray(backup?.groups) ? backup.groups.length : 0,
+      entryCount: Array.isArray(backup?.groups)
+        ? backup.groups.reduce((sum, g) => sum + (Array.isArray(g?.tabs) ? g.tabs.length : 0), 0)
+        : 0,
+      sizeBytes: this.estimateBackupBytes([backup])
+    }));
+  }
+
+  /**
+   * 恢复指定自动备份中的收纳组（幂等 upsert，不触碰现有其他组与配置）
+   * @param {number} createdAt - 备份快照时间戳
+   * @returns {Promise<{ success: boolean, groupCount?: number, error?: string }>}
+   */
+  static async restoreAutoBackup(createdAt) {
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backups = await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, []);
+      const target = Array.isArray(backups) ? backups.find((b) => b?.createdAt === createdAt) : null;
+      if (!target || !Array.isArray(target.groups) || target.groups.length === 0) {
+        return { success: false, error: '指定备份不存在或为空' };
+      }
+      try {
+        const backend = await this._getBackend();
+        if (backend) {
+          const imported = await backend.importGroups(target.groups);
+          if (!imported?.success) throw new Error(imported?.error || '写入 IndexedDB 失败');
+        } else {
+          // 旧存储：按组 id 幂等合并（目标组覆盖同名现有组，其余组不动）
+          const currentGroups = await this._legacyGetAllGroups();
+          const targetIds = new Set(target.groups.map((g) => g.id));
+          const merged = [...target.groups, ...currentGroups.filter((g) => !targetIds.has(g.id))];
+          const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, merged);
+          if (!ok) throw new Error('写入本地收纳仓储失败');
+        }
+        await this._notifyStashChanged();
+        return { success: true, groupCount: target.groups.length };
+      } catch (err) {
+        console.error('[LocalStashRepository] 恢复自动备份失败:', err);
+        return { success: false, error: err.message || '恢复备份失败' };
+      }
+    });
+  }
+
+  /**
+   * 删除指定自动备份快照
+   * @param {number} createdAt - 备份快照时间戳
+   * @returns {Promise<{ success: boolean, remaining?: number, error?: string }>}
+   */
+  static async deleteAutoBackup(createdAt) {
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backups = await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, []);
+      if (!Array.isArray(backups)) return { success: false, error: '备份列表不存在' };
+      const filtered = backups.filter((b) => b?.createdAt !== createdAt);
+      if (filtered.length === backups.length) return { success: false, error: '指定备份不存在' };
+      const ok = await StorageAdapter.set(StorageKeys.AUTO_BACKUPS, filtered);
+      return ok
+        ? { success: true, remaining: filtered.length }
+        : { success: false, error: '写入备份仓储失败' };
+    });
+  }
+
+  /**
    * 导出所有收纳数据为 JSON 字符串 (基础版)
    * @returns {Promise<string>}
    */
@@ -577,18 +835,22 @@ export class LocalStashRepository {
       if (configToRestore.rulesEnabled && typeof configToRestore.rulesEnabled === 'object') safeConfig.rulesEnabled = configToRestore.rulesEnabled;
       if (configToRestore.globalLinkRule && typeof configToRestore.globalLinkRule === 'object') safeConfig.globalLinkRule = configToRestore.globalLinkRule;
       if (configToRestore.stashSettings && typeof configToRestore.stashSettings === 'object') safeConfig.stashSettings = configToRestore.stashSettings;
-      if (Object.keys(safeConfig).length > 0) {
-        await StorageAdapter.updateUserConfig(safeConfig);
-        restoredConfig = true;
-      }
-
-      if (parsed.linkRules && typeof parsed.linkRules === 'object') {
-        const safeRules = {};
-        for (const [domain, mode] of Object.entries(parsed.linkRules)) {
-          if (/^[a-z0-9.-]+$/i.test(domain) && ['auto', 'current', 'new'].includes(mode)) safeRules[domain.toLowerCase()] = mode;
-        }
-        await StorageAdapter.set(StorageKeys.LINK_RULES, safeRules);
-        restoredRules = true;
+      if (configToRestore.tieredStash && typeof configToRestore.tieredStash === 'object') safeConfig.tieredStash = configToRestore.tieredStash;
+      if (Object.keys(safeConfig).length > 0 || (parsed.linkRules && typeof parsed.linkRules === 'object')) {
+        await IndexedDBManager.withWriteLock(async () => {
+          if (Object.keys(safeConfig).length > 0) {
+            restoredConfig = await StorageAdapter.updateUserConfigUnlocked(safeConfig);
+          }
+          if (parsed.linkRules && typeof parsed.linkRules === 'object') {
+            const safeRules = {};
+            for (const [domain, mode] of Object.entries(parsed.linkRules)) {
+              if (/^[a-z0-9.-]+$/i.test(domain) && ['auto', 'current', 'new'].includes(mode)) {
+                safeRules[domain.toLowerCase()] = mode;
+              }
+            }
+            restoredRules = await StorageAdapter.set(StorageKeys.LINK_RULES, safeRules);
+          }
+        });
       }
     }
 
@@ -631,56 +893,6 @@ export class LocalStashRepository {
    */
   static async importThirdPartyData(rawInputString) {
     return await this.importDataJSON(rawInputString);
-  }
-
-  /**
-   * 校验并清洗导入的 URL（支持智能补齐 http/https，兼容 chrome/edge/file/about 等安全协议，剔除非法伪协议）
-   * @param {unknown} rawUrl
-   * @returns {string | null}
-   */
-  static sanitizeImportUrl(rawUrl) {
-    if (typeof rawUrl !== 'string') return null;
-    let url = rawUrl.trim();
-    if (!url || url.length > 8192) return null;
-
-    // 过滤危险伪协议
-    const lower = url.toLowerCase();
-    if (
-      lower.startsWith('javascript:') ||
-      lower.startsWith('data:text/html') ||
-      lower.startsWith('vbscript:')
-    ) {
-      return null;
-    }
-
-    // 智能补齐缺省协议头
-    if (url.startsWith('//')) {
-      url = 'https:' + url;
-    } else if (/^[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z0-9]/.test(url) && !url.includes('://')) {
-      url = 'https://' + url;
-    }
-
-    try {
-      const parsed = new URL(url);
-      const allowedProtocols = [
-        'http:',
-        'https:',
-        'chrome:',
-        'edge:',
-        'about:',
-        'file:',
-        'ftp:',
-        'view-source:',
-        'brave:',
-        'vivaldi:'
-      ];
-      if (allowedProtocols.includes(parsed.protocol)) {
-        return url;
-      }
-      return null;
-    } catch {
-      return null;
-    }
   }
 
   /**
@@ -745,6 +957,54 @@ export class LocalStashRepository {
   }
 
   /**
+   * 恢复单个收纳组快照（撤销删除专用轻量通道）
+   * 与 importDataJSON / restoreFullBackupJSON 的"追加导入"不同，本方法仅写入被恢复的这一个组，
+   * 绝不触碰现有组数据，也绝不触发配置/规则恢复管线。
+   * entryId 由主键推导幂等写入，重复恢复同一快照不会产生重复条目。
+   * @param {{ id?: string, tabs?: any[], title?: string, createdAt?: number, locked?: boolean, starred?: boolean }} snapshotGroup
+   * @returns {Promise<{ success: boolean, error?: string }>}
+   */
+  static async restoreGroupSnapshot(snapshotGroup) {
+    if (!snapshotGroup || typeof snapshotGroup !== 'object' || !snapshotGroup.id || !Array.isArray(snapshotGroup.tabs)) {
+      return { success: false, error: '恢复数据结构无效' };
+    }
+    const group = {
+      id: snapshotGroup.id,
+      createdAt: typeof snapshotGroup.createdAt === 'number' ? snapshotGroup.createdAt : Date.now(),
+      title: typeof snapshotGroup.title === 'string' ? snapshotGroup.title.slice(0, 200) : '',
+      locked: Boolean(snapshotGroup.locked),
+      starred: Boolean(snapshotGroup.starred),
+      tabs: snapshotGroup.tabs
+    };
+
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (backend) {
+        try {
+          const imported = await backend.importGroups([group]);
+          if (!imported?.success) {
+            throw new Error(imported?.error || '写入 IndexedDB 失败');
+          }
+          await this._notifyStashChanged();
+          return { success: true };
+        } catch (err) {
+          console.error('[LocalStashRepository] 恢复收纳组快照失败:', err);
+          return { success: false, error: err.message || '写入 IndexedDB 主库失败' };
+        }
+      }
+      try {
+        const currentGroups = await this._legacyGetAllGroups();
+        const mergedGroups = [group, ...currentGroups.filter((g) => g.id !== group.id)];
+        const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, mergedGroups);
+        if (ok) await this._notifyStashChanged();
+        return ok ? { success: true } : { success: false, error: '写入本地收纳仓储失败' };
+      } catch (err) {
+        return { success: false, error: err.message || '写入本地收纳仓储失败' };
+      }
+    });
+  }
+
+  /**
    * 将解析结果规范化为可入库的组结构（URL 清洗、协议过滤、脏数据剔除）
    * @param {Array<{ tabs: any[], createdAt?: number, title?: string, id?: string, locked?: boolean, starred?: boolean }>} parsedGroups
    * @returns {{ validImportedGroups: any[], importedCount: number }}
@@ -769,14 +1029,14 @@ export class LocalStashRepository {
         const validTabs = [];
         for (const t of grp.tabs) {
           if (!t) continue;
-          const cleanUrl = this.sanitizeImportUrl(t.url);
+          const cleanUrl = OneTabConverter.sanitizeUrl(t.url);
           if (!cleanUrl) continue;
 
           validTabs.push({
             id: t.id || `tab_item_${Math.random().toString(36).substring(2, 9)}`,
             url: cleanUrl,
             title: typeof t.title === 'string' && t.title.trim() ? t.title.slice(0, 4096) : cleanUrl,
-            favIconUrl: this.sanitizeImportUrl(t.favIconUrl) || '',
+            favIconUrl: OneTabConverter.sanitizeUrl(t.favIconUrl) || '',
             pinned: Boolean(t.pinned),
             archived: Boolean(t.archived)
           });

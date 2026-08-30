@@ -8,10 +8,7 @@
 const dispatchTask = (fn) => setTimeout(fn, 0);
 
 /** 深克隆存储值，模拟 IndexedDB 的结构化克隆语义 */
-const cloneValue = (value) => {
-  if (typeof structuredClone === 'function') return structuredClone(value);
-  return JSON.parse(JSON.stringify(value));
-};
+const cloneValue = (value) => structuredClone(value);
 
 /**
  * 模拟 IDBRequest：结果同步计算，事件在宏任务中派发
@@ -235,6 +232,10 @@ class FakeTransaction {
     this.onabort = null;
     this.onerror = null;
     this._storeNames = new Set(storeNames);
+    // 与真实 IDBTransaction 对齐：允许调用方探测事务覆盖的对象仓储
+    this.objectStoreNames = {
+      contains: (storeName) => this._storeNames.has(storeName)
+    };
     this._active = true;
     this._aborted = false;
     this._pendingRequests = 0;
@@ -395,6 +396,9 @@ export class FakeIDBFactory {
         upgradeNeeded = true;
         db._forceClose();
         this._connections.delete(db);
+      } else {
+        // 同版本重新打开：允许同一数据库再次建立新连接（IndexedDBManager.close 后重连）
+        db._closed = false;
       }
 
       this._connections.add(db);
@@ -423,6 +427,18 @@ export class FakeIDBFactory {
     }
     this._connections.clear();
   }
+}
+
+/**
+ * 统计 IndexedDB 指定仓储的记录数
+ * @param {{ runTransaction: Function, requestToPromise: Function }} IndexedDBManager
+ * @param {string} storeName
+ * @returns {Promise<number>}
+ */
+export async function countStoreRecords(IndexedDBManager, storeName) {
+  return await IndexedDBManager.runTransaction([storeName], 'readonly', async (tx) => {
+    return await IndexedDBManager.requestToPromise(tx.objectStore(storeName).count());
+  });
 }
 
 /**

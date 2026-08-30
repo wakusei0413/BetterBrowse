@@ -7,16 +7,23 @@
 /** 本地主库数据库名称 */
 export const DB_NAME = 'betterbrowse';
 
-/** 本地主库结构版本（新增对象仓储或索引时递增） */
-export const DB_VERSION = 1;
+/**
+ * 本地主库结构版本（新增对象仓储或索引时递增；v8 / DB 9 起含同步仓储全套对象仓储）。
+ * ⚠️ 必须单调递增且 > 磁盘上的现存版本：IndexedDB 拒绝用更低的版本号打开库（VersionError），
+ * 且"仅抬高版本号而不建表"的异常残留库需要更高的版本号才能重新触发 upgradeneeded 建表
+ * （由 MigrationManager.repairMissingObjectStores 自愈流程处理）。
+ */
+export const DB_VERSION = 9;
 
 /**
  * 对象仓储名称与结构契约（详见 docs/01-local-indexeddb.md 第 2.1 节）
  * - pages:        页面实体层，同一 URL 唯一（pageId 为 URL 指纹）
  * - stashGroups:  收纳组层
  * - stashEntries: 收纳记录层，组内条目通过 pageId 指向页面实体
- * - settings / activityStats: 阶段一仅建表占位，读写仍以 chrome.storage.local 为准以兼容现有逻辑
- * - deviceEvents: 本地操作事件（阶段二跨设备同步复用）
+ * - settings: v7 起承载用户配置、域名跳转规则与自动备份（key-value）；凭据亦在此但不进入同步
+ * - activityStats: v7 起承载标签页活跃度快照（v8 起按 pageId）
+ * - deviceEvents: 跨设备可见、仅来源设备执行的倒计时 / 收纳事件
+ * - syncMeta / outbox / operationLogs / tombstones / conflicts / snapshots: 阶段二同步
  */
 export const IDBStores = {
   PAGES: 'pages',
@@ -24,7 +31,13 @@ export const IDBStores = {
   STASH_ENTRIES: 'stashEntries',
   SETTINGS: 'settings',
   ACTIVITY_STATS: 'activityStats',
-  DEVICE_EVENTS: 'deviceEvents'
+  DEVICE_EVENTS: 'deviceEvents',
+  SYNC_META: 'syncMeta',
+  OUTBOX: 'outbox',
+  OPERATION_LOGS: 'operationLogs',
+  TOMBSTONES: 'tombstones',
+  CONFLICTS: 'conflicts',
+  SNAPSHOTS: 'snapshots'
 };
 
 export class IndexedDBManager {
@@ -68,6 +81,14 @@ export class IndexedDBManager {
   static _openDatabase() {
     return new Promise((resolve, reject) => {
       const request = globalThis.indexedDB.open(DB_NAME, DB_VERSION);
+      // 打开超时保护：onblocked（其他上下文持有旧版本连接）会让请求永不落定，
+      // 超时显式失败并清空缓存，让下一次操作重试，杜绝调用方无限等待
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error('IndexedDB 打开超时（10 秒，可能被其他上下文的版本升级阻塞）'));
+      }, 10000);
 
       request.onupgradeneeded = (event) => {
         // 首次创建或版本升级时建立对象仓储与索引
@@ -75,6 +96,17 @@ export class IndexedDBManager {
       };
 
       request.onsuccess = () => {
+        if (settled) {
+          // 超时后才成功：直接关闭多余连接，避免悬挂连接阻塞后续版本升级
+          try {
+            request.result.close();
+          } catch {
+            // 忽略重复关闭
+          }
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
         const db = request.result;
         // 连接被浏览器强制关闭（数据库被删除 / 私密模式回收）时清空缓存，下次操作重新打开
         db.onclose = () => {
@@ -92,9 +124,14 @@ export class IndexedDBManager {
         resolve(db);
       };
 
-      request.onerror = () => reject(request.error || new Error('IndexedDB 数据库打开失败'));
+      request.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        reject(request.error || new Error('IndexedDB 数据库打开失败'));
+      };
       request.onblocked = () => {
-        // 等待其他上下文释放旧版本连接（不主动失败，由浏览器自行调度）
+        // 不立即失败：等待超时保护兜底（其他上下文通常会在 onversionchange 中主动让出）
       };
     });
   }
@@ -136,6 +173,27 @@ export class IndexedDBManager {
       const events = db.createObjectStore(IDBStores.DEVICE_EVENTS, { keyPath: 'eventId' });
       events.createIndex('deviceId', 'deviceId', { unique: false });
       events.createIndex('sequence', 'sequence', { unique: false });
+    }
+
+    if (!db.objectStoreNames.contains(IDBStores.SYNC_META)) {
+      db.createObjectStore(IDBStores.SYNC_META, { keyPath: 'key' });
+    }
+    if (!db.objectStoreNames.contains(IDBStores.OUTBOX)) {
+      const outbox = db.createObjectStore(IDBStores.OUTBOX, { keyPath: 'operationId' });
+      outbox.createIndex('sequence', 'sequence', { unique: false });
+    }
+    if (!db.objectStoreNames.contains(IDBStores.OPERATION_LOGS)) {
+      db.createObjectStore(IDBStores.OPERATION_LOGS, { keyPath: 'logId' });
+    }
+    if (!db.objectStoreNames.contains(IDBStores.TOMBSTONES)) {
+      const tombs = db.createObjectStore(IDBStores.TOMBSTONES, { keyPath: 'tombstoneId' });
+      tombs.createIndex('expiresAt', 'expiresAt', { unique: false });
+    }
+    if (!db.objectStoreNames.contains(IDBStores.CONFLICTS)) {
+      db.createObjectStore(IDBStores.CONFLICTS, { keyPath: 'conflictId' });
+    }
+    if (!db.objectStoreNames.contains(IDBStores.SNAPSHOTS)) {
+      db.createObjectStore(IDBStores.SNAPSHOTS, { keyPath: 'snapshotId' });
     }
   }
 
@@ -183,7 +241,8 @@ export class IndexedDBManager {
         if (outcome.done) resolve(outcome.value);
         else reject(outcome.error || new Error('IndexedDB 事务已完成但业务回调未结束'));
       };
-      tx.onabort = () => reject(tx.error || new Error('IndexedDB 事务已中止'));
+      // 中止时优先抛出业务回调的原始错误（tx.error 只是通用的"事务已被中止"）
+      tx.onabort = () => reject(outcome.error || tx.error || new Error('IndexedDB 事务已中止'));
       tx.onerror = () => reject(tx.error || new Error('IndexedDB 事务执行失败'));
 
       (async () => {

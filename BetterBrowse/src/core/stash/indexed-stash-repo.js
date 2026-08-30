@@ -10,6 +10,8 @@
  */
 
 import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
+import { SyncOutbox } from '../sync/outbox.js';
+import { SyncEntityTypes, SyncOps } from '../sync/sync-constants.js';
 
 /** 单批次写入的最大记录数（避免单次大事务被 Service Worker 休眠打断） */
 const WRITE_BATCH_SIZE = 500;
@@ -145,31 +147,36 @@ export class IndexedStashRepository {
   }
 
   /**
-   * 统计收纳组数量（迁移完整性校验用）
-   * @returns {Promise<number>}
-   */
-  static async countGroups() {
-    return await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
-      return await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_GROUPS).count());
-    });
-  }
-
-  /**
-   * 通过 pageId 索引精确查询一组 URL 是否已被任何收纳组收录（去重判定不加载整数组）
+   * 通过 pageId 索引精确查询一组 URL 是否已被任何"现存收纳组"收录（去重判定不加载整数组）
+   * 必须联表校验条目所属组仍然存在：异常中断可能留下没有组记录的孤儿条目，
+   * 若仅凭条目判定，孤儿条目会让对应 URL 永远被去重跳过，进而导致标签页被关闭且数据无处可寻。
    * @param {string[]} urls - 待查询 URL 列表
    * @returns {Promise<Map<string, boolean>>} pageId -> 是否已存在
    */
   static async _queryExistingPageIds(urls) {
     const result = new Map();
     if (!urls || urls.length === 0) return result;
-    await IndexedDBManager.runTransaction([IDBStores.STASH_ENTRIES], 'readonly', async (tx) => {
-      const pageIndex = tx.objectStore(IDBStores.STASH_ENTRIES).index('pageId');
-      for (const url of urls) {
-        const pageId = this.computePageId(url);
-        const entries = await IndexedDBManager.requestToPromise(pageIndex.getAll(pageId));
-        result.set(pageId, entries.length > 0);
+    await IndexedDBManager.runTransaction(
+      [IDBStores.STASH_ENTRIES, IDBStores.STASH_GROUPS],
+      'readonly',
+      async (tx) => {
+        const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
+        const pageIndex = tx.objectStore(IDBStores.STASH_ENTRIES).index('pageId');
+        for (const url of urls) {
+          const pageId = this.computePageId(url);
+          const entries = await IndexedDBManager.requestToPromise(pageIndex.getAll(pageId));
+          let exists = false;
+          for (const entry of entries) {
+            const group = await IndexedDBManager.requestToPromise(groupsStore.get(entry.groupId));
+            if (group) {
+              exists = true;
+              break;
+            }
+          }
+          result.set(pageId, exists);
+        }
       }
-    });
+    );
     return result;
   }
 
@@ -189,32 +196,6 @@ export class IndexedStashRepository {
         }
       }
     });
-  }
-
-  /**
-   * 分批写入页面实体（upsert 语义：已存在的页面按策略决定是否刷新标题）
-   * @param {any[]} pageRecords - 页面实体记录
-   * @param {boolean} updateTitle - 已存在页面是否用最新标题覆盖（对应 useLatest 行为）
-   */
-  static async _upsertPages(pageRecords, updateTitle) {
-    for (const batch of IndexedDBManager.chunk(pageRecords, WRITE_BATCH_SIZE)) {
-      await IndexedDBManager.runTransaction([IDBStores.PAGES], 'readwrite', async (tx) => {
-        const store = tx.objectStore(IDBStores.PAGES);
-        for (const page of batch) {
-          const existing = await IndexedDBManager.requestToPromise(store.get(page.pageId));
-          if (existing) {
-            // 同一 URL 复用页面实体，仅刷新动态字段
-            existing.favIconUrl = page.favIconUrl || existing.favIconUrl;
-            existing.domain = page.domain || existing.domain;
-            existing.updatedAt = page.updatedAt;
-            if (updateTitle && page.title) existing.title = page.title;
-            store.put(existing);
-          } else {
-            store.put(page);
-          }
-        }
-      });
-    }
   }
 
   /**
@@ -309,15 +290,124 @@ export class IndexedStashRepository {
       title: defaultTitle,
       locked: false,
       starred: false,
-      archived: false
+      archived: false,
+      updatedAt: now
     };
 
-    // 1. 页面实体（同一 URL 复用已有实体）
-    await this._upsertPages([...pagesById.values()], updateTitle);
-    // 2. 收纳记录
-    await this._putChunked(IDBStores.STASH_ENTRIES, entryRecords);
-    // 3. 组记录（最后写入，中断时上层不可见半成品）
-    await this._putChunked(IDBStores.STASH_GROUPS, [groupRecord]);
+    const enqueue = await SyncOutbox.isActive();
+    const stores = [IDBStores.PAGES, IDBStores.STASH_ENTRIES, IDBStores.STASH_GROUPS];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+
+    // 单事务原子写入三层记录：任一环节失败整体回滚，
+    // 杜绝"条目已写入而组记录缺失"的孤儿条目污染去重判定
+    await IndexedDBManager.runTransaction(
+      stores,
+      'readwrite',
+      async (tx) => {
+        const pagesStore = tx.objectStore(IDBStores.PAGES);
+        const entriesStore = tx.objectStore(IDBStores.STASH_ENTRIES);
+        const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
+
+        // 1. 页面实体（同一 URL 复用已有实体，仅刷新动态字段）
+        for (const page of pagesById.values()) {
+          const existing = await IndexedDBManager.requestToPromise(pagesStore.get(page.pageId));
+          if (existing) {
+            existing.favIconUrl = page.favIconUrl || existing.favIconUrl;
+            existing.domain = page.domain || existing.domain;
+            existing.updatedAt = page.updatedAt;
+            if (updateTitle && page.title) existing.title = page.title;
+            if (enqueue) {
+              const op = await SyncOutbox.enqueueInTx(tx, {
+                entityType: SyncEntityTypes.PAGE,
+                entityId: existing.pageId,
+                op: SyncOps.PATCH,
+                fields: {
+                  favIconUrl: existing.favIconUrl,
+                  domain: existing.domain,
+                  title: existing.title,
+                  url: existing.url
+                }
+              });
+              if (op) {
+                existing.fieldRevs = { ...(existing.fieldRevs || {}), ...op.fieldRevs };
+                existing.revision = op.lamport;
+                existing.originDeviceId = op.deviceId;
+              }
+            }
+            pagesStore.put(existing);
+          } else {
+            if (enqueue) {
+              const op = await SyncOutbox.enqueueInTx(tx, {
+                entityType: SyncEntityTypes.PAGE,
+                entityId: page.pageId,
+                op: SyncOps.UPSERT,
+                fields: {
+                  url: page.url,
+                  domain: page.domain,
+                  title: page.title,
+                  favIconUrl: page.favIconUrl,
+                  createdAt: page.createdAt
+                }
+              });
+              if (op) {
+                page.fieldRevs = { ...op.fieldRevs };
+                page.revision = op.lamport;
+                page.originDeviceId = op.deviceId;
+              }
+            }
+            pagesStore.put(page);
+          }
+        }
+
+        // 2. 收纳记录
+        for (const entry of entryRecords) {
+          if (enqueue) {
+            const op = await SyncOutbox.enqueueInTx(tx, {
+              entityType: SyncEntityTypes.STASH_ENTRY,
+              entityId: entry.entryId,
+              op: SyncOps.UPSERT,
+              fields: {
+                groupId: entry.groupId,
+                pageId: entry.pageId,
+                createdAt: entry.createdAt,
+                position: entry.position,
+                pinned: entry.pinned,
+                archived: entry.archived
+              }
+            });
+            if (op) {
+              entry.fieldRevs = { ...op.fieldRevs };
+              entry.revision = op.lamport;
+              entry.originDeviceId = op.deviceId;
+            }
+          }
+          entriesStore.put(entry);
+        }
+
+        // 3. 组记录（同一事务内写入，天然无"半可见"窗口）
+        if (enqueue) {
+          const op = await SyncOutbox.enqueueInTx(tx, {
+            entityType: SyncEntityTypes.STASH_GROUP,
+            entityId: groupId,
+            op: SyncOps.UPSERT,
+            fields: {
+              title: groupRecord.title,
+              locked: groupRecord.locked,
+              starred: groupRecord.starred,
+              archived: groupRecord.archived,
+              createdAt: groupRecord.createdAt
+            }
+          });
+          if (op) {
+            groupRecord.fieldRevs = { ...op.fieldRevs };
+            groupRecord.revision = op.lamport;
+            groupRecord.originDeviceId = op.deviceId;
+          }
+        }
+        groupsStore.put(groupRecord);
+      }
+    );
+    if (enqueue) SyncOutbox.flushDirty();
 
     // 返回与旧版结构完全一致的组对象（entryId 已含组命名空间，跨组唯一）
     return {
@@ -348,19 +438,40 @@ export class IndexedStashRepository {
    * @returns {Promise<boolean>}
    */
   static async updateGroup(groupId, updates) {
-    return await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readwrite', async (tx) => {
+    const enqueue = await SyncOutbox.isActive();
+    const stores = [IDBStores.STASH_GROUPS];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+    const ok = await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
       const store = tx.objectStore(IDBStores.STASH_GROUPS);
       const existing = await IndexedDBManager.requestToPromise(store.get(groupId));
       if (!existing || !updates || typeof updates !== 'object') return false;
       const allowed = ['title', 'locked', 'starred', 'archived'];
+      const fields = {};
       for (const key of allowed) {
         if (Object.prototype.hasOwnProperty.call(updates, key)) {
           existing[key] = key === 'title' ? String(updates[key]).slice(0, 200) : Boolean(updates[key]);
+          fields[key] = existing[key];
+        }
+      }
+      existing.updatedAt = Date.now();
+      if (enqueue && Object.keys(fields).length > 0) {
+        const op = await SyncOutbox.enqueueInTx(tx, {
+          entityType: SyncEntityTypes.STASH_GROUP,
+          entityId: groupId,
+          op: SyncOps.PATCH,
+          fields
+        });
+        if (op) {
+          existing.fieldRevs = { ...(existing.fieldRevs || {}), ...op.fieldRevs };
+          existing.revision = op.lamport;
+          existing.originDeviceId = op.deviceId;
         }
       }
       store.put(existing);
       return true;
     });
+    if (ok && enqueue) SyncOutbox.flushDirty();
+    return ok;
   }
 
   /**
@@ -371,8 +482,11 @@ export class IndexedStashRepository {
    * @returns {Promise<boolean>}
    */
   static async _deleteGroupUnlocked(groupId, force = false) {
-    return await IndexedDBManager.runTransaction(
-      [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES],
+    const enqueue = await SyncOutbox.isActive();
+    const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS, IDBStores.TOMBSTONES);
+    const ok = await IndexedDBManager.runTransaction(
+      stores,
       'readwrite',
       async (tx) => {
         const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
@@ -384,10 +498,44 @@ export class IndexedStashRepository {
         const entries = await IndexedDBManager.requestToPromise(
           entriesStore.index('groupId').getAll(groupId)
         );
-        for (const entry of entries) entriesStore.delete(entry.entryId);
+        for (const entry of entries) {
+          entriesStore.delete(entry.entryId);
+          if (enqueue) {
+            await SyncOutbox.enqueueInTx(tx, {
+              entityType: SyncEntityTypes.STASH_ENTRY,
+              entityId: entry.entryId,
+              op: SyncOps.DELETE,
+              fields: { groupId }
+            });
+            tx.objectStore(IDBStores.TOMBSTONES).put({
+              tombstoneId: `${SyncEntityTypes.STASH_ENTRY}::${entry.entryId}`,
+              entityType: SyncEntityTypes.STASH_ENTRY,
+              entityId: entry.entryId,
+              deletedAt: Date.now(),
+              expiresAt: Date.now() + 30 * 86400000
+            });
+          }
+        }
+        if (enqueue) {
+          await SyncOutbox.enqueueInTx(tx, {
+            entityType: SyncEntityTypes.STASH_GROUP,
+            entityId: groupId,
+            op: SyncOps.DELETE,
+            fields: { groupId }
+          });
+          tx.objectStore(IDBStores.TOMBSTONES).put({
+            tombstoneId: `${SyncEntityTypes.STASH_GROUP}::${groupId}`,
+            entityType: SyncEntityTypes.STASH_GROUP,
+            entityId: groupId,
+            deletedAt: Date.now(),
+            expiresAt: Date.now() + 30 * 86400000
+          });
+        }
         return true;
       }
     );
+    if (ok && enqueue) SyncOutbox.flushDirty();
+    return ok;
   }
 
   /**
@@ -408,8 +556,11 @@ export class IndexedStashRepository {
    * @returns {Promise<boolean>}
    */
   static async deleteTabItem(groupId, itemId) {
-    return await IndexedDBManager.runTransaction(
-      [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES],
+    const enqueue = await SyncOutbox.isActive();
+    const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS, IDBStores.TOMBSTONES);
+    const ok = await IndexedDBManager.runTransaction(
+      stores,
       'readwrite',
       async (tx) => {
         const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
@@ -426,12 +577,351 @@ export class IndexedStashRepository {
           return true;
         }
         entriesStore.delete(itemId);
+        if (enqueue) {
+          await SyncOutbox.enqueueInTx(tx, {
+            entityType: SyncEntityTypes.STASH_ENTRY,
+            entityId: itemId,
+            op: SyncOps.DELETE,
+            fields: { groupId }
+          });
+          tx.objectStore(IDBStores.TOMBSTONES).put({
+            tombstoneId: `${SyncEntityTypes.STASH_ENTRY}::${itemId}`,
+            entityType: SyncEntityTypes.STASH_ENTRY,
+            entityId: itemId,
+            deletedAt: Date.now(),
+            expiresAt: Date.now() + 30 * 86400000
+          });
+        }
         if (remaining.length === 0 && !group.locked) {
           groupsStore.delete(groupId);
+          if (enqueue) {
+            await SyncOutbox.enqueueInTx(tx, {
+              entityType: SyncEntityTypes.STASH_GROUP,
+              entityId: groupId,
+              op: SyncOps.DELETE,
+              fields: { groupId }
+            });
+            tx.objectStore(IDBStores.TOMBSTONES).put({
+              tombstoneId: `${SyncEntityTypes.STASH_GROUP}::${groupId}`,
+              entityType: SyncEntityTypes.STASH_GROUP,
+              entityId: groupId,
+              deletedAt: Date.now(),
+              expiresAt: Date.now() + 30 * 86400000
+            });
+          }
         }
         return true;
       }
     );
+    if (ok && enqueue) SyncOutbox.flushDirty();
+    return ok;
+  }
+
+  /**
+   * 向既有收纳组追加单个条目（AI 增强写入通道）
+   * 写入顺序与 createGroup 一致：页面实体 → 收纳记录 → 组记录 updatedAt；
+   * 页面、条目与组记录在同一事务内原子提交，outbox 操作同事务追加。
+   * ⚠️ 调用方必须已持有跨上下文写锁
+   * @param {string} groupId
+   * @param {{ url: string, title?: string, favIconUrl?: string, pinned?: boolean }} tabItem
+   * @param {any} [settings] - 收纳设置（allowDuplicates 等，语义与 createGroup 一致）
+   * @returns {Promise<{ success: boolean, added?: boolean, item?: any, skipped?: number, error?: string }>}
+   */
+  static async addTabItemToGroup(groupId, tabItem, settings = {}) {
+    if (!groupId || !tabItem || typeof tabItem.url !== 'string' || !tabItem.url) {
+      return { success: false, error: '缺少有效的 groupId 或 url' };
+    }
+    const cleanUrl = tabItem.url;
+    const pageId = this.computePageId(cleanUrl);
+
+    const enqueue = await SyncOutbox.isActive();
+    const now = Date.now();
+
+    // 去重判定与 createGroup 语义一致：禁止重复时该 URL 已被任何现存组收录则跳过
+    if (settings.allowDuplicates === false) {
+      const pageIdExists = await this._queryExistingPageIds([cleanUrl]);
+      if (pageIdExists.get(pageId)) {
+        return { success: true, added: false, skipped: 1 };
+      }
+    }
+
+    const stores = [IDBStores.PAGES, IDBStores.STASH_ENTRIES, IDBStores.STASH_GROUPS];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+
+    const title = typeof tabItem.title === 'string' && tabItem.title.trim()
+      ? tabItem.title.slice(0, 4096)
+      : cleanUrl;
+    const entryId = `${groupId}::tab_item_${Math.random().toString(36).substring(2, 9)}`;
+
+    const ok = await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
+      const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
+      const group = await IndexedDBManager.requestToPromise(groupsStore.get(groupId));
+      if (!group) return false;
+
+      const entries = await IndexedDBManager.requestToPromise(
+        tx.objectStore(IDBStores.STASH_ENTRIES).index('groupId').getAll(groupId)
+      );
+      const position = entries.reduce((max, entry) => Math.max(max, (entry.position ?? 0) + 1), 0);
+
+      const entryRecord = {
+        entryId,
+        groupId,
+        pageId,
+        createdAt: now,
+        position,
+        pinned: Boolean(tabItem.pinned),
+        archived: false
+      };
+
+      // 1. 页面实体（同一 URL 复用已有实体，仅刷新动态字段）
+      const pagesStore = tx.objectStore(IDBStores.PAGES);
+      const existingPage = await IndexedDBManager.requestToPromise(pagesStore.get(pageId));
+      const pageFields = {
+        url: cleanUrl,
+        domain: this.extractDomain(cleanUrl),
+        title,
+        favIconUrl: typeof tabItem.favIconUrl === 'string' ? tabItem.favIconUrl : ''
+      };
+      if (existingPage) {
+        existingPage.favIconUrl = pageFields.favIconUrl || existingPage.favIconUrl;
+        existingPage.domain = pageFields.domain || existingPage.domain;
+        existingPage.updatedAt = now;
+        if (enqueue) {
+          const op = await SyncOutbox.enqueueInTx(tx, {
+            entityType: SyncEntityTypes.PAGE,
+            entityId: existingPage.pageId,
+            op: SyncOps.PATCH,
+            fields: {
+              favIconUrl: existingPage.favIconUrl,
+              domain: existingPage.domain,
+              title: existingPage.title,
+              url: existingPage.url
+            }
+          });
+          if (op) {
+            existingPage.fieldRevs = { ...(existingPage.fieldRevs || {}), ...op.fieldRevs };
+            existingPage.revision = op.lamport;
+            existingPage.originDeviceId = op.deviceId;
+          }
+        }
+        pagesStore.put(existingPage);
+      } else {
+        const pageRecord = {
+          pageId,
+          ...pageFields,
+          createdAt: now,
+          updatedAt: now
+        };
+        if (enqueue) {
+          const op = await SyncOutbox.enqueueInTx(tx, {
+            entityType: SyncEntityTypes.PAGE,
+            entityId: pageId,
+            op: SyncOps.UPSERT,
+            fields: {
+              url: pageRecord.url,
+              domain: pageRecord.domain,
+              title: pageRecord.title,
+              favIconUrl: pageRecord.favIconUrl,
+              createdAt: pageRecord.createdAt
+            }
+          });
+          if (op) {
+            pageRecord.fieldRevs = { ...op.fieldRevs };
+            pageRecord.revision = op.lamport;
+            pageRecord.originDeviceId = op.deviceId;
+          }
+        }
+        pagesStore.put(pageRecord);
+      }
+
+      // 2. 收纳记录
+      if (enqueue) {
+        const op = await SyncOutbox.enqueueInTx(tx, {
+          entityType: SyncEntityTypes.STASH_ENTRY,
+          entityId: entryId,
+          op: SyncOps.UPSERT,
+          fields: {
+            groupId,
+            pageId,
+            createdAt: entryRecord.createdAt,
+            position: entryRecord.position,
+            pinned: entryRecord.pinned,
+            archived: entryRecord.archived
+          }
+        });
+        if (op) {
+          entryRecord.fieldRevs = { ...op.fieldRevs };
+          entryRecord.revision = op.lamport;
+          entryRecord.originDeviceId = op.deviceId;
+        }
+      }
+      tx.objectStore(IDBStores.STASH_ENTRIES).put(entryRecord);
+
+      // 3. 组记录仅刷新本地 updatedAt（同步字段未变化，无需 outbox 操作）
+      group.updatedAt = now;
+      groupsStore.put(group);
+      return true;
+    });
+    if (ok && enqueue) SyncOutbox.flushDirty();
+    if (!ok) return { success: false, error: '收纳组不存在' };
+
+    return {
+      success: true,
+      added: true,
+      item: {
+        id: entryId,
+        url: cleanUrl,
+        title,
+        favIconUrl: typeof tabItem.favIconUrl === 'string' ? tabItem.favIconUrl : '',
+        pinned: Boolean(tabItem.pinned)
+      }
+    };
+  }
+
+  /**
+   * 编辑既有收纳条目（AI 增强写入通道）
+   * 标题遵循两层模型语义：title 属于页面实体（同 URL 条目共享）；
+   * 修改 url 会将条目重新指向新 URL 的页面实体（原页面实体保留供其他条目复用）。
+   * ⚠️ 调用方必须已持有跨上下文写锁
+   * @param {string} groupId
+   * @param {string} itemId - 条目 ID（entryId）
+   * @param {Partial<{ title: string, url: string, pinned: boolean, archived: boolean }>} updates
+   * @returns {Promise<boolean>}
+   */
+  static async updateTabItem(groupId, itemId, updates) {
+    if (!itemId || !updates || typeof updates !== 'object') return false;
+    const allowed = ['title', 'url', 'pinned', 'archived'];
+    const hasField = allowed.some((key) => Object.prototype.hasOwnProperty.call(updates, key));
+    if (!hasField) return false;
+
+    const enqueue = await SyncOutbox.isActive();
+    const now = Date.now();
+    const newUrl = typeof updates.url === 'string' ? updates.url.trim() : '';
+    const newTitle = typeof updates.title === 'string' ? updates.title.slice(0, 4096) : undefined;
+
+    const stores = [IDBStores.PAGES, IDBStores.STASH_ENTRIES];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+
+    const ok = await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
+      const entriesStore = tx.objectStore(IDBStores.STASH_ENTRIES);
+      const pagesStore = tx.objectStore(IDBStores.PAGES);
+      const entry = await IndexedDBManager.requestToPromise(entriesStore.get(itemId));
+      if (!entry || (groupId && entry.groupId !== groupId)) return false;
+
+      // 修改 URL：重新指向新页面实体（新页面不存在则创建，未提供新标题时沿用原标题）
+      if (newUrl) {
+        const newPageId = this.computePageId(newUrl);
+        if (newPageId !== entry.pageId) {
+          const oldPage = await IndexedDBManager.requestToPromise(pagesStore.get(entry.pageId));
+          const existingNewPage = await IndexedDBManager.requestToPromise(pagesStore.get(newPageId));
+          if (existingNewPage) {
+            existingNewPage.updatedAt = now;
+            if (enqueue) {
+              const op = await SyncOutbox.enqueueInTx(tx, {
+                entityType: SyncEntityTypes.PAGE,
+                entityId: existingNewPage.pageId,
+                op: SyncOps.PATCH,
+                fields: {
+                  favIconUrl: existingNewPage.favIconUrl,
+                  domain: existingNewPage.domain,
+                  title: existingNewPage.title,
+                  url: existingNewPage.url
+                }
+              });
+              if (op) {
+                existingNewPage.fieldRevs = { ...(existingNewPage.fieldRevs || {}), ...op.fieldRevs };
+                existingNewPage.revision = op.lamport;
+                existingNewPage.originDeviceId = op.deviceId;
+              }
+            }
+            pagesStore.put(existingNewPage);
+          } else {
+            const pageRecord = {
+              pageId: newPageId,
+              url: newUrl,
+              domain: this.extractDomain(newUrl),
+              title: newTitle !== undefined ? newTitle : (oldPage?.title || newUrl),
+              favIconUrl: oldPage?.favIconUrl || '',
+              createdAt: now,
+              updatedAt: now
+            };
+            if (enqueue) {
+              const op = await SyncOutbox.enqueueInTx(tx, {
+                entityType: SyncEntityTypes.PAGE,
+                entityId: newPageId,
+                op: SyncOps.UPSERT,
+                fields: {
+                  url: pageRecord.url,
+                  domain: pageRecord.domain,
+                  title: pageRecord.title,
+                  favIconUrl: pageRecord.favIconUrl,
+                  createdAt: pageRecord.createdAt
+                }
+              });
+              if (op) {
+                pageRecord.fieldRevs = { ...op.fieldRevs };
+                pageRecord.revision = op.lamport;
+                pageRecord.originDeviceId = op.deviceId;
+              }
+            }
+            pagesStore.put(pageRecord);
+          }
+          entry.pageId = newPageId;
+        }
+      }
+
+      // 修改标题：标题属于页面实体共享层（同 URL 的全部条目同步可见）
+      if (newTitle !== undefined) {
+        const page = await IndexedDBManager.requestToPromise(pagesStore.get(entry.pageId));
+        if (page) {
+          page.title = newTitle;
+          page.updatedAt = now;
+          if (enqueue) {
+            const op = await SyncOutbox.enqueueInTx(tx, {
+              entityType: SyncEntityTypes.PAGE,
+              entityId: page.pageId,
+              op: SyncOps.PATCH,
+              fields: { title: page.title, url: page.url, domain: page.domain, favIconUrl: page.favIconUrl }
+            });
+            if (op) {
+              page.fieldRevs = { ...(page.fieldRevs || {}), ...op.fieldRevs };
+              page.revision = op.lamport;
+              page.originDeviceId = op.deviceId;
+            }
+          }
+          pagesStore.put(page);
+        }
+      }
+
+      const entryFields = {};
+      if (typeof updates.pinned === 'boolean') {
+        entry.pinned = updates.pinned;
+        entryFields.pinned = updates.pinned;
+      }
+      if (typeof updates.archived === 'boolean') {
+        entry.archived = updates.archived;
+        entryFields.archived = updates.archived;
+      }
+      if (entry.pageId) entryFields.pageId = entry.pageId;
+
+      if (enqueue && Object.keys(entryFields).length > 0) {
+        const op = await SyncOutbox.enqueueInTx(tx, {
+          entityType: SyncEntityTypes.STASH_ENTRY,
+          entityId: entry.entryId,
+          op: SyncOps.PATCH,
+          fields: entryFields
+        });
+        if (op) {
+          entry.fieldRevs = { ...(entry.fieldRevs || {}), ...op.fieldRevs };
+          entry.revision = op.lamport;
+          entry.originDeviceId = op.deviceId;
+        }
+      }
+      entriesStore.put(entry);
+      return true;
+    });
+    if (ok && enqueue) SyncOutbox.flushDirty();
+    return ok;
   }
 
   /**
@@ -441,29 +931,47 @@ export class IndexedStashRepository {
    * @returns {Promise<boolean>}
    */
   static async clearAll(includeLocked = false) {
-    return await IndexedDBManager.runTransaction(
-      [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES],
+    const enqueue = await SyncOutbox.isActive();
+    const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS, IDBStores.TOMBSTONES);
+    const ok = await IndexedDBManager.runTransaction(
+      stores,
       'readwrite',
       async (tx) => {
         const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
         const entriesStore = tx.objectStore(IDBStores.STASH_ENTRIES);
-        if (includeLocked) {
-          groupsStore.clear();
-          entriesStore.clear();
-          return true;
-        }
         const groups = await IndexedDBManager.requestToPromise(groupsStore.getAll());
         for (const group of groups) {
-          if (group.locked) continue;
+          if (group.locked && !includeLocked) continue;
           groupsStore.delete(group.groupId);
           const entries = await IndexedDBManager.requestToPromise(
             entriesStore.index('groupId').getAll(group.groupId)
           );
-          for (const entry of entries) entriesStore.delete(entry.entryId);
+          for (const entry of entries) {
+            entriesStore.delete(entry.entryId);
+            if (enqueue) {
+              await SyncOutbox.enqueueInTx(tx, {
+                entityType: SyncEntityTypes.STASH_ENTRY,
+                entityId: entry.entryId,
+                op: SyncOps.DELETE,
+                fields: { groupId: group.groupId }
+              });
+            }
+          }
+          if (enqueue) {
+            await SyncOutbox.enqueueInTx(tx, {
+              entityType: SyncEntityTypes.STASH_GROUP,
+              entityId: group.groupId,
+              op: SyncOps.DELETE,
+              fields: { groupId: group.groupId }
+            });
+          }
         }
         return true;
       }
     );
+    if (ok && enqueue) SyncOutbox.flushDirty();
+    return ok;
   }
 
   /**
@@ -617,8 +1125,17 @@ export class IndexedStashRepository {
           });
         }
         // entryId 以 groupId 命名空间隔离：跨组不冲突、重跑幂等；
-        // 缺失 id 的脏数据用确定性指纹兜底，避免重跑产生随机重复
-        const tabKey = tab.id || `t_${this.computePageId(`${group.id}::${position}::${tab.url}`)}`;
+        // 缺失 id 的脏数据用确定性指纹兜底，避免重跑产生随机重复。
+        // 若 tab.id 已携带组前缀（如从 getAllGroups 组装结果或旧备份恢复而来），
+        // 必须先剥离全部重复前缀再拼接，否则幂等 upsert 失效、恢复备份会把每个标签翻倍
+        let tabKey = typeof tab.id === 'string' ? tab.id : '';
+        const groupPrefix = `${group.id}::`;
+        while (tabKey.startsWith(groupPrefix)) {
+          tabKey = tabKey.slice(groupPrefix.length);
+        }
+        if (!tabKey) {
+          tabKey = `t_${this.computePageId(`${group.id}::${position}::${tab.url}`)}`;
+        }
         entryRecords.push({
           entryId: `${group.id}::${tabKey}`,
           groupId: group.id,
@@ -641,9 +1158,98 @@ export class IndexedStashRepository {
     }
 
     // 页面实体导入采用"最新标题覆盖"（与旧版导入行为一致：导入项各自携带最新标题）
-    await this._upsertPages([...pageRecords.values()], true);
-    await this._putChunked(IDBStores.STASH_ENTRIES, entryRecords);
-    await this._putChunked(IDBStores.STASH_GROUPS, groupRecords);
+    // v8 起各分批事务同时生成 outbox 操作，保证导入数据也会同步到其他设备
+    const enqueue = await SyncOutbox.isActive();
+    const updateTitle = true;
+    const pagesList = [...pageRecords.values()];
+
+    for (const batch of IndexedDBManager.chunk(pagesList, WRITE_BATCH_SIZE)) {
+      const stores = [IDBStores.PAGES];
+      if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+      await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
+        const store = tx.objectStore(IDBStores.PAGES);
+        for (const page of batch) {
+          const existing = await IndexedDBManager.requestToPromise(store.get(page.pageId));
+          if (existing) {
+            existing.favIconUrl = page.favIconUrl || existing.favIconUrl;
+            existing.domain = page.domain || existing.domain;
+            existing.updatedAt = page.updatedAt;
+            if (updateTitle && page.title) existing.title = page.title;
+            store.put(existing);
+            if (enqueue) {
+              await SyncOutbox.enqueueInTx(tx, {
+                entityType: SyncEntityTypes.PAGE,
+                entityId: existing.pageId,
+                op: SyncOps.PATCH,
+                fields: { favIconUrl: existing.favIconUrl, domain: existing.domain, title: existing.title, url: existing.url }
+              });
+            }
+          } else {
+            store.put(page);
+            if (enqueue) {
+              await SyncOutbox.enqueueInTx(tx, {
+                entityType: SyncEntityTypes.PAGE,
+                entityId: page.pageId,
+                op: SyncOps.UPSERT,
+                fields: { url: page.url, domain: page.domain, title: page.title, favIconUrl: page.favIconUrl, createdAt: page.createdAt }
+              });
+            }
+          }
+        }
+      });
+    }
+
+    for (const batch of IndexedDBManager.chunk(entryRecords, WRITE_BATCH_SIZE)) {
+      const stores = [IDBStores.STASH_ENTRIES];
+      if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+      await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
+        const store = tx.objectStore(IDBStores.STASH_ENTRIES);
+        for (const record of batch) {
+          store.put(record);
+          if (enqueue) {
+            await SyncOutbox.enqueueInTx(tx, {
+              entityType: SyncEntityTypes.STASH_ENTRY,
+              entityId: record.entryId,
+              op: SyncOps.UPSERT,
+              fields: {
+                groupId: record.groupId,
+                pageId: record.pageId,
+                createdAt: record.createdAt,
+                position: record.position,
+                pinned: record.pinned,
+                archived: record.archived
+              }
+            });
+          }
+        }
+      });
+    }
+
+    for (const batch of IndexedDBManager.chunk(groupRecords, WRITE_BATCH_SIZE)) {
+      const stores = [IDBStores.STASH_GROUPS];
+      if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+      await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
+        const store = tx.objectStore(IDBStores.STASH_GROUPS);
+        for (const record of batch) {
+          store.put(record);
+          if (enqueue) {
+            await SyncOutbox.enqueueInTx(tx, {
+              entityType: SyncEntityTypes.STASH_GROUP,
+              entityId: record.groupId,
+              op: SyncOps.UPSERT,
+              fields: {
+                title: record.title,
+                locked: record.locked,
+                starred: record.starred,
+                archived: record.archived,
+                createdAt: record.createdAt
+              }
+            });
+          }
+        }
+      });
+    }
+    if (enqueue) SyncOutbox.flushDirty();
 
     return { success: true, groupCount: groupRecords.length, entryCount: entryRecords.length };
   }
