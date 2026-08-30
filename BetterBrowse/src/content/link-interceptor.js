@@ -5,11 +5,14 @@
  */
 
 import { ActionTypes } from '../constants/action-types.js';
-import { StorageKeys } from '../constants/storage-keys.js';
 import { LinkModes, DefaultConfig } from '../constants/config.js';
 import { LinkMatcher } from '../core/link/link-matcher.js';
 
 export class LinkInterceptor {
+  /** 开标签事件速率限制：滑动窗口内最多允许的次数与窗口时长 */
+  static OPEN_EVENT_LIMIT = 10;
+  static OPEN_EVENT_WINDOW_MS = 10000;
+
   constructor() {
     this.currentDomain = window.location.hostname.toLowerCase();
     this.linkRules = {};
@@ -17,6 +20,24 @@ export class LinkInterceptor {
     this.isInitialized = false;
     this.lastHandledUrl = '';
     this.lastHandledTime = 0;
+    this.openEventTimestamps = [];
+  }
+
+  /**
+   * 滑动窗口速率限制：__BETTER_BROWSE_OPEN_NEW_TAB__ 是页面脚本可伪造的公开事件，
+   * 协议校验之外还需限制频次，防止被恶意页面当作绕过弹窗拦截的广告/钓鱼发射器
+   * @returns {boolean} 是否允许本次开标签
+   */
+  shouldAllowOpenEvent() {
+    const now = Date.now();
+    this.openEventTimestamps = this.openEventTimestamps.filter(
+      (ts) => now - ts < LinkInterceptor.OPEN_EVENT_WINDOW_MS
+    );
+    if (this.openEventTimestamps.length >= LinkInterceptor.OPEN_EVENT_LIMIT) {
+      return false;
+    }
+    this.openEventTimestamps.push(now);
+    return true;
   }
 
   /**
@@ -26,11 +47,14 @@ export class LinkInterceptor {
   safeSendMessage(message) {
     if (!chrome.runtime?.id) return;
     try {
-      chrome.runtime.sendMessage(message, () => {
-        if (chrome.runtime.lastError) {
-          // 静默处理扩展重载上下文失效
-        }
+      const chromeResult = chrome.runtime.sendMessage(message, () => {
+        // 静默处理扩展重载上下文失效
+        void chrome.runtime.lastError;
       });
+      // MV3：传入 callback 时仍可能返回会拒绝的 Promise
+      if (chromeResult != null && typeof chromeResult.then === 'function') {
+        chromeResult.then(() => {}, () => {});
+      }
     } catch {
       // 静默处理异常
     }
@@ -38,16 +62,19 @@ export class LinkInterceptor {
 
   /**
    * 初始化拦截器，预加载规则并建立本地缓存与事件监听
+   * @param {{ lightweight?: boolean }} [options] - lightweight=true 时（iframe 内）跳过
+   *   DOM 全量扫描与悬浮预处理，仅保留点击拦截与主世界事件桥接
    */
-  async init() {
+  async init(options = {}) {
     if (this.isInitialized) return;
 
     await this.refreshRulesCache();
-    this.initStorageListener();
+    if (!options.lightweight) {
+      this.initHoverListener();
+      this.initDOMObserver();
+    }
     this.initMainWorldEvents();
     this.initClickListener();
-    this.initHoverListener();
-    this.initDOMObserver();
     this.syncModeToMainWorld();
     this.isInitialized = true;
   }
@@ -58,19 +85,31 @@ export class LinkInterceptor {
   initMainWorldEvents() {
     window.addEventListener('__BETTER_BROWSE_OPEN_NEW_TAB__', (event) => {
       const url = event?.detail?.url;
-      if (this.isSafeHttpUrl(url)) {
-        // 记录已由主世界拦截并处理的时间戳与 URL，彻底杜绝隔离世界二次重复发送消息
-        this.lastHandledUrl = url;
-        this.lastHandledTime = Date.now();
+      if (!this.isSafeHttpUrl(url)) return;
 
-        this.safeSendMessage({
-          action: ActionTypes.OPEN_TAB_BACKGROUND,
-          payload: {
-            url: url,
-            active: true
-          }
-        });
+      // 用户激活校验：合法路径（主世界点击拦截 / window.open 劫持）均在真实用户手势的
+      // 同步调用栈内派发事件，navigator.userActivation 为激活态；
+      // 页面脚本凭空伪造事件不产生用户激活，直接忽略（旧浏览器无此 API 时放行）
+      if (navigator.userActivation && !navigator.userActivation.isActive) {
+        return;
       }
+
+      // 频次限制兜底：即便页面持有真实用户激活，也不允许高频批量开标签
+      if (!this.shouldAllowOpenEvent()) {
+        return;
+      }
+
+      // 记录已由主世界拦截并处理的时间戳与 URL，彻底杜绝隔离世界二次重复发送消息
+      this.lastHandledUrl = url;
+      this.lastHandledTime = Date.now();
+
+      this.safeSendMessage({
+        action: ActionTypes.OPEN_TAB_BACKGROUND,
+        payload: {
+          url: url,
+          active: true
+        }
+      });
     });
   }
 
@@ -108,58 +147,47 @@ export class LinkInterceptor {
   }
 
   /**
-   * 从 Storage 刷新内存规则缓存
+   * 向后台请求当前页最小必要跳转上下文（内容脚本不得直读 chrome.storage / IndexedDB）
    */
   async refreshRulesCache() {
-    return new Promise((resolve) => {
-      if (!chrome.runtime?.id || !chrome.storage?.local) {
-        resolve();
-        return;
-      }
-      try {
-        chrome.storage.local.get([StorageKeys.LINK_RULES, StorageKeys.USER_CONFIG], (result) => {
-          if (!chrome.runtime.lastError && result) {
-            this.linkRules = result[StorageKeys.LINK_RULES] || {};
-            const config = result[StorageKeys.USER_CONFIG] || DefaultConfig;
-            this.globalLinkRule = config.globalLinkRule || { enabled: false, mode: LinkModes.AUTO };
+    if (!chrome.runtime?.id) return;
+    try {
+      const response = await new Promise((resolve) => {
+        const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT }, (result) => {
+          if (chrome.runtime.lastError) {
+            resolve(null);
+            return;
           }
-          resolve();
+          resolve(result);
         });
-      } catch {
-        resolve();
+        if (chromeResult != null && typeof chromeResult.then === 'function') {
+          chromeResult.then(() => {}, () => {});
+        }
+      });
+      const data = response?.data || response;
+      if (data && typeof data === 'object') {
+        this.linkRules = data.linkRules && typeof data.linkRules === 'object' ? data.linkRules : {};
+        this.globalLinkRule = data.globalLinkRule || DefaultConfig.globalLinkRule || {
+          enabled: false,
+          mode: LinkModes.AUTO
+        };
       }
-    });
+    } catch {
+      // 后台未就绪时保持现有内存缓存
+    }
   }
 
   /**
-   * 监听规则更新以实现即时同步（零刷新即时生效）
+   * 合并同步任务：后台 NOTIFY_RULE_UPDATED / NOTIFY_CONFIG_UPDATED 可能短时间内连发，
+   * 防抖后只刷新一次主世界模式与页面链接
    */
-  initStorageListener() {
-    if (!chrome.runtime?.id || !chrome.storage?.onChanged) return;
-    try {
-      chrome.storage.onChanged.addListener((changes, areaName) => {
-        if (!chrome.runtime?.id) return;
-        if (areaName !== 'local') return;
-
-        let changed = false;
-        if (changes[StorageKeys.LINK_RULES]) {
-          this.linkRules = changes[StorageKeys.LINK_RULES].newValue || {};
-          changed = true;
-        }
-        if (changes[StorageKeys.USER_CONFIG]) {
-          const newConfig = changes[StorageKeys.USER_CONFIG].newValue || {};
-          this.globalLinkRule = newConfig.globalLinkRule || { enabled: false, mode: LinkModes.AUTO };
-          changed = true;
-        }
-
-        if (changed) {
-          this.syncModeToMainWorld();
-          this.syncAllPageLinks();
-        }
-      });
-    } catch {
-      // 忽略监听异常
-    }
+  scheduleSync() {
+    clearTimeout(this._syncTimer);
+    this._syncTimer = setTimeout(() => {
+      this._syncTimer = null;
+      this.syncModeToMainWorld();
+      this.syncAllPageLinks();
+    }, 150);
   }
 
   /**
@@ -256,6 +284,9 @@ export class LinkInterceptor {
       anchor.setAttribute('target', '_blank');
       const rel = anchor.getAttribute('rel') || '';
       if (!rel.includes('noopener')) {
+        if (!anchor.hasAttribute('data-bb-orig-rel')) {
+          anchor.setAttribute('data-bb-orig-rel', rel || '__NONE__');
+        }
         anchor.setAttribute('rel', (rel ? rel + ' ' : '') + 'noopener noreferrer');
       }
     } else if (mode === LinkModes.CURRENT) {
@@ -272,6 +303,16 @@ export class LinkInterceptor {
           anchor.setAttribute('target', orig);
         }
         anchor.removeAttribute('data-bb-orig-target');
+      }
+      // 同步还原曾被追加的 rel 字段，避免 rel 残留改变站点原生行为
+      if (anchor.hasAttribute('data-bb-orig-rel')) {
+        const origRel = anchor.getAttribute('data-bb-orig-rel');
+        if (origRel === '__NONE__') {
+          anchor.removeAttribute('rel');
+        } else {
+          anchor.setAttribute('rel', origRel);
+        }
+        anchor.removeAttribute('data-bb-orig-rel');
       }
     }
   }
@@ -293,7 +334,9 @@ export class LinkInterceptor {
     if (!targetElement || typeof targetElement.closest !== 'function') return;
 
     // 1. 过滤原生表单控件与原生 button（除非包含在 a[href] 中）
-    const formControl = targetElement.closest('input, textarea, select, [contenteditable="true"]');
+    const formControl = targetElement.closest(
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]'
+    );
     if (formControl) return;
 
     const buttonEl = targetElement.closest('button');
@@ -338,15 +381,17 @@ export class LinkInterceptor {
     }
 
     if (effectiveMode === LinkModes.NEW) {
-      // 若 500ms 内主世界或当前拦截器已处理过相同 URL 的打开操作，则直接忽略，杜绝重复开标签
+      // 若 500ms 内主世界或当前拦截器已处理过相同 URL 的打开操作，则阻止默认行为后忽略，
+      // 杜绝重复开标签（该锚点已被 patch 为 target="_blank"，直接放行会触发浏览器原生开标签）
       if (this.lastHandledUrl === fullUrl && (Date.now() - this.lastHandledTime < 500)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         return;
       }
       this.lastHandledUrl = fullUrl;
       this.lastHandledTime = Date.now();
 
       event.preventDefault();
-      event.stopPropagation();
       event.stopImmediatePropagation();
 
       this.safeSendMessage({
@@ -361,9 +406,8 @@ export class LinkInterceptor {
 
     if (effectiveMode === LinkModes.CURRENT) {
       const currentTarget = (anchor.getAttribute('target') || '').toLowerCase();
-      if (currentTarget === '_blank' || anchor.target === '_blank') {
+      if (currentTarget === '_blank') {
         event.preventDefault();
-        event.stopPropagation();
         event.stopImmediatePropagation();
         window.location.href = fullUrl;
         return;

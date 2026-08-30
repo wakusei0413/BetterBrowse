@@ -1,6 +1,6 @@
 /**
  * @file rule-engine.js
- * @description 智能收纳规则编排引擎（基于责任链与策略模式，支持动态插拔与扩展）
+ * @description 智能收纳规则编排引擎（固定 P0-P3 内置规则按优先级顺序评估）
  * @encoding UTF-8
  */
 
@@ -13,48 +13,17 @@ import { isOwnOptionsUrl } from '../extension-url.js';
 
 export class RuleEngine {
   /**
-   * 初始化规则引擎，默认注册 P0-P3 标准规则
+   * 初始化规则引擎，按优先级装载内置规则
    */
   constructor() {
     /** @type {import('./base-rule.js').BaseRule[]} */
-    this.rules = [];
-
-    // 默认内置规则注册
-    this.registerRule(new AudibleRule());
-    this.registerRule(new FormGuardRule());
-    this.registerRule(new RecentActiveRule());
-    this.registerRule(new FrequencyRule());
-    this.registerRule(new PinnedRule());
-  }
-
-  /**
-   * 注册新规则（支持后续功能扩展与插件式接入）
-   * @param {import('./base-rule.js').BaseRule} rule - 实现了 BaseRule 接口的规则实例
-   */
-  registerRule(rule) {
-    if (!rule || typeof rule.evaluate !== 'function') {
-      throw new Error('[RuleEngine] 注册规则失败：规则必须继承 BaseRule 并实现 evaluate 方法');
-    }
-    // 避免重复注册同名规则
-    this.rules = this.rules.filter((r) => r.id !== rule.id);
-    this.rules.push(rule);
-    // 按优先级升序排序（数值越小优先级越高，P0 在 P1 之前先判定）
-    this.rules.sort((a, b) => a.priority - b.priority);
-  }
-
-  /**
-   * 卸载指定规则
-   * @param {string} ruleId
-   */
-  unregisterRule(ruleId) {
-    this.rules = this.rules.filter((r) => r.id !== ruleId);
-  }
-
-  /**
-   * 获取当前已注册的所有规则实例列表
-   */
-  getRegisteredRules() {
-    return [...this.rules];
+    this.rules = [
+      new AudibleRule(),
+      new FormGuardRule(),
+      new RecentActiveRule(),
+      new FrequencyRule(),
+      new PinnedRule()
+    ];
   }
 
   /**

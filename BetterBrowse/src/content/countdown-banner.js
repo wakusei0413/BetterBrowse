@@ -58,7 +58,6 @@ export class CountdownBanner {
   render() {
     // 1. 创建容器 Host
     this.hostElement = document.createElement('better-browse-countdown-root');
-    this.hostElement.style.all = 'initial';
     this.shadowRoot = this.hostElement.attachShadow({ mode: 'open' });
 
     // 2. 注入独立样式与 HTML
@@ -318,7 +317,7 @@ export class CountdownBanner {
         </div>
 
         <div class="progress-track">
-          <div class="progress-bar" id="progressBar" style="width: 100%;"></div>
+          <div class="progress-bar" id="progressBar"></div>
         </div>
 
         <div class="card-actions" id="cardActions">
@@ -399,7 +398,13 @@ export class CountdownBanner {
   cancelAutoStash() {
     this.stopTimer();
     try {
-      chrome.runtime.sendMessage({ action: ActionTypes.CANCEL_AUTO_STASH });
+      const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.CANCEL_AUTO_STASH }, () => {
+        // 显式消费 lastError，避免扩展重载后产生未处理的错误噪音
+        void chrome.runtime.lastError;
+      });
+      if (chromeResult != null && typeof chromeResult.then === 'function') {
+        chromeResult.then(() => {}, () => {});
+      }
     } catch {
       // 忽略通信断开
     }
@@ -429,9 +434,26 @@ export class CountdownBanner {
 
     try {
       const response = await new Promise((resolve) => {
-        chrome.runtime.sendMessage({ action: ActionTypes.CONFIRM_AUTO_STASH }, (res) => {
-          resolve(res);
-        });
+        const timeoutId = setTimeout(() => {
+          // 后台无响应（扩展重载/SW 休眠）时的超时兜底，避免卡片永久停留在"正在评估"
+          resolve(null);
+        }, 10000);
+        try {
+          const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.CONFIRM_AUTO_STASH }, (res) => {
+            clearTimeout(timeoutId);
+            if (chrome.runtime.lastError) {
+              resolve(null);
+              return;
+            }
+            resolve(res);
+          });
+          if (chromeResult != null && typeof chromeResult.then === 'function') {
+            chromeResult.then(() => {}, () => {});
+          }
+        } catch {
+          clearTimeout(timeoutId);
+          resolve(null);
+        }
       });
 
       if (response && response.success && response.data) {
@@ -443,9 +465,13 @@ export class CountdownBanner {
             cardBody.innerHTML = 'ℹ️ 当前所有标签均处于活跃/保护状态，未收纳标签';
           }
         }
+      } else if (response && !response.success) {
+        if (cardBody) {
+          cardBody.innerHTML = 'ℹ️ 当前无可收纳的标签页';
+        }
       } else {
         if (cardBody) {
-          cardBody.innerHTML = '收纳已触发完成';
+          cardBody.innerHTML = '收纳指令已发送';
         }
       }
     } catch (err) {

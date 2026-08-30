@@ -44,8 +44,18 @@ export class RecentActiveRule extends BaseRule {
       return { retain: false };
     }
 
-    // 3. 检查最近访问时间（阶梯降级时窗口逐级缩短）
-    const windowMs = ((tierContext?.recentActiveMinutes ?? config.recentActiveMinutes) || 5) * 60 * 1000;
+    // 3. 检查最近访问时间（阶梯降级时窗口逐级缩短，可为 0 = 不再保护）
+    // ⚠️ 不能用 `|| 5` 兜底：阶梯降级到最深层时窗口合法地为 0，`|| 5` 会把它重置回 5 分钟
+    let windowMinutes;
+    if (tierContext && tierContext.recentActiveMinutes !== undefined) {
+      windowMinutes = Number(tierContext.recentActiveMinutes);
+      if (!Number.isFinite(windowMinutes) || windowMinutes < 0) windowMinutes = 0;
+    } else {
+      windowMinutes = Number.isFinite(config.recentActiveMinutes) && config.recentActiveMinutes > 0
+        ? config.recentActiveMinutes
+        : 5;
+    }
+    const windowMs = windowMinutes * 60 * 1000;
     const tabStat = activityStats?.[tab.id];
     const lastActivated = tabStat?.lastActivated || 0;
     const now = Date.now();

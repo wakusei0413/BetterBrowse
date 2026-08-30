@@ -6,7 +6,7 @@
 
 import { StashService } from '../core/stash/stash-service.js';
 import { LocalStashRepository } from '../core/stash/local-stash-repo.js';
-import { isOwnOptionsUrl } from '../core/extension-url.js';
+import { isExcludedFromTabCounting } from '../core/extension-url.js';
 
 export class ContextMenuManager {
   /**
@@ -123,9 +123,7 @@ export class ContextMenuManager {
     if (!tabs || tabs.length === 0) return;
 
     const targetTabs = tabs.filter((tab) => {
-      if (!tab.url) return false;
-      if (isOwnOptionsUrl(tab.url)) return false;
-      if (tab.url === 'chrome://newtab/' || tab.url === 'edge://newtab/' || tab.url === 'about:blank') return false;
+      if (isExcludedFromTabCounting(tab)) return false;
 
       if (direction === 'right') {
         return tab.index > currentIndex;
@@ -145,14 +143,21 @@ export class ContextMenuManager {
 
     const createRes = await LocalStashRepository.createGroup(itemsToSave);
     if (!createRes?.success) return;
+
+    // 仅关闭 URL 确实已持久化的标签页（allowDuplicates=false 时重复项会被仓储跳过）
+    const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
+    const closableTabs = targetTabs.filter((tab) => savedUrls.has(tab.url));
+    if (closableTabs.length === 0) return;
+
     await StashService.ensurePinnedStashTab(false, windowId);
 
-    const tabIdsToClose = targetTabs
+    const tabIdsToClose = closableTabs
       .map((tab) => tab.id)
       .filter((id) => typeof id === 'number');
 
     if (tabIdsToClose.length > 0) {
-      await chrome.tabs.remove(tabIdsToClose);
+      // 容忍右键菜单操作期间个别标签页已被用户关闭的竞态
+      await StashService.closeTabsSafely(tabIdsToClose);
     }
   }
 }

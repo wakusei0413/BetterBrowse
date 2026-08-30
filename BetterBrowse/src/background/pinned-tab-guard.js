@@ -6,7 +6,7 @@
 
 import { StashService } from '../core/stash/stash-service.js';
 import { LocalStashRepository } from '../core/stash/local-stash-repo.js';
-import { isOwnOptionsUrl } from '../core/extension-url.js';
+import { isExcludedFromTabCounting } from '../core/extension-url.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
 
 export class PinnedTabGuard {
@@ -153,6 +153,9 @@ export class PinnedTabGuard {
    */
   async stashClosingWindowTabs(windowId) {
     try {
+      // SW 冷启动瞬间快照可能尚未同步完成，等待其就绪再走兜底路径
+      // （实时 tabs.query 优先，快照仅作为查询失败时的兜底）
+      await this.ready?.catch?.(() => {});
       const config = await StorageAdapter.getUserConfig();
       if (config.stashSettings?.pinnedTabGuard === false) return;
       let tabsList = [];
@@ -172,12 +175,7 @@ export class PinnedTabGuard {
         tabsList = windowTabsMap ? Array.from(windowTabsMap.values()) : [];
       }
       if (tabsList.length === 0) return;
-      const tabsToSave = tabsList.filter((tab) => {
-        if (!tab.url) return false;
-        if (isOwnOptionsUrl(tab.url)) return false;
-        if (tab.url === 'chrome://newtab/' || tab.url === 'edge://newtab/' || tab.url === 'about:blank') return false;
-        return true;
-      });
+      const tabsToSave = tabsList.filter((tab) => !isExcludedFromTabCounting(tab));
 
       if (tabsToSave.length > 0) {
         console.info(`[PinnedTabGuard] 正在执行窗口关闭全量收纳 (${tabsToSave.length} 个标签页)...`);

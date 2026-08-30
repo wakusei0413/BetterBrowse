@@ -7,6 +7,7 @@
 import { StorageKeys } from '../../constants/storage-keys.js';
 import { LinkModes } from '../../constants/config.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
+import { IndexedDBManager } from '../storage/indexed-db.js';
 import { LinkMatcher } from './link-matcher.js';
 
 export class LinkService {
@@ -68,6 +69,7 @@ export class LinkService {
 
   /**
    * 设置指定域名的独立跳转规则
+   * 读-改-写序列持跨上下文写锁，防止 popup 与选项页并发写入互相覆盖
    * @param {string} domain - 目标域名
    * @param {'auto' | 'current' | 'new'} mode - 跳转模式
    * @returns {Promise<boolean>}
@@ -79,16 +81,19 @@ export class LinkService {
       candidate.includes('://') ? candidate : `https://${candidate}`
     );
     if (!cleanDomain) return false;
-    const rules = await this.getAllRules();
 
-    if (mode === LinkModes.AUTO) {
-      // 自动模式下从独立字典中移除该域名记录以节省存储空间
-      delete rules[cleanDomain];
-    } else {
-      rules[cleanDomain] = mode;
-    }
+    return await IndexedDBManager.withWriteLock(async () => {
+      const rules = await this.getAllRules();
 
-    return await StorageAdapter.set(StorageKeys.LINK_RULES, rules);
+      if (mode === LinkModes.AUTO) {
+        // 自动模式下从独立字典中移除该域名记录以节省存储空间
+        delete rules[cleanDomain];
+      } else {
+        rules[cleanDomain] = mode;
+      }
+
+      return await StorageAdapter.set(StorageKeys.LINK_RULES, rules);
+    });
   }
 
   /**
@@ -105,7 +110,9 @@ export class LinkService {
    * @returns {Promise<boolean>}
    */
   static async clearAllDomainRules() {
-    return await StorageAdapter.set(StorageKeys.LINK_RULES, {});
+    return await IndexedDBManager.withWriteLock(async () => {
+      return await StorageAdapter.set(StorageKeys.LINK_RULES, {});
+    });
   }
 }
 

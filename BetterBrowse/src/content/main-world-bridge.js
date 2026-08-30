@@ -14,11 +14,22 @@
   let currentEffectiveMode = document.documentElement?.getAttribute('data-better-browse-mode') || 'auto'; // 'auto' | 'current' | 'new'
 
   /**
+   * 校验模式值合法性：事件与 DOM 属性均为页面脚本可触碰的公开通道，
+   * 必须做枚举白名单校验，防止页面注入任意字符串篡改拦截行为
+   * @param {unknown} mode
+   * @returns {string|null}
+   */
+  function normalizeMode(mode) {
+    return mode === 'auto' || mode === 'current' || mode === 'new' ? mode : null;
+  }
+
+  /**
    * 1. 监听来自隔离世界的自定义模式同步事件
    */
   window.addEventListener('__BETTER_BROWSE_SYNC_MODE__', (event) => {
-    if (event.detail && event.detail.mode) {
-      currentEffectiveMode = event.detail.mode;
+    const mode = normalizeMode(event?.detail?.mode);
+    if (mode) {
+      currentEffectiveMode = mode;
     }
   });
 
@@ -27,11 +38,11 @@
    */
   const initModeObserver = () => {
     if (!document.documentElement) return;
-    const initialAttr = document.documentElement.getAttribute('data-better-browse-mode');
+    const initialAttr = normalizeMode(document.documentElement.getAttribute('data-better-browse-mode'));
     if (initialAttr) currentEffectiveMode = initialAttr;
 
     const observer = new MutationObserver(() => {
-      const mode = document.documentElement.getAttribute('data-better-browse-mode');
+      const mode = normalizeMode(document.documentElement.getAttribute('data-better-browse-mode'));
       if (mode && mode !== currentEffectiveMode) {
         currentEffectiveMode = mode;
       }
@@ -70,7 +81,9 @@
     if (!target || typeof target.closest !== 'function') return null;
 
     // 1. 如果点击的是原生表单输入控件（input/textarea/select/可编辑区），不拦截
-    const formControl = target.closest('input, textarea, select, [contenteditable="true"]');
+    const formControl = target.closest(
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]'
+    );
     if (formControl) return null;
 
     // 2. 如果点击的是原生 <button> 且不在 <a> 标签内，不拦截
@@ -133,7 +146,6 @@
     if (currentEffectiveMode === 'new') {
       // 强力阻断主页面内 SPA 路由（如 Discourse Ember Router / React）
       event.preventDefault();
-      event.stopPropagation();
       event.stopImmediatePropagation();
 
       // 通知隔离世界创建新标签页
@@ -148,7 +160,7 @@
     // === 当前标签页模式 (CURRENT) ===
     if (currentEffectiveMode === 'current') {
       const targetAttr = (anchor.getAttribute('target') || '').toLowerCase();
-      if (targetAttr === '_blank' || anchor.target === '_blank') {
+      if (targetAttr === '_blank') {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
@@ -166,11 +178,13 @@
   window.open = function (url, target, features) {
     if (currentEffectiveMode === 'current' && url && isAllowedUrl(url)) {
       const requestedTarget = typeof target === 'string' ? target.toLowerCase() : '';
-      if (!requestedTarget || requestedTarget === '_self' || requestedTarget === '_top' || requestedTarget === '_parent') {
+      // 仅劫持"当前页打开"语义的调用；
+      // _top/_parent 与具名窗口/iframe 目标保持站点原生行为，
+      // 强制改写会破坏站点弹窗、OAuth 登录与页内框架导航
+      if (!requestedTarget || requestedTarget === '_self') {
         window.location.href = new URL(url, window.location.href).href;
         return window;
       }
-      return originalWindowOpen.call(this, url, '_self', features);
     }
     return originalWindowOpen.apply(this, arguments);
   };
