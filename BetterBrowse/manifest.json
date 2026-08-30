@@ -38,7 +38,8 @@
         "src/content/main-world-bridge.js"
       ],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true
     },
     {
       "matches": [
@@ -47,17 +48,8 @@
       "js": [
         "src/content/content-bundle.js"
       ],
-      "run_at": "document_start"
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "src/content/main-world-bridge.js"
-      ],
-      "matches": [
-        "<all_urls>"
-      ]
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "permissions": [
@@ -65,9 +57,9 @@
     "storage",
     "alarms",
     "notifications",
-    "activeTab",
     "scripting",
-    "contextMenus"
+    "contextMenus",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "<all_urls>"

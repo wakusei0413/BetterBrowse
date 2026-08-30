@@ -5,7 +5,6 @@
  */
 
 import { fromFileUrl, resolve, dirname, join } from "@std/path";
-import { ensureDir } from "@std/fs";
 import zlib from "node:zlib";
 import { Buffer } from "node:buffer";
 
@@ -262,7 +261,7 @@ function generateAntialiasedPNG(size) {
 }
 
 const iconsDir = resolve(projectRoot, "src/icons");
-await ensureDir(iconsDir);
+await Deno.mkdir(iconsDir, { recursive: true });
 
 console.log("🚀 开始生成全尺寸温馨治愈猫耳标签图标 (16px ~ 512px)...");
 for (const size of [16, 32, 48, 128, 256, 512]) {
