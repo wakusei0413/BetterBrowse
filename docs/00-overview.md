@@ -1,9 +1,9 @@
 # BetterBrowse 存储架构改革 — 总览与范围决策
 
 > 本文档是存储架构改革的入口，其他分册见：
-> - [01-local-indexeddb.md](./01-local-indexeddb.md) — 阶段一：本地 IndexedDB 主库与迁移（**当前唯一建议实施的部分**）
-> - [02-webdav-sync.md](./02-webdav-sync.md) — 阶段二：WebDAV 云端同步（**延后，需补齐协议设计**）
-> - [03-ai-skill-bridge.md](./03-ai-skill-bridge.md) — 阶段三：AI Skill 与本机 Python 服务（**延后**）
+> - [01-local-indexeddb.md](./01-local-indexeddb.md) — 阶段一：本地 IndexedDB 主库与迁移（**已完成**）
+> - [02-webdav-sync.md](./02-webdav-sync.md) — 阶段二：WebDAV 云端同步（**M3 已实施**）
+> - [03-ai-skill-bridge.md](./03-ai-skill-bridge.md) — 阶段三：AI Skill 桥接（**已实施：Native Messaging 本机桥，人机能力对等**）
 > - [04-testing-verification.md](./04-testing-verification.md) — 测试与运行验证基线
 
 ## 1. 背景
@@ -25,7 +25,7 @@
 | --- | --- | --- | --- |
 | 阶段一 | 本地 IndexedDB 主库 + 仓储 + 迁移 | **立即实施** | 纯收益、风险可控，解决真实痛点 |
 | 阶段二 | WebDAV 跨设备同步 | **延后，需补齐协议设计后评审** | 工程量巨大，先验证真实需求 |
-| 阶段三 | AI Skill + 本机 Python 服务 | **延后，降级为 JSON 导出 + 命令式查询** | 常驻服务安全面与交付成本过高 |
+| 阶段三 | AI Skill 桥接 | **已实施（M4）：Native Messaging 本机桥 + 能力对等接口** | 放弃常驻 Python 服务与原始 TCP 端口；改为 Chrome 托管按需拉起宿主 + 回环令牌侧信道，安全面可控 |
 
 ### 2.1 仍坚持的硬约束（跨所有阶段通用）
 
@@ -46,11 +46,13 @@
 1. **M0（前置）**：修复 Deno 运行环境，使现有 `critical-flows / rules-engine / stash-settings` 测试基线全绿（详见 `04-testing-verification.md`）。
 2. **M1（阶段一·垂直切片）**：仅迁移收纳组数据到 IndexedDB + 仓储接口，手工验证，不动配置/链接规则/活动统计。
 3. **M2（阶段一·全量）**：迁移配置、链接规则、活动统计、备份，移除对 `chrome.storage.local` 数组的依赖。
-4. **M3（阶段二·可选）**：补齐协议设计并通过评审后再启动。
-5. **M4（阶段三·可选）**：以降级方案（JSON 导出）替代常驻 Python 服务。
+4. **M3（阶段二）**：WebDAV 云端同步协议已冻结（见 `02-webdav-sync.md`，含 ADR-4）并于 2026-08-30 起实施。
+5. **M4（阶段三）**：AI 桥接以 Native Messaging 方案实施（协议见 `03-ai-skill-bridge.md`），人类 UI 与 AI Agent 共享同一 action 处理映射，能力对等由 parity 测试强制。
 
 ## 4. 决策记录（ADR）
 
-- **ADR-1**：阶段二、三默认延后，不进入 M1/M2 的工作范围。
+- **ADR-1（部分失效）**：阶段三曾默认延后，不进入 M1/M2 的工作范围；阶段二（M3）协议冻结后已启动实施。
 - **ADR-2**：任何阶段一改动上线前，现有测试基线必须全绿（不允许在测试跑不起来的状态下改动 `StorageAdapter`/仓储层）。
-- **ADR-3**：`bb_auto_backups` 自动备份在阶段二快照体系下的去留，在 M2 末尾单独评审，本分册不做决定。
+- **ADR-3（M2 已决议）**：`bb_auto_backups` 迁入 IndexedDB `settings` 仓储，仍为受配额约束的本地快照数组；阶段二快照体系上线前不引入独立 `snapshots` 仓储（该限制已随 M3 兑现解除）。
+- **ADR-4（M3 已决议，见 02 分册）**：远端废弃 generation 级可追加 `batch.jsonl`，改用每设备每批次唯一命名的不可变 ndjson；不建远端 `tombstones/`、`conflicts/` 目录。
+- **ADR-5（M4 已决议，见 03 分册）**：AI 桥接放弃常驻 Python 服务与本地 HTTP 端口方案，改用 **Chrome Native Messaging 按需拉起宿主 + 127.0.0.1 令牌侧信道**；AI 与人类共享同一 action 处理映射（`action-handlers.js`），凭据只写不可读，不可逆操作强制确认位，能力对等由 `tests/ai-bridge.test.js` 的 parity 断言守护。

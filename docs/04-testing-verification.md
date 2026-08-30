@@ -15,12 +15,15 @@
 
 ## 3. 阶段一迁移后的测试清单
 
-- [ ] `critical-flows.test.js`：核心收纳/恢复流程、URL 容错导入仍通过；
-- [ ] `rules-engine.test.js`：P0~P3 规则优先级不受影响（`chrome.storage.local` 配置路径仍可工作）；
-- [ ] `stash-settings.test.js`：设置读写兼容；
-- [ ] **新增**：IndexedDB 仓储 CRUD、去重、分页查询测试；
-- [ ] **新增**：迁移幂等测试（中断重启后无重复/丢失）；
-- [ ] **新增**：SW + 选项页并发写库无覆盖/死锁（模拟多入口）。
+- [x] `critical-flows.test.js`：核心收纳/恢复流程、URL 容错导入仍通过；
+- [x] `rules-engine.test.js`：P0~P3 规则优先级不受影响（`chrome.storage.local` 配置路径仍可工作）；
+- [x] `stash-settings.test.js`：设置读写兼容；
+- [x] **新增**：IndexedDB 仓储 CRUD、去重、分页查询测试（`indexed-db-stash.test.js`）；
+- [x] **新增**：迁移幂等测试（中断重启后无重复/丢失）；
+- [x] **新增**：SW + 选项页并发写库无覆盖/死锁（模拟多入口）；
+- [x] **新增（v7 / M2）**：配置/规则/备份/活跃度迁入 IndexedDB、失败停在 v6、30 天清理、一键回退导回配置。
+- [x] **新增（v8 / M3，2026-08-30）**：WebDAV 同步协议测试（`webdav-sync.test.js`）——ETag 能力探测与 412、批次上传幂等、清单条件写冲突、快照基线与 watermark 重放、字段级冲突双方保留、墓碑阻止复活、90 天设备退役、活跃度 pageId 合并、凭据不出现在快照/导出；
+- [x] **新增（M3）**：双设备端到端（`webdav-two-device.test.js`）——两套独立本地库共用同一远端：新设备配对不清本机数据、双向传播（改名 / 新组）、删除传播、连错数据集报损坏而非静默切换。
 
 ## 4. 验证命令（沿用现有 Deno 指令集）
 
