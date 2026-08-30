@@ -3,6 +3,8 @@
     "test": "deno task --cwd BetterBrowse test",
     "verify": "deno task --cwd BetterBrowse verify",
     "bundle": "deno task --cwd BetterBrowse bundle",
-    "icons": "deno task --cwd BetterBrowse icons"
+    "icons": "deno task --cwd BetterBrowse icons",
+    "ai-host-install": "deno task --cwd BetterBrowse ai-host-install",
+    "ai-host-uninstall": "deno task --cwd BetterBrowse ai-host-uninstall"
   }
 }
