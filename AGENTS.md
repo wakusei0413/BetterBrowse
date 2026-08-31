@@ -1,4 +1,4 @@
-# Better Browse - AI Agent 协同开发与架构指南 (AGENTS.md)
+# BetterBrowse - AI Agent 协同开发与架构指南 (AGENTS.md)
 
 本文档专为后续参与本项目维护、重构与功能迭代的 **AI Agent（以及人类开发者）** 提供系统性的项目全景说明、底层架构设计、技术约束、规则扩展规范与开发防坑指南。
 
@@ -6,10 +6,16 @@
 
 ## 📌 1. 项目概览与硬性约束
 
-- **项目名称**：Better Browse（智能浏览增强插件）
+- **项目名称**：BetterBrowse（智能浏览增强扩展）
 - **规范标准**：Chrome Extensions **Manifest V3**
-- **当前版本**：`Milestone 2`
+- **软件版本**：由 `manifest.json` 的 `version` / `version_name` 独立管理，面向安装包、发布和用户展示
+- **API 版本**：内部裸正整数；当前值以 `src/constants/api-version.js` 为唯一事实源
 - **开发运行时与工具链**：**纯 JavaScript (原生 ESM) + Deno 2.x 原生驱动**（彻底告别 Node.js/npm 体系）
+- **API 版本规则**（⚠️ **内部跨组件契约编号**）：
+  - `API_VERSION` 只允许在 `src/constants/api-version.js` 定义，采用裸正整数，不加 `v`、小数或 Milestone 名称。
+  - 仅当扩展、宿主与桥接客户端之间发生不兼容的接口契约变化时，执行 `deno task api-version-bump`；普通软件发布、UI 更新和兼容性修复不递增 API 版本。
+  - 软件发布版本与 API 版本互不联动：修改任一方不得自动修改另一方。
+  - 本地数据、IndexedDB、WebDAV、账号配置和备份使用各自的“修订号”，只描述持久化兼容边界，不得与软件版本或 API 版本混用。
 - **零构建与所见即所得原则**（⚠️ **核心开发手感**）：
   - 源码直接在 `src/` 中以纯原生 JavaScript 编写（`.js`、`.html`、`.css`）。
   - **无需 `dist/` 编译产物中间层**，在 `src/` 中修改代码后切到 Chrome 浏览器刷新扩展即可**立即生效**。
@@ -98,7 +104,7 @@ BetterBrowse/
     │   │       └── account-config-sync.js # 浏览器账号偏好镜像 (chrome.storage.sync，不含收纳列表)
     │   │
     │   ├── background/            # 后台生命周期与调度 (Service Worker 原生 ESM)
-    │   │   ├── activity-tracker.js   # 标签页激活时间与滑动窗口频次统计 (v8 起按 pageId 持久化)
+    │   │   ├── activity-tracker.js   # 标签页激活时间与滑动窗口频次统计 (本地数据修订 8 起按 pageId 持久化)
     │   │   ├── threshold-monitor.js  # 标签页数量阈值监控与冷却防打扰
     │   │   ├── pinned-tab-guard.js   # 首位常驻收纳箱守护与防误关保护
     │   │   ├── sync-scheduler.js     # 云端同步调度 (防抖/启动/定时/手动)
@@ -241,7 +247,7 @@ BetterBrowse/
 【安全持久化写入】(StorageAdapter)
 ```
 
-### 3.4 本地存储架构：IndexedDB 主库 + chrome.storage 兜底 (v5 起)
+### 3.4 本地存储架构：IndexedDB 主库 + chrome.storage 兜底 (本地数据修订 5 起)
 
 > 完整设计决策见 `docs/00-overview.md` 与 `docs/01-local-indexeddb.md`（存储架构改革分册）。
 
@@ -252,8 +258,8 @@ BetterBrowse/
 | `pages` | `pageId`（URL 指纹） | `url`, `domain`, `updatedAt` | 同一 URL 的页面实体（标题、图标、最后访问） |
 | `stashGroups` | `groupId` | `createdAt`, `name` | 收纳组 |
 | `stashEntries` | `entryId`（`groupId::tabId` 命名空间隔离） | `groupId`, `pageId`, `createdAt` | 组内条目，指向 `pages` |
-| `settings` | `key` | — | v7 起承载用户配置、域名跳转规则与自动备份 |
-| `activityStats` | `key` | — | v7 起承载标签页活跃度快照 |
+| `settings` | `key` | — | 本地数据修订 7 起承载用户配置、域名跳转规则与自动备份 |
+| `activityStats` | `key` | — | 本地数据修订 7 起承载标签页活跃度快照 |
 | `deviceEvents` | `eventId` | `deviceId`, `sequence` | 本地操作事件（阶段二跨设备同步复用） |
 
 #### 3.4.2 门面与降级机制 (LocalStashRepository)
@@ -267,11 +273,11 @@ BetterBrowse/
   ├── 读操作：IndexedDB 异常时自动降级读取旧存储快照（30 天保留期内）
   ├── 写操作：失败显式返回错误，绝不降级写旧存储（杜绝双数据源分叉与漏关标签）
   │
-  ├── 版本 ≥ 5 且未回退 ──► IndexedStashRepository (indexed-stash-repo.js, 主库实现)
+  ├── 本地数据修订 ≥ 5 且未回退 ──► IndexedStashRepository (indexed-stash-repo.js, 主库实现)
   └── 否则（不支持/迁移中/已回退）──► chrome.storage.local 数组旧路径 (legacy 实现)
 ```
 
-- **版本门控**：收纳组在 `bb_schema_version >= 5` 后以 IndexedDB 为权威数据源；配置/规则/备份/活跃度在 `>= 7` 后同样走主库。版本切换在迁移写锁内原子完成。
+- **修订门控**：收纳组在 `bb_schema_version >= 5` 后以 IndexedDB 为权威数据源；配置/规则/备份/活跃度在 `>= 7` 后同样走主库。修订切换在迁移写锁内原子完成。
 - **变更通知**：IndexedDB 模式下收纳数据不经过 chrome.storage，门面每次写成功后更新 `bb_stash_revision` 修订号，选项页监听该键实现 0 刷新即时呈现。配置与规则变更通过 `NOTIFY_CONFIG_UPDATED` / `NOTIFY_RULE_UPDATED` 广播，内容脚本禁止直读存储。
 - **旧数据保留**：迁移成功后旧 chrome.storage 快照保留 30 天再清理，期间可调用 `MigrationManager.rollbackFromIndexedDB()` 一键回退（设置 `bb_idb_optout` 后固定使用旧存储，同时导回收纳组与配置）。
 
@@ -281,7 +287,7 @@ BetterBrowse/
 2. **多入口并发**：Service Worker 与选项页通过 `Web Locks API`（`bb-idb-write`）跨上下文串行化"读-改-写"，不可用时降级进程内队列；**写锁只在门面与迁移两处顶层获取，严禁嵌套**；
 3. **启动就绪**：所有读写路径先 `await` 数据库打开；迁移随 onInstalled / onStartup / SW 冷启动幂等重试；
 4. **大事务中断**：写入按 500 条/批分事务提交；创建组时组记录最后写入，中断不产生"半可见"组；
-5. **迁移幂等**：entryId/pageId/groupId 全部由源数据主键推导，中断重跑为幂等 upsert，完整性校验失败则版本停在 v4 下次重试。
+5. **迁移幂等**：entryId/pageId/groupId 全部由源数据主键推导，中断重跑为幂等 upsert，完整性校验失败则本地数据修订停在 4 下次重试。
 
 ### 3.5 AI 桥接控制流 (阶段三 M4：人机能力对等)
 
@@ -293,7 +299,7 @@ BetterBrowse/
   │  每 25s 内部 ping 保活 MV3 SW；请求串行转发；大消息 512KB 级自动分块
   ▼
 【扩展 AIBridgeManager】(src/background/ai-bridge.js)
-  │  尺寸/确认位校验 → 凭据出口复查 → 审计 (bb_ai_audit_log, 环形 100 条) → 串行路由
+  │  尺寸/确认位校验 → 凭据出口复查 → 统一运行日志审计 → 串行路由
   ▼
 【共享 action 处理映射】(src/background/action-handlers.js)
   │  与 MessageBus（人类 popup/options/右键菜单）复用同一份 handler 与收尾广播
@@ -361,19 +367,19 @@ BetterBrowse/
 
 ### 4.2 如何进行数据存储架构平滑升级？
 
-1. 当修改了存储数据结构或追加了字段时，将 `src/constants/config.js` 中的 `CURRENT_SCHEMA_VERSION` 递增（例如从 `7` 改为 `8`）。
-2. 在 [src/core/storage/migration.js](file:///c:/Users/wakusei/Desktop/BetterBrowse/BetterBrowse/src/core/storage/migration.js) 中编写针对性的版本迁移逻辑：
+1. 当修改了本地持久化数据结构或追加字段时，将 `src/constants/config.js` 中的 `LOCAL_DATA_SCHEMA_REVISION` 递增（例如从 `7` 改为 `8`）。
+2. 在 [src/core/storage/migration.js](file:///c:/Users/wakusei/Desktop/BetterBrowse/BetterBrowse/src/core/storage/migration.js) 中编写对应修订迁移逻辑：
    ```javascript
    if (currentVersion < 6) {
-     // 执行从 v5 到 v6 的数据结构转换与补充字段写入
+     // 执行从本地数据修订 5 到修订 6 的结构转换与字段补充
    }
    ```
 3. 扩展启动时会自动运行迁移，保障老用户无感升级。
 
-> **⚠️ 迁移硬性规范**（v5 IndexedDB 迁移确立的模式，新增版本必须沿用）：
+> **⚠️ 迁移硬性规范**（本地数据修订 5 IndexedDB 迁移确立的模式，新增修订必须沿用）：
 > - **可重入**：迁移块的写入必须幂等（主键由源数据推导），中断重跑不得产生重复或丢失；
 > - **失败降级**：迁移块失败时 `targetVersion` 不得推进，旧数据完整保留，下次启动自动重试；
-> - **原子切换**：涉及"数据源切换"的迁移（如 v5）必须整体包裹在 `IndexedDBManager.withWriteLock` 临界区内；
+> - **原子切换**：涉及"数据源切换"的迁移（如本地数据修订 5）必须整体包裹在 `IndexedDBManager.withWriteLock` 临界区内；
 > - **兼容验证**：修改迁移后必须运行 `deno task test`，IndexedDB 相关迁移需在 `tests/indexed-db-stash.test.js` 补充幂等与中断重试用例。
 
 ---
@@ -389,13 +395,16 @@ deno task test
 # 2. 运行静态规范、UTF-8 编码与文件完整性校验 (必须全部 PASS)
 deno task verify
 
-# 3. 重新打包内容脚本 (修改 src/content/ 源码后执行)
+# 3. 仅在跨组件 API 契约发生不兼容变化时递增内部 API 版本
+deno task api-version-bump
+
+# 4. 重新打包内容脚本 (修改 src/content/ 源码后执行)
 deno task bundle
 
-# 4. 生成全尺寸抗锯齿高清图标 (16px ~ 512px)
+# 5. 生成全尺寸抗锯齿高清图标 (16px ~ 512px)
 deno task icons
 
-# 5. 安装 / 卸载 AI 桥接本机宿主 (阶段三；扩展 ID 在选项页「AI 桥接」Tab 复制)
+# 6. 安装 / 卸载 AI 桥接本机宿主 (阶段三；扩展 ID 在选项页「AI 桥接」Tab 复制)
 deno task ai-host-install --ext-id=<扩展ID>          # 可选 --browser=edge
 deno task ai-host-uninstall
 ```
@@ -410,9 +419,9 @@ deno task ai-host-uninstall
    - 任何涉及阻止单页跳转的行为，必须在 `src/content/main-world-bridge.js` 的**主世界捕获阶段**完成，绝对不能只在隔离世界（Isolated World）里调用 `event.stopPropagation()`，否则无法阻止页面的 Ember/Vue/React 路由。
 3. **内容脚本更新**：
    - 浏览器内容脚本加载的是 `src/content/content-bundle.js`，修改了 `src/content/` 内部拆分源码后，**执行 `deno task bundle` 即可一键合并**。
-   - `content-bundle.js` 内联了 `constants/` 下的常量（StorageKeys、CURRENT_SCHEMA_VERSION 等），**修改常量后同样必须重新打包**，否则 `deno task verify` 会因产物不一致而失败。
+   - `content-bundle.js` 内联了 `constants/` 下的常量（StorageKeys、LOCAL_DATA_SCHEMA_REVISION 等），**修改这些内容脚本依赖后同样必须重新打包**，否则 `deno task verify` 会因产物不一致而失败。
 4. **IndexedDB 与旧存储双数据源**：
-   - 收纳数据自 v5 起、配置/规则/备份/活跃度自 v7 起以 IndexedDB 为主库，**任何新功能严禁绕过 `LocalStashRepository` / `StorageAdapter` 门面直接读写 `bb_stash_groups`、`bb_user_config` 或 IndexedDB**；
+   - 收纳数据自本地数据修订 5 起、配置/规则/备份/活跃度自修订 7 起以 IndexedDB 为主库，**任何新功能严禁绕过 `LocalStashRepository` / `StorageAdapter` 门面直接读写 `bb_stash_groups`、`bb_user_config` 或 IndexedDB**；
    - 内容脚本不得访问 `chrome.storage.local` 或 IndexedDB，必须通过 `GET_PAGE_LINK_CONTEXT` 等消息向后台索取最小必要字段；
    - 门面写方法的后端决策发生在写锁临界区内，改动门面时**不得把 `_getBackend()` 决策移出锁外**，否则会引入"决策后版本翻转"竞态导致漏写；
    - `IndexedStashRepository` 的写方法自身**不持锁**（调用方持锁），直接调用必须自行包裹 `IndexedDBManager.withWriteLock`，且**严禁嵌套获取写锁**（死锁）；
@@ -433,6 +442,7 @@ deno task ai-host-uninstall
    - **凭据出口复查**：任何新接口的响应都不得包含 `bb_webdav_credentials` 内容或 `password` 字段（`AIBridgeManager._guardResponse` 序列化后复查，命中即拦截）；凭据类动作的审计摘要不得记录内容（`_buildAuditSummary` 白名单字段机制）；
    - **AI 请求串行**：桥接请求经 `AIBridgeManager` 队列串行派发（`sender=null`），handler 内**严禁**假设消息来自标签页或要求 `sender.tab` 存在；
    - **配置联动**：`aiBridge.enabled` 为设备本地偏好，**严禁**加入 `SYNC_CONFIG_NESTED_KEYS` 或 `AccountConfigSync.slice` 白名单；开关变化经 `UPDATE_CONFIG`/`RESET_CONFIG` handler 内的 `aiBridge.onConfigUpdated()` 钩子即时生效；
+   - **API 版本唯一来源**：`src/constants/api-version.js` 的 `API_VERSION` 是唯一内部 API 契约编号；软件发布版本继续由 Manifest 独立管理。扩展与宿主直接导入 API 版本，客户端从 `bridge.json.apiVersion` 读取。新消息只写 `apiVersion`，接收端可兼容读取历史 `proto` / `protocol` / `v`；编号不一致必须明确报告本地与对端值并拒绝连接；
    - **宿主协议**：`native-host/bb_native_host.js` 的 stdout 是 Native Messaging 协议通道，**任何日志必须走 stderr**；改动线协议（分块、握手、bridge.json 字段）必须同步更新 `docs/03-ai-skill-bridge.md`、`skills/better-browse/references/protocol.md` 与客户端；
    - **启动包装必须纯 ASCII**：cmd.exe 按 ANSI 代码页解析批处理，UTF-8 中文注释会把行解析成乱码命令导致宿主秒退（"Native host has exited"）；中文文档写在 `bb_native_host.js` 文件头；
    - **扩展来源参数不是最后一个**：新版 Chrome 给宿主追加 `--parent-window=<句柄>` 等参数，宿主必须**扫描全部启动参数**寻找 `chrome-extension://<ID>/`，不能只看末位参数；
@@ -441,4 +451,4 @@ deno task ai-host-uninstall
    - **宿主健壮性三件套**：stdin EOF 退出时必须关闭 TCP 监听器（否则僵尸进程）；在途请求 120 秒超时自动放行（响应丢失不能卡死队列）；90 秒无 pong 活性看门狗自动退出；
    - **SW 定时器可能冻结**：经 Native Messaging 唤醒并保活的 Service Worker 存在 setTimeout 回调不触发的 Chrome 异常类行为——扩展侧与宿主侧的一切健壮性超时都不能只依赖 setTimeout（宿主侧看门狗闹钟 + 队列强制重置兜底），`AIBridgeManager._onWatchdog` 检测队列连续停滞会强制重置；
    - **审计绝不阻塞响应**：`_appendAudit` 为发射后不管（内部串行队列防丢条目），await 审计会在存储层挂起时饿死响应与整个请求队列；
-   - **IDB 自愈**：`MigrationManager.repairMissingObjectStores` 在启动时重建"有库无表"的残留库并从旧存储回填；`DB_VERSION` 只能单调递增（IndexedDB 拒绝低版本号打开），裸抬高版本号不建表会制造出需要 DB_VERSION 再提升才能修复的空库。
+   - **IDB 自愈**：`MigrationManager.repairMissingObjectStores` 在启动时重建"有库无表"的残留库并从旧存储回填；`INDEXED_DB_SCHEMA_REVISION` 只能单调递增（IndexedDB 拒绝用更低修订号打开），裸抬高修订号不建表会制造出需要再次提升修订号才能修复的空库。

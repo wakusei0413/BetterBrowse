@@ -1,6 +1,6 @@
-# Better Browse - 智能浏览增强插件
+# BetterBrowse - 智能浏览增强扩展
 
-**Better Browse** 是一款遵循 Chrome Extensions **Manifest V3** 规范的现代化智能浏览增强扩展。它采用现代简约扁平化（Flat Minimalist）设计与基于 **原生 ESM JavaScript + Deno 2.x** 的极简高效架构，提供**零构建心智负担、所见即所得**的开发与使用体验，致力于为用户提供清爽、高效的链接跳转控制与基于优先级规则的智能标签页收纳体验。
+**BetterBrowse** 是一款遵循 Chrome Extensions **Manifest V3** 规范的现代化智能浏览增强扩展。它采用现代简约扁平化（Flat Minimalist）设计与基于 **原生 ESM JavaScript + Deno 2.x** 的极简高效架构，提供**零构建心智负担、所见即所得**的开发与使用体验，致力于为用户提供清爽、高效的链接跳转控制与基于优先级规则的智能标签页收纳体验。
 
 ---
 
@@ -97,10 +97,13 @@ deno task test
 # 2. 运行静态规范、UTF-8 编码与文件完整性校验
 deno task verify
 
-# 3. 重新打包内容脚本 (修改 src/content/ 后执行)
+# 3. 仅在跨组件 API 契约发生不兼容变化时递增内部 API 版本
+deno task api-version-bump
+
+# 4. 重新打包内容脚本 (修改 src/content/ 后执行)
 deno task bundle
 
-# 4. 生成全尺寸抗锯齿高清图标 (16px ~ 512px)
+# 5. 生成全尺寸抗锯齿高清图标 (16px ~ 512px)
 deno task icons
 ```
 
@@ -115,7 +118,7 @@ deno task icons
 3. **加载扩展**：
    点击左上角“**加载已解压的扩展程序**”（Load unpacked），直接选择 **`BetterBrowse/BetterBrowse`** 目录（包含 `manifest.json` 的文件夹）。
 4. **固定到工具栏**：
-   点击 Chrome 右上角拼图图标，将 **Better Browse** 固定到浏览器工具栏，即可随时使用！
+   点击 Chrome 右上角拼图图标，将 **BetterBrowse** 固定到浏览器工具栏，即可随时使用！
 
 ---
 
