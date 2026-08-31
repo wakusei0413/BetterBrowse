@@ -15,6 +15,8 @@ import {
 } from "../src/core/ai/ai-capabilities.js";
 import { createActionHandlers } from "../src/background/action-handlers.js";
 import { AIBridgeManager } from "../src/background/ai-bridge.js";
+import { RuntimeLogRepository } from "../src/core/logging/runtime-log-repository.js";
+import { IndexedDBManager } from "../src/core/storage/indexed-db.js";
 import { installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
 
 /**
@@ -103,7 +105,6 @@ const HUMAN_UI_ACTIONS = [
   ActionTypes.RESOLVE_SYNC_CONFLICT,
   ActionTypes.LIST_SYNC_DEVICES,
   ActionTypes.RETIRE_SYNC_DEVICE,
-  ActionTypes.LIST_DEVICE_EVENTS,
   ActionTypes.LIST_RECYCLE_BIN,
   ActionTypes.RESTORE_RECYCLE_BIN_ITEM,
   ActionTypes.PURGE_RECYCLE_BIN_ITEM,
@@ -114,7 +115,9 @@ const HUMAN_UI_ACTIONS = [
   ActionTypes.UPDATE_STASH_ITEM,
   ActionTypes.GET_SYNC_RECOVERY_INFO,
   ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT,
-  ActionTypes.REBUILD_SYNC_FROM_SCRATCH
+  ActionTypes.REBUILD_SYNC_FROM_SCRATCH,
+  ActionTypes.QUERY_RUNTIME_LOGS,
+  ActionTypes.CLEAR_RUNTIME_LOGS
 ];
 
 /** 构建最小依赖的共享处理映射（不触发真实服务调用） */
@@ -150,7 +153,6 @@ Deno.test("AI 对等：人类 UI 使用的全部动作都在共享处理映射�
 
   // 能力自描述清单应把全部动作标记为可用
   const descriptor = buildCapabilitiesDescriptor({
-    extensionVersion: 'test',
     availableActions: [...handlerKeys]
   });
   const unavailable = descriptor.actions.filter((entry) => !entry.available).map((entry) => entry.action);
@@ -254,8 +256,11 @@ Deno.test("AI 治理：payload 尺寸限制与未知动作拒绝", async () => {
 
 Deno.test("AI 治理：审计日志（成功与失败均记录；凭据内容永不落审计）", async () => {
   const idb = installFakeIndexedDB();
+  await IndexedDBManager.close();
+  RuntimeLogRepository._writeQueue = Promise.resolve();
   installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 8 });
   try {
+    await RuntimeLogRepository.clear();
     const { manager } = buildBridge({
       [ActionTypes.SAVE_WEBDAV_CREDENTIALS]: async () => ({ success: true }),
       FAILING: async () => {
@@ -272,27 +277,30 @@ Deno.test("AI 治理：审计日志（成功与失败均记录；凭据内容永
     await manager._processRequest('r2', 'FAILING', { keyword: 'k' });
     await manager._processRequest('r3', ActionTypes.UPDATE_CONFIG, { tabThreshold: 20 });
 
-    // 审计为发射后不管（不阻塞响应），内部串行队列落盘，等待写完
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    // 审计为发射后不管（不阻塞响应），测试直接等待内部串行队列落盘
+    await manager._auditQueue;
 
-    const audit = (await StorageAdapter.get(StorageKeys.AI_AUDIT_LOG, [])) || [];
-    assertEquals(audit.length, 3);
-    // 最新的在前
-    assertEquals(audit[0].action, ActionTypes.UPDATE_CONFIG);
-    assertStringIncludes(audit[0].summary, 'tabThreshold');
+    const audit = (await RuntimeLogRepository.query({ category: 'audit', limit: 100 })).entries;
+    const currentActions = [ActionTypes.UPDATE_CONFIG, 'FAILING', ActionTypes.SAVE_WEBDAV_CREDENTIALS];
+    const currentAudit = audit.filter((entry) => currentActions.includes(entry.source));
+    assertEquals(currentAudit.length >= 3, true);
+    // 最新的目标记录在前
+    assertEquals(currentAudit[0].source, ActionTypes.UPDATE_CONFIG);
+    assertStringIncludes(currentAudit[0].message, 'tabThreshold');
 
     // 失败记录带错误
-    const failEntry = audit.find((entry) => entry.action === 'FAILING');
-    assertEquals(failEntry.ok, false);
-    assertStringIncludes(failEntry.error, '模拟失败');
+    const failEntry = currentAudit.find((entry) => entry.source === 'FAILING');
+    assertEquals(failEntry.level, 'error');
+    assertStringIncludes(failEntry.message, '模拟失败');
 
     // 凭据动作：内容不落审计，绝无密码
-    const credEntry = audit.find((entry) => entry.action === ActionTypes.SAVE_WEBDAV_CREDENTIALS);
-    assertEquals(credEntry.ok, true);
+    const credEntry = currentAudit.find((entry) => entry.source === ActionTypes.SAVE_WEBDAV_CREDENTIALS);
+    assertEquals(credEntry.level, 'info');
     const auditText = JSON.stringify(audit);
     assertEquals(auditText.includes('top-secret'), false);
     assertEquals(auditText.includes('alice'), false);
   } finally {
+    await IndexedDBManager.close();
     await idb.restore();
   }
 });

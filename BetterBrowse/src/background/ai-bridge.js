@@ -12,10 +12,11 @@
  * @encoding UTF-8
  */
 
+import { API_VERSION, apiVersionMismatchMessage, readApiVersion } from '../constants/api-version.js';
 import { StorageKeys } from '../constants/storage-keys.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
+import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
 import {
-  AI_BRIDGE_PROTO,
   NATIVE_HOST_NAME,
   AI_CONFIRM_REQUIRED_ACTIONS
 } from '../core/ai/ai-capabilities.js';
@@ -43,7 +44,7 @@ export class AIBridgeManager {
     this._port = null;
     /** 总开关（aiBridge.enabled 镜像） */
     this._armed = false;
-    /** 连接状态：disabled | connecting | connected | reconnecting | host_missing | error | unsupported */
+    /** 连接状态：disabled | connecting | connected | incompatible | reconnecting | host_missing | error | unsupported */
     this._state = 'disabled';
     /** 请求串行队列（避免并发写锁竞争） */
     this._queue = Promise.resolve();
@@ -54,6 +55,7 @@ export class AIBridgeManager {
     this._reconnectTimer = null;
     this._lastConnectedAt = 0;
     this._lastDisconnectedAt = 0;
+    this._peerApiVersion = null;
     this._lastError = '';
     this._alarmBound = (alarm) => {
       if (alarm?.name === WATCHDOG_ALARM) this._onWatchdog();
@@ -77,6 +79,7 @@ export class AIBridgeManager {
    */
   async init(handlers) {
     this._handlers = handlers || {};
+    await this._migrateLegacyAudit();
     if (typeof chrome === 'undefined' || !chrome.runtime?.connectNative) {
       this._state = 'unsupported';
       return;
@@ -116,7 +119,9 @@ export class AIBridgeManager {
     return {
       armed: this._armed,
       state: this._state,
-      protocol: AI_BRIDGE_PROTO,
+      apiVersion: API_VERSION,
+      softwareVersion: (typeof chrome !== 'undefined' && (chrome.runtime?.getManifest?.().version_name || chrome.runtime?.getManifest?.().version)) || '',
+      peerApiVersion: this._peerApiVersion,
       nativeHostName: NATIVE_HOST_NAME,
       extensionId: (typeof chrome !== 'undefined' && chrome.runtime?.id) || '',
       pendingRequests: Math.max(0, this._pendingCount || 0),
@@ -151,12 +156,13 @@ export class AIBridgeManager {
       this._port = null;
       this._reassembly.clear();
       this._lastDisconnectedAt = Date.now();
+      if (this._state === 'incompatible') return;
       this._lastError = err;
       this._scheduleReconnect();
     });
     // 通知宿主桥接通道就绪（宿主据此确认扩展身份并生成侧信道令牌）
     try {
-      port.postMessage({ internal: 'hello', proto: AI_BRIDGE_PROTO });
+      port.postMessage({ internal: 'hello', apiVersion: API_VERSION });
     } catch {
       // 发送失败交由 onDisconnect 重连路径处理
     }
@@ -200,7 +206,7 @@ export class AIBridgeManager {
         clearTimeout(this._reconnectTimer);
         this._reconnectTimer = null;
       }
-      if (!this._port) {
+      if (!this._port && this._state !== 'incompatible') {
         this._connect();
       }
       if (this._state === 'connected') {
@@ -264,6 +270,20 @@ export class AIBridgeManager {
       if (msg.internal === 'ping') {
         this._postDirect({ internal: 'pong' });
       } else if (msg.internal === 'ready') {
+        const peerApiVersion = readApiVersion(msg) ?? 1;
+        this._peerApiVersion = peerApiVersion;
+        if (peerApiVersion !== API_VERSION) {
+          this._state = 'incompatible';
+          this._lastError = apiVersionMismatchMessage(peerApiVersion);
+          const port = this._port;
+          this._port = null;
+          try {
+            port?.disconnect();
+          } catch {
+            // 忽略重复断开
+          }
+          return;
+        }
         this._state = 'connected';
         this._reconnectAttempt = 0;
         this._lastConnectedAt = Date.now();
@@ -274,6 +294,11 @@ export class AIBridgeManager {
 
     // 分块消息重组（>分块阈值的大 payload，线协议见 docs/03 §3.2）
     if (msg.chunk && typeof msg.part === 'string') {
+      const peerApiVersion = readApiVersion(msg) ?? 1;
+      if (peerApiVersion !== API_VERSION) {
+        this._lastError = apiVersionMismatchMessage(peerApiVersion);
+        return;
+      }
       const id = String(msg.id || '');
       if (!id) return;
       let entry = this._reassembly.get(id);
@@ -427,7 +452,7 @@ export class AIBridgeManager {
     const total = Math.ceil(text.length / CHUNK_CHARS);
     for (let i = 0; i < total; i++) {
       this._postDirect({
-        v: AI_BRIDGE_PROTO,
+        apiVersion: API_VERSION,
         id: reqId,
         chunk: { i, n: total },
         part: text.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS)
@@ -466,15 +491,35 @@ export class AIBridgeManager {
    */
   async _writeAudit(action, payload, ok, error = '') {
     const summary = this._buildAuditSummary(action, payload);
-    const log = (await StorageAdapter.get(StorageKeys.AI_AUDIT_LOG, [])) || [];
-    log.unshift({
+    await RuntimeLogRepository.append({
       ts: Date.now(),
-      action,
-      summary,
-      ok,
-      ...(ok ? {} : { error: String(error).slice(0, 200) })
+      level: ok ? 'info' : 'error',
+      source: action,
+      context: 'ai-bridge',
+      category: 'audit',
+      message: ok ? summary : (String(error).slice(0, 200) || summary)
     });
-    await StorageAdapter.set(StorageKeys.AI_AUDIT_LOG, log.slice(0, AUDIT_LIMIT));
+  }
+
+  async _migrateLegacyAudit() {
+    try {
+      const legacy = (await StorageAdapter.get(StorageKeys.AI_AUDIT_LOG, [])) || [];
+      if (!Array.isArray(legacy) || legacy.length === 0) return;
+      for (const entry of legacy.slice(0, AUDIT_LIMIT).reverse()) {
+        await RuntimeLogRepository.append({
+          id: `legacy-ai-audit-${Number(entry.ts) || 0}-${entry.action || 'AI'}`,
+          ts: Number(entry.ts) || Date.now(),
+          level: entry.ok === false ? 'error' : 'info',
+          source: entry.action || 'AI',
+          context: 'ai-bridge',
+          category: 'audit',
+          message: entry.ok === false ? (entry.error || entry.summary || '-') : (entry.summary || '-')
+        });
+      }
+      await StorageAdapter.set(StorageKeys.AI_AUDIT_LOG, []);
+    } catch {
+      // 旧审计迁移失败不阻塞桥接初始化，下次启动继续重试
+    }
   }
 
   /**

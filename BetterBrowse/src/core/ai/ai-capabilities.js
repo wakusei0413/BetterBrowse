@@ -8,11 +8,12 @@
  * @encoding UTF-8
  */
 
+import { API_VERSION } from '../../constants/api-version.js';
 import { ActionTypes } from '../../constants/action-types.js';
-import { CURRENT_SCHEMA_VERSION } from '../../constants/config.js';
-
-/** 桥接协议版本（线协议变更时递增） */
-export const AI_BRIDGE_PROTO = 1;
+import { LOCAL_DATA_SCHEMA_REVISION } from '../../constants/config.js';
+import { FULL_BACKUP_FORMAT_REVISION } from '../../constants/format-revisions.js';
+import { INDEXED_DB_SCHEMA_REVISION } from '../storage/indexed-db.js';
+import { ACCOUNT_CONFIG_FORMAT_REVISION, WEBDAV_FORMAT_REVISION } from '../sync/sync-constants.js';
 
 /** Native Messaging 宿主名（与 native-host 安装清单中的 name 一致） */
 export const NATIVE_HOST_NAME = 'com.betterbrowse.bridge';
@@ -31,6 +32,7 @@ export const AI_CONFIRM_REQUIRED_ACTIONS = new Set([
   ActionTypes.RESTORE_AUTO_BACKUP,    // 恢复自动备份
   ActionTypes.DELETE_AUTO_BACKUP,     // 删除自动备份
   ActionTypes.PURGE_RECYCLE_BIN_ITEM, // 永久删除回收站项
+  ActionTypes.CLEAR_RUNTIME_LOGS,      // 清空本地运行日志
   ActionTypes.REBUILD_SYNC_FROM_SCRATCH // 从本机快照重建同步
 ]);
 
@@ -150,7 +152,7 @@ export const AI_ACTION_DOCS = {
   // === 页面入口 ===
   [ActionTypes.OPEN_OPTIONS_PAGE]: {
     summary: '打开/激活选项页',
-    params: { tab: "'stash' | 'stash-settings' | 'rules' | 'links' | 'backup' | 'sync' | 'ai-bridge'" }
+    params: { tab: "'stash' | 'stash-settings' | 'rules' | 'links' | 'backup' | 'sync' | 'ai-bridge' | 'logs'" }
   },
   [ActionTypes.OPEN_PINNED_STASH_TAB]: { summary: '打开并激活常驻首位的收纳箱页' },
   [ActionTypes.OPEN_ONE_TAB]: { summary: '打开常驻收纳箱页（兼容旧命名）' },
@@ -217,7 +219,6 @@ export const AI_ACTION_DOCS = {
     summary: '退役指定同步设备',
     params: { deviceId: 'string' }
   },
-  [ActionTypes.LIST_DEVICE_EVENTS]: { summary: '获取最近跨设备收纳/倒计时事件（上限 50 条）' },
   [ActionTypes.GET_SYNC_RECOVERY_INFO]: { summary: '读取同步损坏状态与本机快照可用性' },
   [ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT]: { summary: '回退上一份远端或本机快照' },
   [ActionTypes.REBUILD_SYNC_FROM_SCRATCH]: {
@@ -239,17 +240,21 @@ export const AI_ACTION_DOCS = {
 
   // === 桥自身 ===
   [ActionTypes.GET_AI_CAPABILITIES]: { summary: '获取本能力清单（动作、参数、确认位要求与版本）' },
-  [ActionTypes.GET_AI_BRIDGE_STATUS]: { summary: '获取桥接连接状态与最近 AI 操作审计（选项页共用）' },
-  [ActionTypes.CLEAR_AI_AUDIT_LOG]: { summary: '清空 AI 操作审计日志（选项页维护用）' }
+  [ActionTypes.GET_AI_BRIDGE_STATUS]: { summary: '获取桥接连接状态（选项页共用）' },
+  [ActionTypes.QUERY_RUNTIME_LOGS]: {
+    summary: '查询本机运行日志',
+    params: { level: 'debug | info | warn | error（可选）', source: 'string（可选）', keyword: 'string（可选）', limit: 'number，最大 1000' }
+  },
+  [ActionTypes.CLEAR_RUNTIME_LOGS]: { summary: '清空本机运行日志', note: '需 confirm' }
 };
 
 /**
  * 构建能力自描述清单（GET_AI_CAPABILITIES 响应体）
  * availableActions 取自共享处理映射表的实际键集，保证"清单即事实"。
- * @param {{ extensionVersion?: string, availableActions?: string[] }} [options]
+ * @param {{ softwareVersion?: string, availableActions?: string[] }} [options]
  * @returns {object}
  */
-export function buildCapabilitiesDescriptor({ extensionVersion = '', availableActions = [] } = {}) {
+export function buildCapabilitiesDescriptor({ softwareVersion = '', availableActions = [] } = {}) {
   const available = new Set(availableActions);
   const actions = Object.keys(AI_ACTION_DOCS).map((action) => ({
     action,
@@ -257,11 +262,17 @@ export function buildCapabilitiesDescriptor({ extensionVersion = '', availableAc
     available: available.size === 0 ? true : available.has(action)
   }));
   return {
-    protocol: AI_BRIDGE_PROTO,
+    apiVersion: API_VERSION,
+    softwareVersion,
     nativeHostName: NATIVE_HOST_NAME,
-    plugin: 'BetterBrowse',
-    extensionVersion,
-    schemaVersion: CURRENT_SCHEMA_VERSION,
+    product: 'BetterBrowse',
+    internalRevisions: {
+      localDataSchema: LOCAL_DATA_SCHEMA_REVISION,
+      indexedDbSchema: INDEXED_DB_SCHEMA_REVISION,
+      webdavFormat: WEBDAV_FORMAT_REVISION,
+      accountConfigFormat: ACCOUNT_CONFIG_FORMAT_REVISION,
+      fullBackupFormat: FULL_BACKUP_FORMAT_REVISION
+    },
     confirmRequired: [...AI_CONFIRM_REQUIRED_ACTIONS],
     credentialPolicy: 'WebDAV 凭据只写不可读；任何响应不包含凭据字段',
     actions

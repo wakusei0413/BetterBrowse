@@ -33,7 +33,6 @@
 
 import { join } from 'jsr:@std/path@^1.0.8';
 
-const PROTOCOL_VERSION = 1;
 const CHUNK_CHARS = 200000;
 const DEFAULT_TIMEOUT_MS = Number(Deno.env.get('BB_BRIDGE_TIMEOUT_MS') || 120000);
 const HANDSHAKE_TIMEOUT_MS = 10000;
@@ -79,6 +78,11 @@ async function connectSession() {
     });
   }
 
+  const apiVersion = Number(info.apiVersion ?? info.proto ?? 1);
+  if (!Number.isSafeInteger(apiVersion) || apiVersion < 1) {
+    emit({ success: false, error: 'bridge.json 中的 apiVersion 不是裸正整数' });
+  }
+
   let conn;
   try {
     conn = await Deno.connect({ transport: 'tcp', hostname: '127.0.0.1', port: info.port });
@@ -86,9 +90,9 @@ async function connectSession() {
     emit({ success: false, error: `无法连接宿主侧信道 127.0.0.1:${info.port}（宿主可能已退出，请在浏览器重载扩展后重试）` });
   }
 
-  await conn.write(encoder.encode(JSON.stringify({ proto: PROTOCOL_VERSION, token: info.token }) + '\n'));
+  await conn.write(encoder.encode(JSON.stringify({ apiVersion, token: info.token }) + '\n'));
 
-  const session = { conn, hello: null, waiter: null, closed: false };
+  const session = { conn, hello: null, waiter: null, closed: false, apiVersion };
   let resolveHello;
   const helloPromise = new Promise((resolve) => { resolveHello = resolve; });
 
@@ -119,8 +123,19 @@ async function connectSession() {
             resolveHello(message);
             continue;
           }
-          // 分块响应重组（信封 {v,id,chunk:{i,n},part}，part 依次拼接为完整响应 JSON）
+          // 分块响应重组（信封 {apiVersion,id,chunk:{i,n},part}，part 依次拼接为完整响应 JSON）
           if (message?.chunk && typeof message.part === 'string') {
+            const peerApiVersion = Number(message.apiVersion ?? message.v ?? 1);
+            if (peerApiVersion !== session.apiVersion) {
+              if (session.waiter) {
+                session.waiter({
+                  success: false,
+                  error: `API 版本不兼容：客户端 ${session.apiVersion}，宿主 ${peerApiVersion}`
+                });
+                session.waiter = null;
+              }
+              continue;
+            }
             const id = String(message.id || '');
             if (!id) continue;
             let entry = reassembly.get(id);
@@ -166,6 +181,16 @@ async function connectSession() {
     try { conn.close(); } catch { /* 忽略 */ }
     emit({ success: false, error: hello?.error || '握手超时：宿主未在时限内响应令牌校验' });
   }
+  const helloApiVersion = Number(hello.apiVersion ?? hello.proto ?? 1);
+  if (helloApiVersion !== apiVersion) {
+    session.closed = true;
+    try { conn.close(); } catch { /* 忽略 */ }
+    emit({
+      success: false,
+      error: `API 版本不兼容：客户端 ${apiVersion}，宿主 ${helloApiVersion}`,
+      data: { apiVersion, peerApiVersion: helloApiVersion }
+    });
+  }
   return session;
 }
 
@@ -199,7 +224,7 @@ async function request(session, action, payload = null) {
       const total = Math.ceil(text.length / CHUNK_CHARS);
       for (let i = 0; i < total; i++) {
         await session.conn.write(encoder.encode(JSON.stringify({
-          v: PROTOCOL_VERSION,
+          apiVersion: session.apiVersion,
           id,
           chunk: { i, n: total },
           part: text.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS)
@@ -324,8 +349,8 @@ const HELP_TEXT = `BetterBrowse AI 桥接客户端
 用法：deno run -A bb-bridge-client.js <命令> [参数]
 
 会话与能力：
-  status                          桥接连接状态与 AI 操作审计
-  capabilities                    全部可用动作清单（自描述，随插件版本更新）
+  status                          桥接连接状态与统一 API 版本
+  capabilities                    全部可用动作清单（自描述，随 API 版本更新）
   call <ACTION> '<payload JSON>'  调用任意动作（见 capabilities）
   help                            显示本帮助
 
@@ -361,7 +386,7 @@ const HELP_TEXT = `BetterBrowse AI 桥接客户端
   eval-tabs / tab-count
 
 安全提示：不可逆操作必须显式携带 --confirm（等价人类 UI 的确认弹窗）；
-WebDAV 凭据只写不可读；所有 AI 操作都会记录在选项页「AI 桥接」审计列表。`;
+WebDAV 凭据只写不可读；所有 AI 操作都会记录在选项页「运行日志」Tab。`;
 
 // ============================================================
 // 入口

@@ -11,7 +11,7 @@
  *   Agent 连接后凭令牌握手，之后按 NDJSON 收发请求/响应；
  * 3. 每 25 秒向扩展发送内部 ping（MV3 Service Worker 保活信号）；
  * 4. 请求串行转发（同一时刻只有一条在途请求，避免扩展侧写锁竞争）；
- * 5. 大消息自动分块（200000 字符，统一信封 {v,id,chunk:{i,n},part}，对两端透明重组）。
+ * 5. 大消息自动分块（200000 字符，统一信封 {apiVersion,id,chunk:{i,n},part}，对两端透明重组）。
  *
  * ⚠️ stdout 是 Native Messaging 协议通道，任何日志一律走 stderr（console.error）。
  * ⚠️ run-host.cmd 启动包装必须保持纯 ASCII：cmd.exe 以 ANSI 代码页解析批处理，
@@ -20,9 +20,9 @@
  */
 
 import { join } from 'jsr:@std/path@^1.0.8';
+import { API_VERSION, apiVersionMismatchMessage, readApiVersion } from '../src/constants/api-version.js';
 
 const HOST_NAME = 'com.betterbrowse.bridge';
-const PROTOCOL_VERSION = 1;
 const KEEPALIVE_PING_MS = 25000;
 /** 活性看门狗：连续 90 秒未收到扩展 pong（宿主被异常遗留时）自动退出并清理 */
 const LIVENESS_TIMEOUT_MS = 90000;
@@ -110,7 +110,7 @@ function chunkFrames(text, id) {
   const frames = [];
   for (let i = 0; i < total; i++) {
     frames.push({
-      v: PROTOCOL_VERSION,
+      apiVersion: API_VERSION,
       id,
       chunk: { i, n: total },
       part: text.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS)
@@ -163,7 +163,7 @@ function stateDirPath() {
 
 /**
  * 写入自发现文件
- * @param {{ port: number, token: string, pid: number, extensionId: string, startedAt: number }} info
+ * @param {{ port: number, token: string, pid: number, extensionId: string, apiVersion: number, startedAt: number }} info
  */
 async function writeBridgeFile(info) {
   const dir = stateDirPath();
@@ -220,6 +220,8 @@ class BridgeHost {
     /** 分块重组缓存：id -> { parts, received, total }（扩展响应与 Agent 请求共用） */
     this.reassembly = new Map();
     this.agentSocket = null;
+    /** 扩展 API 兼容状态：null=尚未握手，true=可转发，false=明确不兼容 */
+    this.extensionApiCompatible = null;
     this.closed = false;
     /** 最近一次收到扩展 pong 的时刻（活性判定基准） */
     this.lastPongAt = Date.now();
@@ -235,6 +237,7 @@ class BridgeHost {
       token: this.token,
       pid: Deno.pid,
       extensionId: this.extensionId,
+      apiVersion: API_VERSION,
       startedAt: Date.now()
     });
     log(`桥接宿主已启动：扩展 ${this.extensionId}，侧信道 127.0.0.1:${port}`);
@@ -344,11 +347,24 @@ class BridgeHost {
           }
 
           if (!authenticated) {
-            // 首行握手：{"proto":1,"token":"..."}
+            // 首行握手：{"apiVersion":1,"token":"..."}；兼容读取历史 proto 字段
+            const peerApiVersion = readApiVersion(message) ?? 1;
+            if (peerApiVersion !== API_VERSION) {
+              await this.writeAgentLine(conn, {
+                ok: false,
+                apiVersion: API_VERSION,
+                peerApiVersion,
+                error: apiVersionMismatchMessage(peerApiVersion)
+              });
+              log(`Agent ${apiVersionMismatchMessage(peerApiVersion)}，断开连接`);
+              conn.close();
+              this.agentSocket = null;
+              return;
+            }
             if (timingSafeEqual(String(message?.token || ''), this.token)) {
               authenticated = true;
               await this.writeAgentLine(conn, {
-                proto: PROTOCOL_VERSION,
+                apiVersion: API_VERSION,
                 ok: true,
                 extensionId: this.extensionId,
                 host: HOST_NAME
@@ -365,6 +381,15 @@ class BridgeHost {
 
           // Agent → 宿主分块重组：信封切分的是完整 {id,action,payload} 请求 JSON
           if (authenticated && message?.chunk && typeof message.part === 'string') {
+            const peerApiVersion = readApiVersion(message) ?? 1;
+            if (peerApiVersion !== API_VERSION) {
+              await this.writeAgentLine(conn, {
+                id: String(message.id || ''),
+                success: false,
+                error: apiVersionMismatchMessage(peerApiVersion)
+              });
+              continue;
+            }
             const assembled = this.assembleChunk(message);
             if (!assembled) continue;
             message = assembled;
@@ -442,6 +467,17 @@ class BridgeHost {
   /** 串行派发：无在途请求时把队首转发给扩展 */
   drainQueue() {
     if (this.inflight || this.pending.length === 0) return;
+    if (this.extensionApiCompatible === null) return;
+    if (this.extensionApiCompatible === false) {
+      const rejected = this.pending.shift();
+      this.writeAgentLine(rejected.conn, {
+        id: rejected.id,
+        success: false,
+        error: '扩展与本机宿主的 API 版本不兼容，请重载扩展并重新安装宿主'
+      }).catch(() => {});
+      this.drainQueue();
+      return;
+    }
     const next = this.pending.shift();
     this.inflight = { id: next.id, conn: next.conn, forwardedAt: Date.now() };
     log(`转发扩展: id=${next.id} action=${next.action}`);
@@ -464,14 +500,36 @@ class BridgeHost {
       return;
     }
     if (message.internal === 'hello') {
-      // 扩展身份已由 Chrome 按 allowed_origins 校验，回就绪信号（扩展据此标记 connected）
+      // 扩展身份已由 Chrome 按 allowed_origins 校验；兼容读取历史 proto 字段
+      const peerApiVersion = readApiVersion(message) ?? 1;
       this.lastPongAt = Date.now();
-      await writeNativeFrame({ internal: 'ready', proto: PROTOCOL_VERSION, extensionId: this.extensionId });
+      if (peerApiVersion !== API_VERSION) {
+        this.extensionApiCompatible = false;
+        await writeNativeFrame({
+          internal: 'ready',
+          apiVersion: API_VERSION,
+          peerApiVersion,
+          compatible: false,
+          error: apiVersionMismatchMessage(peerApiVersion),
+          extensionId: this.extensionId
+        });
+        log(`扩展 ${apiVersionMismatchMessage(peerApiVersion)}`);
+        this.drainQueue();
+        return;
+      }
+      this.extensionApiCompatible = true;
+      await writeNativeFrame({ internal: 'ready', apiVersion: API_VERSION, compatible: true, extensionId: this.extensionId });
+      this.drainQueue();
       return;
     }
 
     // 分块重组（扩展 → 宿主方向）
     if (message.chunk && typeof message.part === 'string') {
+      const peerApiVersion = readApiVersion(message) ?? 1;
+      if (peerApiVersion !== API_VERSION) {
+        log(apiVersionMismatchMessage(peerApiVersion));
+        return;
+      }
       let full;
       try {
         full = this.assembleChunk(message);

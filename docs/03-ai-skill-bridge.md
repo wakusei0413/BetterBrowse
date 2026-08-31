@@ -56,14 +56,14 @@
 任一方向、任一传输层上，逻辑消息超过 **200000 字符**时自动分块，信封统一为：
 
 ```json
-{"v":1, "id":"<消息id>", "chunk":{"i":0,"n":3}, "part":"<完整 JSON 的字符串片段>"}
+{"apiVersion":1, "id":"<消息id>", "chunk":{"i":0,"n":3}, "part":"<完整 JSON 的字符串片段>"}
 ```
 
 接收方按 `id` 拼齐 `part` 后 `JSON.parse` 得到完整消息。分块对上层透明。
 
 - 客户端 → 宿主：切分的是完整请求信封 `{id, action, payload}`，重组后直接得到可路由的请求；
 - 宿主 → 扩展：切分的是 `{reqId, action, payload}` 或响应对象；
-- 未超过阈值的消息保持原形状（请求 `{id, action, payload}` / Native Messaging 帧），**没有**额外的 `{v,id,msg}` 包装。
+- 未超过阈值的消息保持原形状（请求 `{id, action, payload}` / Native Messaging 帧），**没有**额外包装。接收端仅为兼容旧组件读取历史 `v` 字段。
 
 > ⚠️ **实现红线（本机宿主与客户端两侧均适用）**：分块帧的信封 `id` 承载业务消息的 `reqId`，
 > 而重组还原出的正文本身**不含** `reqId`/`id`——重组完成后必须把信封 `id` 回填进正文对象，
@@ -71,11 +71,11 @@
 
 ### 3.3 TCP 侧信道会话流程
 
-1. Agent 读取自发现文件 `bridge.json`：`{"port":52341,"token":"<64hex>","pid":1234,"extensionId":"<32位id>","startedAt":...}`。
+1. Agent 读取自发现文件 `bridge.json`：`{"port":52341,"token":"<64hex>","pid":1234,"extensionId":"<32位id>","apiVersion":1,"startedAt":...}`。
    - Windows 路径：`%LOCALAPPDATA%\BetterBrowse\bridge.json`
    - macOS/Linux 路径：`$XDG_STATE_HOME/better-browse/bridge.json`（缺省 `~/.local/state/better-browse/bridge.json`）
-2. Agent 连接 TCP 后首行发送握手：`{"proto":1,"token":"<token>"}`。
-3. 宿主校验令牌（恒定时间比较），成功回 `{"proto":1,"ok":true,"extensionId":"...","version":"...","schemaVersion":8}`，失败回 `{"ok":false,"error":"..."}` 后断开。
+2. Agent 连接 TCP 后首行发送握手：`{"apiVersion":1,"token":"<token>"}`。
+3. 宿主校验令牌与 API 编号，成功回 `{"apiVersion":1,"ok":true,"extensionId":"...","host":"com.betterbrowse.bridge"}`；编号不一致时返回本地和对端值并断开。接收端仅为兼容旧组件读取历史 `proto` 字段。
 4. 之后每行一条请求：`{"id":"<uuid>","action":"<ActionType>","payload":{...}}`；
    每行一条响应：`{"id":"<uuid>","success":true,"data":...}` 或 `{"id":"<uuid>","success":false,"error":"<中文错误>"}`。
 5. 宿主同时只服务一个 Agent 连接（排队语义），请求**串行**转发扩展，避免写锁竞争。
@@ -83,7 +83,7 @@
 ### 3.4 内部控制消息（不走 action 管道）
 
 - 宿主每 25s 向扩展发 `{"internal":"ping"}`，扩展回 `{"internal":"pong"}`——同时作为 MV3 Service Worker 保活信号。
-- 扩展连接成功即发 `{"internal":"hello","proto":1}`，宿主回 `{"internal":"ready"}`。
+- 扩展连接成功即发 `{"internal":"hello","apiVersion":1}`，宿主校验后回 `{"internal":"ready","apiVersion":1,"compatible":true}`。
 
 ## 4. 生命周期
 
@@ -107,7 +107,7 @@
 
 ### 5.3 审计日志
 
-每次 AI 调用记录 `{ts, action, summary, ok}` 至 `chrome.storage.local` 键 `bb_ai_audit_log`（环形保留 100 条；该键不入 outbox / 快照 / 导出）。
+每次 AI 调用写入统一本地运行日志（`context: ai-bridge`、`category: audit`），可在选项页「运行日志」Tab 查询；旧键 `bb_ai_audit_log` 仅用于一次性迁移后清空。运行日志不进入 outbox / 快照 / 导出。
 
 ### 5.4 限制
 
@@ -115,7 +115,7 @@
 
 ## 6. 能力清单与对等映射
 
-完整 action 清单见 `src/constants/action-types.js`；**运行时以 `GET_AI_CAPABILITIES` 响应为准**（自描述：action、参数、说明、版本、schema 版本）。人类入口 ↔ action 对应关系：
+完整 action 清单见 `src/constants/action-types.js`；**运行时以 `GET_AI_CAPABILITIES` 响应为准**。响应同时返回软件发布版本 `softwareVersion` 与内部契约编号 `apiVersion`，两者独立；本地数据、IndexedDB、WebDAV、账号配置与备份仅在 `internalRevisions` 中作为诊断修订号返回。人类入口 ↔ action 对应关系：
 
 | 人类入口 | ActionType（AI 同样可调） |
 | --- | --- |
@@ -126,8 +126,8 @@
 | 备份 Tab 导入导出 | `EXPORT_FULL_BACKUP` `RESTORE_FULL_BACKUP` `IMPORT_THIRD_PARTY_DATA` `IMPORT_STASH_DATA` `EXPORT_STASH_DATA` `EXPORT_ONETAB_TEXT`（AI 增强：`LIST/RESTORE/DELETE_AUTO_BACKUP`） |
 | 收纳设置 / 规则 Tab | `GET_CONFIG` `UPDATE_CONFIG` `RESET_CONFIG` `GET_TAB_ACTIVITY_STATS` |
 | 弹窗/右键菜单 | `OPEN_PINNED_STASH_TAB` `OPEN_OPTIONS_PAGE` `GET_TAB_COUNT_INFO` `GET_COUNTDOWN_STATUS` `CANCEL_AUTO_STASH` `CONFIRM_AUTO_STASH` `OPEN_TAB_BACKGROUND` `OPEN_ONE_TAB` |
-| WebDAV 同步 Tab | `GET_SYNC_STATUS` `SAVE_WEBDAV_CREDENTIALS` `TEST_WEBDAV_CONNECTION` `RUN_SYNC_NOW` `LIST_SYNC_CONFLICTS` `RESOLVE_SYNC_CONFLICT` `LIST_SYNC_DEVICES` `RETIRE_SYNC_DEVICE` `LIST_DEVICE_EVENTS` |
-| 桥自身（选项页共用） | `GET_AI_CAPABILITIES` `GET_AI_BRIDGE_STATUS` |
+| WebDAV 同步 Tab | `GET_SYNC_STATUS` `SAVE_WEBDAV_CREDENTIALS` `TEST_WEBDAV_CONNECTION` `RUN_SYNC_NOW` `LIST_SYNC_CONFLICTS` `RESOLVE_SYNC_CONFLICT` `LIST_SYNC_DEVICES` `RETIRE_SYNC_DEVICE` `GET_SYNC_RECOVERY_INFO` `FALLBACK_PREVIOUS_SNAPSHOT` `REBUILD_SYNC_FROM_SCRATCH` |
+| 桥自身与运行日志 | `GET_AI_CAPABILITIES` `GET_AI_BRIDGE_STATUS` `QUERY_RUNTIME_LOGS` `CLEAR_RUNTIME_LOGS` |
 
 ## 7. 交付物清单
 
@@ -136,7 +136,7 @@
 | 扩展 | `src/background/action-handlers.js` | 共享 handler 映射（自 service-worker 抽取） |
 | 扩展 | `src/background/ai-bridge.js` | AIBridgeManager：通道生命周期 + 安全治理 |
 | 扩展 | `src/core/ai/ai-capabilities.js` | 能力自描述常量 |
-| 扩展 | 选项页「AI 桥接」Tab | 开关 / 状态 / 扩展 ID 复制 / 审计列表 |
+| 扩展 | 选项页「AI 桥接」与「运行日志」Tab | 软件版本 / API 版本 / 开关 / 状态 / 扩展 ID / 审计查询 |
 | 宿主 | `native-host/bb_native_host.js` + `run-host.cmd|.sh` | Deno 宿主（纯标准库） |
 | 宿主 | `native-host/install.js` / `uninstall.js` | 三平台注册（Windows 注册表 / macOS、Linux 目录）+ `deno task ai-host-install|uninstall` |
 | Skill | `skills/better-browse/` | `SKILL.md` + `scripts/bb-bridge-client.js` + `references/protocol.md` |

@@ -14,7 +14,7 @@ description: 操控 BetterBrowse Chrome 扩展（智能标签页收纳箱插件�
 ```bash
 CLIENT="<技能目录>/scripts/bb-bridge-client.js"
 
-# 1. 连通性检查（同时返回扩展状态与最近 AI 操作审计）
+# 1. 连通性检查（返回扩展状态与统一 API 版本）
 deno run -A "$CLIENT" status
 
 # 2. 获取能力清单（自描述：全部动作、参数契约、确认位要求；以插件实际返回为准）
@@ -34,7 +34,7 @@ deno run -A "$CLIENT" call UPDATE_CONFIG '{"tabThreshold": 20}'
 1. **不可逆操作必须带确认位**：`group-delete` / `backup-import` / `backup-restore` / `backup-delete` / `config-reset` 必须加 `--confirm`；经 `call` 直调 `DELETE_STASH_GROUP`、`CLEAR_ALL_STASH`、`RESTORE_FULL_BACKUP`、`DEDUPLICATE_STASH_DATA`、`RESET_CONFIG`、`RESTORE_AUTO_BACKUP`、`DELETE_AUTO_BACKUP` 时 payload 必须含 `"confirm": true`，否则插件直接拒绝。
 2. **破坏性操作前先备份**：执行清空、恢复备份、去重前，先 `backup-export`（全量 JSON 落盘）。
 3. **凭据只写不可读**：可以 `sync-credentials` 保存 WebDAV 凭据，但任何响应都不会包含密码；不要尝试读取。
-4. **所有操作有审计**：每次调用记录在插件选项页「AI 桥接」Tab，用户可见。不要执行用户没有要求的操作。
+4. **所有操作有审计**：每次调用写入插件选项页「运行日志」Tab，用户可见。不要执行用户没有要求的操作。
 5. **写锁纪律**：请求由插件串行处理，无需客户端并发优化；不要并发轰炸。
 
 ## 首次安装（用户未装过宿主时）

@@ -69,7 +69,6 @@ export const ActionTypes = {
   RESOLVE_SYNC_CONFLICT: 'RESOLVE_SYNC_CONFLICT',
   LIST_SYNC_DEVICES: 'LIST_SYNC_DEVICES',
   RETIRE_SYNC_DEVICE: 'RETIRE_SYNC_DEVICE',
-  LIST_DEVICE_EVENTS: 'LIST_DEVICE_EVENTS',
 
   // === AI 桥接与增强读写（阶段三：人类 UI 与 AI Agent 共用同一处理路径）===
   ADD_STASH_ITEM: 'ADD_STASH_ITEM',           // 向既有收纳组添加条目（AI 增强：URL 自动清洗、按设置去重）
@@ -80,8 +79,12 @@ export const ActionTypes = {
   RESTORE_AUTO_BACKUP: 'RESTORE_AUTO_BACKUP', // 恢复指定自动备份中的收纳组（幂等 upsert，需 confirm）
   DELETE_AUTO_BACKUP: 'DELETE_AUTO_BACKUP',   // 删除指定自动备份快照（需 confirm）
   GET_AI_CAPABILITIES: 'GET_AI_CAPABILITIES', // AI 能力自描述清单（动作、参数、确认位要求与版本）
-  GET_AI_BRIDGE_STATUS: 'GET_AI_BRIDGE_STATUS', // AI 桥接连接状态与最近操作审计（选项页与 AI 共用）
-  CLEAR_AI_AUDIT_LOG: 'CLEAR_AI_AUDIT_LOG',    // 清空 AI 操作审计日志（选项页维护用）
+  GET_AI_BRIDGE_STATUS: 'GET_AI_BRIDGE_STATUS', // AI 桥接连接状态（选项页与 AI 共用）
+
+  // === 统一运行日志 ===
+  APPEND_RUNTIME_LOG: 'APPEND_RUNTIME_LOG',      // 扩展内部上下文向后台追加运行日志（不暴露给 AI）
+  QUERY_RUNTIME_LOGS: 'QUERY_RUNTIME_LOGS',      // 查询本地运行日志
+  CLEAR_RUNTIME_LOGS: 'CLEAR_RUNTIME_LOGS',      // 清空本地运行日志（需 confirm）
 
   // === 30 天回收站 ===
   LIST_RECYCLE_BIN: 'LIST_RECYCLE_BIN',                 // 列出未过期墓碑（组/条目）
