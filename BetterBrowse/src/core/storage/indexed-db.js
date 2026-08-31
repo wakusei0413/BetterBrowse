@@ -8,20 +8,20 @@
 export const DB_NAME = 'betterbrowse';
 
 /**
- * 本地主库结构版本（新增对象仓储或索引时递增；v8 / DB 9 起含同步仓储全套对象仓储）。
- * ⚠️ 必须单调递增且 > 磁盘上的现存版本：IndexedDB 拒绝用更低的版本号打开库（VersionError），
- * 且"仅抬高版本号而不建表"的异常残留库需要更高的版本号才能重新触发 upgradeneeded 建表
+ * 本地主库结构修订号（新增对象仓储或索引时递增；修订 10 起增加本地统一运行日志仓储）。
+ * ⚠️ 必须单调递增且 > 磁盘上的现存修订号：IndexedDB 拒绝用更低的修订号打开库（VersionError），
+ * 且"仅抬高修订号而不建表"的异常残留库需要更高的修订号才能重新触发 upgradeneeded 建表
  * （由 MigrationManager.repairMissingObjectStores 自愈流程处理）。
  */
-export const DB_VERSION = 9;
+export const INDEXED_DB_SCHEMA_REVISION = 10;
 
 /**
  * 对象仓储名称与结构契约（详见 docs/01-local-indexeddb.md 第 2.1 节）
  * - pages:        页面实体层，同一 URL 唯一（pageId 为 URL 指纹）
  * - stashGroups:  收纳组层
  * - stashEntries: 收纳记录层，组内条目通过 pageId 指向页面实体
- * - settings: v7 起承载用户配置、域名跳转规则与自动备份（key-value）；凭据亦在此但不进入同步
- * - activityStats: v7 起承载标签页活跃度快照（v8 起按 pageId）
+ * - settings: 本地数据修订 7 起承载用户配置、域名跳转规则与自动备份（key-value）；凭据亦在此但不进入同步
+ * - activityStats: 本地数据修订 7 起承载标签页活跃度快照（修订 8 起按 pageId）
  * - deviceEvents: 跨设备可见、仅来源设备执行的倒计时 / 收纳事件
  * - syncMeta / outbox / operationLogs / tombstones / conflicts / snapshots: 阶段二同步
  */
@@ -37,7 +37,8 @@ export const IDBStores = {
   OPERATION_LOGS: 'operationLogs',
   TOMBSTONES: 'tombstones',
   CONFLICTS: 'conflicts',
-  SNAPSHOTS: 'snapshots'
+  SNAPSHOTS: 'snapshots',
+  RUNTIME_LOGS: 'runtimeLogs'
 };
 
 export class IndexedDBManager {
@@ -80,7 +81,7 @@ export class IndexedDBManager {
    */
   static _openDatabase() {
     return new Promise((resolve, reject) => {
-      const request = globalThis.indexedDB.open(DB_NAME, DB_VERSION);
+      const request = globalThis.indexedDB.open(DB_NAME, INDEXED_DB_SCHEMA_REVISION);
       // 打开超时保护：onblocked（其他上下文持有旧版本连接）会让请求永不落定，
       // 超时显式失败并清空缓存，让下一次操作重试，杜绝调用方无限等待
       let settled = false;
@@ -194,6 +195,13 @@ export class IndexedDBManager {
     }
     if (!db.objectStoreNames.contains(IDBStores.SNAPSHOTS)) {
       db.createObjectStore(IDBStores.SNAPSHOTS, { keyPath: 'snapshotId' });
+    }
+    if (!db.objectStoreNames.contains(IDBStores.RUNTIME_LOGS)) {
+      const logs = db.createObjectStore(IDBStores.RUNTIME_LOGS, { keyPath: 'id' });
+      logs.createIndex('ts', 'ts', { unique: false });
+      logs.createIndex('level', 'level', { unique: false });
+      logs.createIndex('source', 'source', { unique: false });
+      logs.createIndex('category', 'category', { unique: false });
     }
   }
 

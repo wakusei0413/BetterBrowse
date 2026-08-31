@@ -7,7 +7,7 @@
 import { assertEquals } from "@std/assert";
 import { StorageKeys } from "../src/constants/storage-keys.js";
 import { DefaultConfig } from "../src/constants/config.js";
-import { ACCOUNT_CONFIG_MAX_BYTES, ACCOUNT_CONFIG_PAYLOAD_VERSION } from "../src/core/sync/sync-constants.js";
+import { ACCOUNT_CONFIG_MAX_BYTES, ACCOUNT_CONFIG_FORMAT_REVISION } from "../src/core/sync/sync-constants.js";
 import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
 import { MigrationManager } from "../src/core/storage/migration.js";
 import { AccountConfigSync } from "../src/core/sync/account-config-sync.js";
@@ -118,7 +118,7 @@ Deno.test("AccountConfigSync.buildPayload: 超过 8000 字节则跳过写入", (
   const built = AccountConfigSync.buildPayload(huge);
   assertEquals(built, null);
   const ok = AccountConfigSync.buildPayload(AccountConfigSync.slice(DefaultConfig));
-  assertEquals(ok.payload.v, ACCOUNT_CONFIG_PAYLOAD_VERSION);
+  assertEquals(ok.payload.v, ACCOUNT_CONFIG_FORMAT_REVISION);
   assertEquals(ok.bytes > 0, true);
   assertEquals(ok.bytes <= ACCOUNT_CONFIG_MAX_BYTES, true);
 });
@@ -132,7 +132,7 @@ Deno.test("AccountConfigSync: 本机写配置后异步镜像到 chrome.storage.s
     });
     await AccountConfigSync.flushPending();
     const payload = syncStore[StorageKeys.ACCOUNT_CONFIG];
-    assertEquals(payload?.v, ACCOUNT_CONFIG_PAYLOAD_VERSION);
+    assertEquals(payload?.v, ACCOUNT_CONFIG_FORMAT_REVISION);
     assertEquals(payload.config.tabThreshold, 28);
     assertEquals(payload.config.webdavSync.serverUrl, 'https://dav.test/dav/');
     assertEquals(JSON.stringify(payload).includes('password'), false);
@@ -164,7 +164,7 @@ Deno.test("AccountConfigSync.hydrate: 本机仍是默认值时采用账号偏好
       webdavSync: { enabled: true, autoSync: true, serverUrl: 'https://dav.other/dav/' }
     });
     syncStore[StorageKeys.ACCOUNT_CONFIG] = {
-      v: ACCOUNT_CONFIG_PAYLOAD_VERSION,
+      v: ACCOUNT_CONFIG_FORMAT_REVISION,
       updatedAt: Date.now() + 1000,
       config: incoming
     };
@@ -210,7 +210,7 @@ Deno.test("AccountConfigSync.applyRemote: 远端偏好写入 IndexedDB 并进入
   await setupIdb();
   try {
     const incoming = {
-      v: ACCOUNT_CONFIG_PAYLOAD_VERSION,
+      v: ACCOUNT_CONFIG_FORMAT_REVISION,
       updatedAt: Date.now(),
       config: AccountConfigSync.slice({
         ...DefaultConfig,
@@ -230,7 +230,7 @@ Deno.test("AccountConfigSync.applyRemote: 远端偏好写入 IndexedDB 并进入
 
 Deno.test("AccountConfigSync.sanitizeIncoming: 丢掉密码与未知机密字段", () => {
   const clean = AccountConfigSync.sanitizeIncoming({
-    v: ACCOUNT_CONFIG_PAYLOAD_VERSION,
+    v: ACCOUNT_CONFIG_FORMAT_REVISION,
     config: {
       tabThreshold: 16,
       username: 'alice',

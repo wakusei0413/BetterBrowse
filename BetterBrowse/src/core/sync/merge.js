@@ -11,6 +11,7 @@ import { DefaultConfig } from '../../constants/config.js';
 import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS } from './sync-constants.js';
 import { SyncOutbox } from './outbox.js';
 import { AccountConfigSync } from './account-config-sync.js';
+import { DeviceEventLog } from './device-events.js';
 
 const PAGE_OWNED_FIELDS = new Set(['title', 'url', 'favIconUrl', 'domain']);
 
@@ -339,25 +340,28 @@ export class SyncMerge {
   }
 
   static async _applyDeviceEvent(op) {
-    return await IndexedDBManager.runTransaction(
+    const event = {
+      eventId: op.entityId,
+      deviceId: op.deviceId,
+      originDeviceId: op.fields?.originDeviceId || op.deviceId,
+      sequence: op.sequence,
+      type: op.fields?.type || 'unknown',
+      payload: op.fields?.payload || {},
+      createdAt: op.createdAt || Date.now()
+    };
+    const result = await IndexedDBManager.runTransaction(
       [IDBStores.DEVICE_EVENTS],
       'readwrite',
       async (tx) => {
         const store = tx.objectStore(IDBStores.DEVICE_EVENTS);
         const existing = await IndexedDBManager.requestToPromise(store.get(op.entityId));
         if (existing) return 'skipped';
-        store.put({
-          eventId: op.entityId,
-          deviceId: op.deviceId,
-          originDeviceId: op.fields?.originDeviceId || op.deviceId,
-          sequence: op.sequence,
-          type: op.fields?.type || 'unknown',
-          payload: op.fields?.payload || {},
-          createdAt: op.createdAt || Date.now()
-        });
+        store.put(event);
         return 'applied';
       }
     );
+    if (result === 'applied') DeviceEventLog.appendRuntimeLog(event).catch(() => {});
+    return result;
   }
 
   /**

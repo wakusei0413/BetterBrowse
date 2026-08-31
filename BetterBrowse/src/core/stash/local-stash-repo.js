@@ -4,6 +4,7 @@
  * @encoding UTF-8
  */
 
+import { FULL_BACKUP_FORMAT_REVISION } from '../../constants/format-revisions.js';
 import { StorageKeys } from '../../constants/storage-keys.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { OneTabConverter } from './onetab-converter.js';
@@ -19,14 +20,14 @@ export class LocalStashRepository {
   /**
    * 解析当前生效的存储后端
    *
-   * 版本门控说明：仅当 v5 迁移完成（schema 版本 ≥ 5）后 IndexedDB 才是权威数据源。
+   * 修订门控说明：仅当本地数据修订 5 迁移完成（schema 版本 ≥ 5）后 IndexedDB 才是权威数据源。
    * 版本切换在迁移的跨上下文写锁内原子完成，因此：
    * - 迁移进行中（版本仍为 4）：读写全部走旧存储，迁移期间的并发写入不会漏拷；
-   * - 迁移完成后（版本 5）：读写全部走 IndexedDB；
+   * - 迁移完成后（修订 5）：读写全部走 IndexedDB；
    * - 显式回退（bb_idb_optout）：固定使用旧存储。
    *
    * ⚠️ 写方法的后端决策必须发生在写锁临界区内（见各写方法实现），
-   * 否则"决策走旧存储 → 迁移完成切版本 → 写入旧存储"的竞态会导致数据漏写。
+   * 否则"决策走旧存储 → 迁移完成切换修订 → 写入旧存储"的竞态会导致数据漏写。
    * @returns {Promise<IndexedStashRepository | null>}
    */
   static async _getBackend() {
@@ -125,7 +126,7 @@ export class LocalStashRepository {
 
   /**
    * 执行自动备份（收纳组创建成功后调用）
-   * v7 起备份写入 IndexedDB settings 仓储（StorageAdapter 按版本门控路由），失败不影响主收纳。
+   * 本地数据修订 7 起备份写入 IndexedDB settings 仓储（StorageAdapter 按版本门控路由），失败不影响主收纳。
    * @param {number} [now=Date.now()] - 备份快照时间戳
    */
   static async _runAutoBackupIfEnabled(now = Date.now()) {
@@ -852,7 +853,7 @@ export class LocalStashRepository {
 
     return JSON.stringify(
       {
-        version: 1,
+        version: FULL_BACKUP_FORMAT_REVISION,
         exportedAt: Date.now(),
         plugin: 'BetterBrowse',
         type: 'full_backup',

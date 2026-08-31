@@ -1,12 +1,12 @@
 /**
  * @file indexed-db-stash.test.js
- * @description IndexedDB 主库仓储、v5 数据迁移、幂等恢复、一键回退、30 天保留清理与并发写库集成测试
+ * @description IndexedDB 主库仓储、本地数据修订 5 数据迁移、幂等恢复、一键回退、30 天保留清理与并发写库集成测试
  * @encoding UTF-8
  */
 
 import { assertEquals } from "@std/assert";
 import { StorageKeys } from "../src/constants/storage-keys.js";
-import { CURRENT_SCHEMA_VERSION } from "../src/constants/config.js";
+import { LOCAL_DATA_SCHEMA_REVISION } from "../src/constants/config.js";
 import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
 import { MigrationManager } from "../src/core/storage/migration.js";
 import { IndexedDBManager, IDBStores } from "../src/core/storage/indexed-db.js";
@@ -239,7 +239,7 @@ Deno.test("IndexedStashRepository: getGroupPage 分页与 searchEntries 关键�
   }
 });
 
-Deno.test("MigrationManager: v4 旧数组完整迁移至 IndexedDB 主库（v5），中断重跑幂等不重复", async () => {
+Deno.test("MigrationManager: 本地数据修订 4 旧数组完整迁移至 IndexedDB 主库（本地数据修订 5），中断重跑幂等不重复", async () => {
   const idb = installFakeIndexedDB();
   const store = installMockStorage({
     [StorageKeys.SCHEMA_VERSION]: 4,
@@ -268,8 +268,8 @@ Deno.test("MigrationManager: v4 旧数组完整迁移至 IndexedDB 主库（v5�
   try {
     await MigrationManager.runMigrations();
 
-    // 版本推进至 v5 并记录迁移时间
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    // 本地数据修订推进至 5 并记录迁移时间
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], LOCAL_DATA_SCHEMA_REVISION);
     assertEquals(typeof store[StorageKeys.IDB_MIGRATED_AT], "number");
 
     // 数据经门面（IndexedDB 权威数据源）完整还原
@@ -286,7 +286,7 @@ Deno.test("MigrationManager: v4 旧数组完整迁移至 IndexedDB 主库（v5�
     // 旧数组在 30 天保留期内原样保留
     assertEquals(store[StorageKeys.STASH_GROUPS].length, 2);
 
-    // 模拟迁移中断场景：版本号被回拨（未推进）但部分数据已写入，重跑不得重复
+    // 模拟迁移中断场景：本地数据修订号被回拨（未推进）但部分数据已写入，重跑不得重复
     store[StorageKeys.SCHEMA_VERSION] = 4;
     await MigrationManager.runMigrations();
     const afterRetry = await LocalStashRepository.getAllGroups();
@@ -298,7 +298,7 @@ Deno.test("MigrationManager: v4 旧数组完整迁移至 IndexedDB 主库（v5�
   }
 });
 
-Deno.test("MigrationManager: 迁移执行失败时版本停在 v4 且旧数据完整保留，恢复后重试成功", async () => {
+Deno.test("MigrationManager: 迁移执行失败时本地数据修订停在 4 且旧数据完整保留，恢复后重试成功", async () => {
   const idb = installFakeIndexedDB();
   const store = installMockStorage({
     [StorageKeys.SCHEMA_VERSION]: 4,
@@ -321,7 +321,7 @@ Deno.test("MigrationManager: 迁移执行失败时版本停在 v4 且旧数据�
     // 环境恢复后重试成功
     IndexedStashRepository.importGroups = originalImport;
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], LOCAL_DATA_SCHEMA_REVISION);
     const groups = await LocalStashRepository.getAllGroups();
     assertEquals(groups.length, 1);
     assertEquals(groups[0].tabs[0].url, "https://retry.com");
@@ -341,7 +341,7 @@ Deno.test("MigrationManager: rollbackFromIndexedDB 一键回退至旧存储且 o
   });
   try {
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], LOCAL_DATA_SCHEMA_REVISION);
 
     // 迁移后在 IndexedDB 模式下新增一组
     const created = await LocalStashRepository.createGroup([{ url: "https://new.com", title: "新页面" }], "主库新增组");
@@ -363,10 +363,10 @@ Deno.test("MigrationManager: rollbackFromIndexedDB 一键回退至旧存储且 o
     assertEquals(afterRollback.success, true);
     assertEquals(store[StorageKeys.STASH_GROUPS].some((g) => g.title === "回退后新组"), true);
 
-    // optout 生效：即使版本回拨到 v4，迁移也不会重新切回 IndexedDB
+    // optout 生效：即使版本回拨到 本地数据修订 4，迁移也不会重新切回 IndexedDB
     store[StorageKeys.SCHEMA_VERSION] = 4;
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], LOCAL_DATA_SCHEMA_REVISION);
     const groups = await LocalStashRepository.getAllGroups();
     assertEquals(groups.some((g) => g.title === "回退后新组"), true);
   } finally {
@@ -474,7 +474,7 @@ Deno.test("IndexedDB 故障降级：读取回退旧存储快照，写入显式�
   }
 });
 
-Deno.test("MigrationManager: v7 将配置/规则/备份/活跃度迁入 IndexedDB，读写不再回写旧存储", async () => {
+Deno.test("MigrationManager: 本地数据修订 7 将配置/规则/备份/活跃度迁入 IndexedDB，读写不再回写旧存储", async () => {
   const idb = installFakeIndexedDB();
   const store = installMockStorage({
     [StorageKeys.SCHEMA_VERSION]: 6,
@@ -485,7 +485,7 @@ Deno.test("MigrationManager: v7 将配置/规则/备份/活跃度迁入 IndexedD
   });
   try {
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], LOCAL_DATA_SCHEMA_REVISION);
     assertEquals(typeof store[StorageKeys.IDB_SETTINGS_MIGRATED_AT], "number");
 
     // 旧 chrome.storage 快照在 30 天内原样保留
@@ -497,7 +497,7 @@ Deno.test("MigrationManager: v7 将配置/规则/备份/活跃度迁入 IndexedD
     assertEquals(config.stashSettings.allowDuplicates, false);
     assertEquals((await StorageAdapter.get(StorageKeys.LINK_RULES, {}))["example.com"], "new");
     assertEquals((await StorageAdapter.get(StorageKeys.AUTO_BACKUPS, [])).length, 1);
-    // v8 起活跃度按 pageId 存储：无法映射 URL 的旧 tabId 记录（键 "7"）已被清理
+    // 本地数据修订 8 起活跃度按 pageId 存储：无法映射 URL 的旧 tabId 记录（键 "7"）已被清理
     const stats = await StorageAdapter.get(StorageKeys.ACTIVITY_STATS, {});
     assertEquals(stats["7"], undefined);
 
@@ -513,7 +513,7 @@ Deno.test("MigrationManager: v7 将配置/规则/备份/活跃度迁入 IndexedD
   }
 });
 
-Deno.test("MigrationManager: v7 迁移失败时版本停在 v6，恢复后重试成功且幂等", async () => {
+Deno.test("MigrationManager: 本地数据修订 7 迁移失败时本地数据修订停在 6，恢复后重试成功且幂等", async () => {
   const idb = installFakeIndexedDB();
   const store = installMockStorage({
     [StorageKeys.SCHEMA_VERSION]: 6,
@@ -523,7 +523,7 @@ Deno.test("MigrationManager: v7 迁移失败时版本停在 v6，恢复后重试
   const originalSet = StorageAdapter._setIdbValue;
   try {
     StorageAdapter._setIdbValue = async () => {
-      throw new Error("模拟 v7 写入中断");
+      throw new Error("模拟 本地数据修订 7 写入中断");
     };
     await MigrationManager.runMigrations();
     assertEquals(store[StorageKeys.SCHEMA_VERSION], 6);
@@ -532,14 +532,14 @@ Deno.test("MigrationManager: v7 迁移失败时版本停在 v6，恢复后重试
 
     StorageAdapter._setIdbValue = originalSet;
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], LOCAL_DATA_SCHEMA_REVISION);
     assertEquals((await StorageAdapter.getUserConfig()).tabThreshold, 33);
 
     // 幂等重跑不得覆盖已写入的主库新值
     await StorageAdapter.updateUserConfig({ tabThreshold: 55 });
     store[StorageKeys.SCHEMA_VERSION] = 6;
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], CURRENT_SCHEMA_VERSION);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], LOCAL_DATA_SCHEMA_REVISION);
     assertEquals((await StorageAdapter.getUserConfig()).tabThreshold, 55);
   } finally {
     StorageAdapter._setIdbValue = originalSet;
@@ -547,7 +547,7 @@ Deno.test("MigrationManager: v7 迁移失败时版本停在 v6，恢复后重试
   }
 });
 
-Deno.test("MigrationManager: v7 迁移成功 30 天后清理旧配置快照，保留期内不动", async () => {
+Deno.test("MigrationManager: 本地数据修订 7 迁移成功 30 天后清理旧配置快照，保留期内不动", async () => {
   const idb = installFakeIndexedDB();
   try {
     const expired = installMockStorage({
@@ -577,7 +577,7 @@ Deno.test("MigrationManager: v7 迁移成功 30 天后清理旧配置快照，�
   }
 });
 
-Deno.test("MigrationManager: 一键回退同时导回 v7 配置主库", async () => {
+Deno.test("MigrationManager: 一键回退同时导回 本地数据修订 7 配置主库", async () => {
   const idb = installFakeIndexedDB();
   const store = installMockStorage({
     [StorageKeys.SCHEMA_VERSION]: 6,

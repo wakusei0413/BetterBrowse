@@ -145,14 +145,14 @@
 
 UI 必须显式提示：**「URL 列表将上传到你的 WebDAV」**。凭据、连接测试、ETag 探测、冲突裁决、设备退役放在独立「云端同步」标签页。
 
-## 8. 本地 schema v8
+## 8. 本地数据修订 8
 
-- 业务版本 `CURRENT_SCHEMA_VERSION = 8`；IndexedDB 结构版本 `DB_VERSION = 2`。
+- 本地数据架构修订 `LOCAL_DATA_SCHEMA_REVISION = 8`；IndexedDB 结构修订 `INDEXED_DB_SCHEMA_REVISION = 10`。这两个数字只描述内部持久化兼容边界，不是统一 API 版本。
 - 新增仓储：`syncMeta`、`outbox`、`operationLogs`、`tombstones`、`conflicts`、`snapshots`（兑现 ADR-3：阶段二才引入独立快照仓储）。
 - 已有 `deviceEvents` 开始写入。
 - 可同步实体补 `updatedAt`、`revision`、`originDeviceId`、`fieldRevs`。
 - 凭据键 `bb_webdav_credentials` 仅存 IndexedDB `settings`，列入导出 / 快照 / outbox **排除表**。
-- 迁移失败不推进版本；幂等可重入。
+- 迁移失败不推进本地数据修订；迁移保持幂等可重入。
 
 ## 9. 浏览器账号偏好同步（非 WebDAV）
 

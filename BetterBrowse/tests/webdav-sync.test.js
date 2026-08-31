@@ -1,6 +1,6 @@
 /**
  * @file webdav-sync.test.js
- * @description WebDAV 云端同步集成测试（v8 迁移、outbox 上传、清单条件写入、快照基线、字段冲突、墓碑与凭据隔离）
+ * @description WebDAV 云端同步集成测试（本地数据修订 8 迁移、outbox 上传、清单条件写入、快照基线、字段冲突、墓碑与凭据隔离）
  * @encoding UTF-8
  */
 
@@ -16,6 +16,7 @@ import { SyncOutbox } from "../src/core/sync/outbox.js";
 import { SyncMerge } from "../src/core/sync/merge.js";
 import { SyncSnapshot } from "../src/core/sync/snapshot.js";
 import { DeviceEventLog } from "../src/core/sync/device-events.js";
+import { RuntimeLogRepository } from "../src/core/logging/runtime-log-repository.js";
 import { sha256Hex } from "../src/core/sync/crypto-util.js";
 import { SyncEntityTypes, SyncStatus } from "../src/core/sync/sync-constants.js";
 import { installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
@@ -145,7 +146,7 @@ async function readRecord(storeName, key) {
   });
 }
 
-/** 初始化一个完成 v8 迁移、已配置 WebDAV 的设备环境 */
+/** 初始化一个完成 本地数据修订 8 迁移、已配置 WebDAV 的设备环境 */
 async function setupDevice(server, { seedSchema = 7 } = {}) {
   const idb = installFakeIndexedDB();
   const store = installMockStorage({ [StorageKeys.SCHEMA_VERSION]: seedSchema });
@@ -199,14 +200,14 @@ Deno.test("WebdavClient: 缺失条件写入能力时进入兼容模式，正常�
   assertEquals(ok.etagSupport, 'full');
 });
 
-Deno.test("MigrationManager: v8 初始化同步时钟并按 pageId 转换活跃度", async () => {
+Deno.test("MigrationManager: 本地数据修订 8 初始化同步时钟并按 pageId 转换活跃度", async () => {
   const idb = installFakeIndexedDB();
   const store = installMockStorage({
     [StorageKeys.SCHEMA_VERSION]: 7,
     [StorageKeys.USER_CONFIG]: { tabThreshold: 30 }
   });
   try {
-    // 预置 v7 形态的活跃度（tabId 键 + pageId 键混合）
+    // 预置 本地数据修订 7 形态的活跃度（tabId 键 + pageId 键混合）
     await IndexedDBManager.runTransaction([IDBStores.ACTIVITY_STATS], 'readwrite', async (tx) => {
       tx.objectStore(IDBStores.ACTIVITY_STATS).put({
         key: StorageKeys.ACTIVITY_STATS,
@@ -601,6 +602,11 @@ Deno.test("DeviceEventLog: 本机事件进入 deviceEvents 与 outbox，远端�
     const events = await DeviceEventLog.listRecent();
     assertEquals(events.length, 2);
     assertEquals(events.some((e) => e.originDeviceId === 'devB-offline'), true);
+
+    await RuntimeLogRepository._writeQueue;
+    const eventLogs = (await RuntimeLogRepository.query({ source: '跨设备事件', limit: 10 })).entries;
+    assertEquals(eventLogs.some((entry) => entry.message === '本机 开始收纳倒计时'), true);
+    assertEquals(eventLogs.some((entry) => entry.message === '其他设备 执行智能收纳'), true);
   } finally {
     await idb.restore();
   }

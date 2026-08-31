@@ -73,7 +73,7 @@ Deno.test("DefaultConfig: 默认配置包含完整的收纳箱设置", () => {
   assertEquals(s.displayDensity, "comfortable");
 });
 
-Deno.test("MigrationManager: 从历史 v1 迁移至当前版本平滑补齐 stashSettings 默认值", async () => {
+Deno.test("MigrationManager: 从历史 本地数据修订 1 迁移至当前修订平滑补齐 stashSettings 默认值", async () => {
   const store = installMockStorage({
     [StorageKeys.SCHEMA_VERSION]: 1,
     [StorageKeys.USER_CONFIG]: { tabThreshold: 20 }
@@ -84,10 +84,10 @@ Deno.test("MigrationManager: 从历史 v1 迁移至当前版本平滑补齐 stas
   assertEquals(config.stashSettings.restoreBehavior, "remove");
   assertEquals(config.stashSettings.allowDuplicates, true);
   assertEquals(config.stashSettings.autoOpenStashTab, true);
-  // v4 起补齐"阶梯式降级收纳"默认配置
+  // 本地数据修订 4 起补齐"阶梯式降级收纳"默认配置
   assertEquals(config.tieredStash.enabled, true);
   assertEquals(config.tieredStash.ultimateFallback, true);
-  // 测试环境无 IndexedDB：v5 主库迁移待环境就绪后自动重试，版本停在 v4
+  // 测试环境无 IndexedDB：本地数据修订 5 主库迁移待环境就绪后自动重试，本地数据修订停在 4
   assertEquals(store[StorageKeys.SCHEMA_VERSION], 4);
 });
 

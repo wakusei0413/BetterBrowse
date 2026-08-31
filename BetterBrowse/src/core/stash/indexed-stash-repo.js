@@ -1531,7 +1531,7 @@ export class IndexedStashRepository {
     }
 
     // 页面实体导入采用"最新标题覆盖"（与旧版导入行为一致：导入项各自携带最新标题）
-    // v8 起各分批事务同时生成 outbox 操作，保证导入数据也会同步到其他设备
+    // 本地数据修订 8 起各分批事务同时生成 outbox 操作，保证导入数据也会同步到其他设备
     const enqueue = await SyncOutbox.isActive();
     const updateTitle = true;
     const pagesList = [...pageRecords.values()];

@@ -30,7 +30,7 @@ BetterBrowse 将从“以 `chrome.storage.local` 保存完整数组”为核心�
 
 ### 2.1 数据库与对象仓储
 
-新增独立的 IndexedDB 数据库版本，不与现有 `CURRENT_SCHEMA_VERSION` 混用。对象仓储至少包括：
+新增独立的 IndexedDB 结构修订号，不与本地数据架构修订 `LOCAL_DATA_SCHEMA_REVISION` 混用。对象仓储至少包括：
 
 - `pages`：规范化 URL 对应的页面实体、标题、长期标签、AI 摘要和更新时间。
 - `stashGroups`：收纳组属性、标题、锁定、星标、归档状态和更新时间。
@@ -150,7 +150,7 @@ betterbrowse/
 
 ### 5.1 Skill 形态
 
-用户安装一个 BetterBrowse Skill。Skill 内提供 Python CLI、诊断命令、协议版本和安装说明；Python 运行时依赖系统环境，必须检测最低版本、解释器路径和可用权限。
+用户安装一个 BetterBrowse Skill。Skill 内提供 Python CLI、诊断命令、API 版本和安装说明；Python 运行时依赖系统环境，必须检测最低版本、解释器路径和可用权限。
 
 Skill 不直接打开 IndexedDB，也不直接修改 WebDAV 数据。所有读写都经过本机服务和扩展后台。
 
@@ -163,7 +163,7 @@ Skill 按需启动 Python 本机服务：
 - 连接信息文件只保存在本机，并限制文件权限。
 - 令牌不进入 WebDAV、同步日志、快照或 AI 返回结果。
 - 扩展 Service Worker 通过明确的 localhost 权限和请求协议连接服务。
-- 请求必须包含协议版本、请求 ID、操作类型和超时；禁止任意代码执行。
+- 请求必须包含统一 API 版本、请求 ID、操作类型和超时；禁止任意代码执行。
 
 需要在三平台分别验证 Python 可用性、端口占用、服务崩溃恢复、权限文件和卸载清理行为。
 
@@ -175,7 +175,7 @@ Skill 按需启动 Python 本机服务：
 
 ```js
 {
-  protocolVersion,
+  apiVersion,
   requestId,
   operations: [
     { type: 'renameGroup', groupId, title },

@@ -1,6 +1,6 @@
 /**
  * @file activity-tracker.js
- * @description 标签页活跃度跟踪器（内存保留 tabId 投影供规则引擎评估；持久层自 v8 起按 pageId 存储，支撑跨设备合并）
+ * @description 标签页活跃度跟踪器（内存保留 tabId 投影供规则引擎评估；持久层自 本地数据修订 8 起按 pageId 存储，支撑跨设备合并）
  * @encoding UTF-8
  */
 
@@ -41,13 +41,13 @@ export class TabActivityTracker {
   }
 
   /**
-   * 从主库恢复按 pageId 存储的活跃度（v8 起走 IndexedDB，失败时 StorageAdapter 会回退旧存储）
+   * 从主库恢复按 pageId 存储的活跃度（本地数据修订 8 起走 IndexedDB，失败时 StorageAdapter 会回退旧存储）
    */
   async loadFromStorage() {
     try {
       const stored = await StorageAdapter.get(this.storageKey, {});
       if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-        // 防御式过滤：仅保留 pageId 形态的键，旧版 tabId 键已在 v8 迁移清理
+        // 防御式过滤：仅保留 pageId 形态的键，旧版 tabId 键已在 本地数据修订 8 迁移清理
         for (const [key, value] of Object.entries(stored)) {
           if (key === 'fieldRevs') continue;
           if (/^page_/.test(key) && value && typeof value === 'object') {

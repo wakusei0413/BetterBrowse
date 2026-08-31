@@ -20,7 +20,7 @@ import {
   SNAPSHOT_MIN_AGE_MS,
   SNAPSHOT_MIN_OPS,
   SYNC_CLOCK_KEY,
-  SYNC_FORMAT_VERSION,
+  WEBDAV_FORMAT_REVISION,
   SyncStatus
 } from './sync-constants.js';
 
@@ -289,7 +289,7 @@ export class SyncEngine {
 
   static _emptyManifest(clock) {
     return {
-      formatVersion: SYNC_FORMAT_VERSION,
+      formatVersion: WEBDAV_FORMAT_REVISION,
       datasetId: clock.datasetId,
       generation: 0,
       snapshotId: '',

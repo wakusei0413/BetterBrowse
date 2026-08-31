@@ -4,8 +4,8 @@
  * @encoding UTF-8
  */
 
-/** 远端清单与批次的协议版本 */
-export const SYNC_FORMAT_VERSION = 1;
+/** WebDAV 远端清单、批次与快照的格式修订号 */
+export const WEBDAV_FORMAT_REVISION = 1;
 
 /** 同步元数据在 syncMeta 仓储中的主键 */
 export const SYNC_CLOCK_KEY = 'clock';
@@ -91,8 +91,8 @@ export const SYNC_CONFIG_NESTED_KEYS = [
   'accountConfigSync'
 ];
 
-/** 浏览器账号偏好镜像的载荷版本 */
-export const ACCOUNT_CONFIG_PAYLOAD_VERSION = 1;
+/** 浏览器账号偏好镜像的格式修订号 */
+export const ACCOUNT_CONFIG_FORMAT_REVISION = 1;
 
 /**
  * chrome.storage.sync 单键配额为 8KB；序列化后超过该值则拒绝写入，

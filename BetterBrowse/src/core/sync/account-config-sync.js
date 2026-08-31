@@ -12,7 +12,7 @@ import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
 import { ActionTypes } from '../../constants/action-types.js';
 import {
   ACCOUNT_CONFIG_MAX_BYTES,
-  ACCOUNT_CONFIG_PAYLOAD_VERSION,
+  ACCOUNT_CONFIG_FORMAT_REVISION,
   SYNC_CONFIG_NESTED_KEYS,
   SYNC_CONFIG_SCALAR_KEYS
 } from './sync-constants.js';
@@ -106,7 +106,7 @@ export class AccountConfigSync {
    */
   static buildPayload(sliced, updatedAt = Date.now()) {
     const payload = {
-      v: ACCOUNT_CONFIG_PAYLOAD_VERSION,
+      v: ACCOUNT_CONFIG_FORMAT_REVISION,
       updatedAt: Number(updatedAt) || Date.now(),
       config: sliced
     };
@@ -271,7 +271,7 @@ export class AccountConfigSync {
       value
       && typeof value === 'object'
       && !Array.isArray(value)
-      && Number(value.v) === ACCOUNT_CONFIG_PAYLOAD_VERSION
+      && Number(value.v) === ACCOUNT_CONFIG_FORMAT_REVISION
       && value.config
       && typeof value.config === 'object'
     );

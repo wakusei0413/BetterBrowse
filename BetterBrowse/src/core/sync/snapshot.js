@@ -6,9 +6,10 @@
 
 import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
 import { StorageKeys } from '../../constants/storage-keys.js';
-import { SYNC_CLOCK_KEY, SYNC_FORMAT_VERSION, SyncEntityTypes } from './sync-constants.js';
+import { SYNC_CLOCK_KEY, WEBDAV_FORMAT_REVISION, SyncEntityTypes } from './sync-constants.js';
 import { sha256Hex } from './crypto-util.js';
 import { AccountConfigSync } from './account-config-sync.js';
+import { DeviceEventLog } from './device-events.js';
 
 export class SyncSnapshot {
   /**
@@ -54,7 +55,7 @@ export class SyncSnapshot {
         }
 
         return {
-          formatVersion: SYNC_FORMAT_VERSION,
+          formatVersion: WEBDAV_FORMAT_REVISION,
           createdAt: Date.now(),
           watermarks,
           pages: pages || [],
@@ -148,6 +149,9 @@ export class SyncSnapshot {
         });
       }
     );
+    for (const event of payload.deviceEvents || []) {
+      DeviceEventLog.appendRuntimeLog(event).catch(() => {});
+    }
     AccountConfigSync.scheduleMirror();
   }
 

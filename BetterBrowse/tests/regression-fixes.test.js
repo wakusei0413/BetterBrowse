@@ -1,7 +1,7 @@
 /**
  * @file regression-fixes.test.js
  * @description 本轮缺陷修复的回归测试（entryId 双前缀恢复翻倍、单事务创建、孤儿条目去重污染、
- *              v6 修复迁移、阶梯窗口零值、全量跳过时不关标签、单组快照恢复）
+ *              本地数据修订 6 修复迁移、阶梯窗口零值、全量跳过时不关标签、单组快照恢复、固定标签守护导入绑定）
  * @encoding UTF-8
  */
 
@@ -153,7 +153,7 @@ Deno.test("回归: 孤儿条目不得污染去重判定（联表校验组存在�
   }
 });
 
-Deno.test("回归: v6 迁移清理双前缀重复条目与孤儿条目", async () => {
+Deno.test("回归: 本地数据修订 6 迁移清理双前缀重复条目与孤儿条目", async () => {
   const idb = installFakeIndexedDB();
   const store = installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 5 });
   try {
@@ -335,5 +335,52 @@ Deno.test("回归: StorageAdapter.addChangeListener 在 chrome.storage 缺失时
     StorageAdapter.addChangeListener(() => {});
   } finally {
     globalThis.chrome = originalChrome;
+  }
+});
+
+Deno.test("回归: PinnedTabGuard 更新选项页标签时不得因漏导入 isOwnOptionsUrl 抛 ReferenceError", async () => {
+  const originalChrome = globalThis.chrome;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const updatedListeners = [];
+  globalThis.setTimeout = (fn) => {
+    if (typeof fn === 'function') queueMicrotask(fn);
+    return 0;
+  };
+  globalThis.clearTimeout = () => {};
+  globalThis.chrome = {
+    runtime: {
+      lastError: null,
+      getURL: (path) => `chrome-extension://test/${path}`
+    },
+    tabs: {
+      query: async () => [],
+      onCreated: { addListener() {} },
+      onUpdated: { addListener(fn) { updatedListeners.push(fn); } },
+      onRemoved: { addListener() {} },
+      onMoved: { addListener() {} }
+    },
+    windows: {
+      WINDOW_ID_NONE: -1,
+      onCreated: { addListener() {} },
+      onFocusChanged: { addListener() {} },
+      onRemoved: { addListener() {} },
+      get: async () => null
+    }
+  };
+  try {
+    const { PinnedTabGuard } = await import("../src/background/pinned-tab-guard.js");
+    new PinnedTabGuard();
+    assertEquals(updatedListeners.length > 0, true);
+    updatedListeners[0](1, { pinned: false }, {
+      id: 1,
+      windowId: 1,
+      index: 2,
+      url: 'chrome-extension://test/src/options/options.html#stash'
+    });
+  } finally {
+    globalThis.chrome = originalChrome;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
   }
 });

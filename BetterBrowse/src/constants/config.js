@@ -98,8 +98,8 @@ export const DefaultConfig = {
   }
 };
 
-// v5：收纳组数据迁移至 IndexedDB 本地主库（页面实体 + 收纳记录两层模型）
-// v6：修复历史恢复操作产生的双前缀重复条目并清理孤儿条目（见 MigrationManager.repairIndexedEntries）
-// v7：配置、链接规则、活动统计与自动备份迁入 IndexedDB（阶段一 M2 全量）
-// v8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
-export const CURRENT_SCHEMA_VERSION = 8;
+// 本地数据修订 5：收纳组数据迁移至 IndexedDB 本地主库（页面实体 + 收纳记录两层模型）
+// 本地数据修订 6：修复历史恢复操作产生的双前缀重复条目并清理孤儿条目（见 MigrationManager.repairIndexedEntries）
+// 本地数据修订 7：配置、链接规则、活动统计与自动备份迁入 IndexedDB（阶段一 M2 全量）
+// 本地数据修订 8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
+export const LOCAL_DATA_SCHEMA_REVISION = 8;

@@ -11,7 +11,7 @@ import { SyncOutbox } from '../sync/outbox.js';
 import { AccountConfigSync } from '../sync/account-config-sync.js';
 import { SYNC_CONFIG_NESTED_KEYS, SYNC_CONFIG_SCALAR_KEYS, SyncEntityTypes, SyncOps } from '../sync/sync-constants.js';
 
-/** v7 起迁入 IndexedDB settings / activityStats 仓储的业务键 */
+/** 本地数据修订 7 起迁入 IndexedDB settings / activityStats 仓储的业务键 */
 const IDB_SETTINGS_KEYS = new Set([
   StorageKeys.USER_CONFIG,
   StorageKeys.LINK_RULES,
@@ -297,7 +297,7 @@ export class StorageAdapter {
 
   /**
    * 读取存储值
-   * v7 起配置/规则/备份/活跃度优先走 IndexedDB；读失败时回退旧 chrome.storage 快照（30 天保留期内仍可读）
+   * 本地数据修订 7 起配置/规则/备份/活跃度优先走 IndexedDB；读失败时回退旧 chrome.storage 快照（30 天保留期内仍可读）
    * @param {string} key - 存储键名
    * @param {any} [defaultValue=null] - 默认回退值
    * @param {'local' | 'sync' | 'session'} [area='local'] - 存储区域
@@ -319,7 +319,7 @@ export class StorageAdapter {
 
   /**
    * 写入存储值
-   * v7 起配置/规则/备份/活跃度写入 IndexedDB 主库；写失败显式返回 false，绝不降级写旧存储
+   * 本地数据修订 7 起配置/规则/备份/活跃度写入 IndexedDB 主库；写失败显式返回 false，绝不降级写旧存储
    * @param {string} key - 存储键名
    * @param {any} value - 待存入的值
    * @param {'local' | 'sync' | 'session'} [area='local'] - 存储区域
