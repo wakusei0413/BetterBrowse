@@ -8,6 +8,22 @@ import { ActionTypes } from '../constants/action-types.js';
 import { LinkInterceptor } from './link-interceptor.js';
 import { FormDetector } from './form-detector.js';
 import { CountdownBanner } from './countdown-banner.js';
+import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
+
+installRuntimeLogger({
+  context: 'content',
+  write: (entry) => new Promise((resolve) => {
+    try {
+      const result = chrome.runtime.sendMessage({ action: ActionTypes.APPEND_RUNTIME_LOG, payload: entry }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+      if (result != null && typeof result.then === 'function') result.catch(() => {});
+    } catch {
+      resolve();
+    }
+  })
+});
 
 // 是否处于 iframe 中：iframe 内启用轻量模式（仅点击拦截与主世界桥接），
 // 跳过 DOM 全量扫描 / 悬浮预处理 / 倒计时卡片，避免广告等海量 iframe 拖累页面性能

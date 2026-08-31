@@ -31,6 +31,7 @@ const footer = `
 const filesToBundle = [
   'src/constants/action-types.js',
   'src/constants/config.js',
+  'src/core/logging/runtime-logger.js',
   'src/core/link/link-matcher.js',
   'src/content/form-detector.js',
   'src/content/countdown-banner.js',

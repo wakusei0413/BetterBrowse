@@ -84,7 +84,6 @@ const ActionTypes = {
   RESOLVE_SYNC_CONFLICT: 'RESOLVE_SYNC_CONFLICT',
   LIST_SYNC_DEVICES: 'LIST_SYNC_DEVICES',
   RETIRE_SYNC_DEVICE: 'RETIRE_SYNC_DEVICE',
-  LIST_DEVICE_EVENTS: 'LIST_DEVICE_EVENTS',
 
   // === AI 桥接与增强读写（阶段三：人类 UI 与 AI Agent 共用同一处理路径）===
   ADD_STASH_ITEM: 'ADD_STASH_ITEM',           // 向既有收纳组添加条目（AI 增强：URL 自动清洗、按设置去重）
@@ -95,8 +94,12 @@ const ActionTypes = {
   RESTORE_AUTO_BACKUP: 'RESTORE_AUTO_BACKUP', // 恢复指定自动备份中的收纳组（幂等 upsert，需 confirm）
   DELETE_AUTO_BACKUP: 'DELETE_AUTO_BACKUP',   // 删除指定自动备份快照（需 confirm）
   GET_AI_CAPABILITIES: 'GET_AI_CAPABILITIES', // AI 能力自描述清单（动作、参数、确认位要求与版本）
-  GET_AI_BRIDGE_STATUS: 'GET_AI_BRIDGE_STATUS', // AI 桥接连接状态与最近操作审计（选项页与 AI 共用）
-  CLEAR_AI_AUDIT_LOG: 'CLEAR_AI_AUDIT_LOG',    // 清空 AI 操作审计日志（选项页维护用）
+  GET_AI_BRIDGE_STATUS: 'GET_AI_BRIDGE_STATUS', // AI 桥接连接状态（选项页与 AI 共用）
+
+  // === 统一运行日志 ===
+  APPEND_RUNTIME_LOG: 'APPEND_RUNTIME_LOG',      // 扩展内部上下文向后台追加运行日志（不暴露给 AI）
+  QUERY_RUNTIME_LOGS: 'QUERY_RUNTIME_LOGS',      // 查询本地运行日志
+  CLEAR_RUNTIME_LOGS: 'CLEAR_RUNTIME_LOGS',      // 清空本地运行日志（需 confirm）
 
   // === 30 天回收站 ===
   LIST_RECYCLE_BIN: 'LIST_RECYCLE_BIN',                 // 列出未过期墓碑（组/条目）
@@ -211,11 +214,88 @@ const DefaultConfig = {
   }
 };
 
-// v5：收纳组数据迁移至 IndexedDB 本地主库（页面实体 + 收纳记录两层模型）
-// v6：修复历史恢复操作产生的双前缀重复条目并清理孤儿条目（见 MigrationManager.repairIndexedEntries）
-// v7：配置、链接规则、活动统计与自动备份迁入 IndexedDB（阶段一 M2 全量）
-// v8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
-const CURRENT_SCHEMA_VERSION = 8;
+// 本地数据修订 5：收纳组数据迁移至 IndexedDB 本地主库（页面实体 + 收纳记录两层模型）
+// 本地数据修订 6：修复历史恢复操作产生的双前缀重复条目并清理孤儿条目（见 MigrationManager.repairIndexedEntries）
+// 本地数据修订 7：配置、链接规则、活动统计与自动备份迁入 IndexedDB（阶段一 M2 全量）
+// 本地数据修订 8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
+const LOCAL_DATA_SCHEMA_REVISION = 8;
+
+
+// ===== [模块: src/core/logging/runtime-logger.js] =====
+/**
+ * @file runtime-logger.js
+ * @description 跨扩展上下文的统一控制台日志捕获器（保留原生输出并旁路持久化）
+ * @encoding UTF-8
+ */
+
+const LEVELS = ['debug', 'info', 'warn', 'error'];
+const MAX_DEPTH = 5;
+const MAX_MESSAGE_LENGTH = 4000;
+const SENSITIVE_KEY = /(password|passwd|token|authorization|credential|secret|cookie)/i;
+const SOURCE_PREFIX = /^\[([^\]]+)]\s*/;
+const SENSITIVE_TEXT = /(password|passwd|token|authorization|credential|secret|cookie)(\s*[=:]\s*)([^\s,;}&]+)/gi;
+const INSTALLED_FLAG = Symbol.for('betterbrowse.runtimeLoggerInstalled');
+
+function sanitize(value, seen, depth = 0, key = '') {
+  if (SENSITIVE_KEY.test(key)) return '[已遮蔽]';
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack || '' };
+  }
+  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return `${value}n`;
+  if (typeof value === 'function') return `[函数 ${value.name || '匿名'}]`;
+  if (typeof value !== 'object') return String(value);
+  if (depth >= MAX_DEPTH) return '[深度已截断]';
+  if (seen.has(value)) return '[循环引用]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.slice(0, 50).map((item) => sanitize(item, seen, depth + 1));
+  const output = {};
+  for (const [childKey, childValue] of Object.entries(value).slice(0, 50)) {
+    output[childKey] = sanitize(childValue, seen, depth + 1, childKey);
+  }
+  return output;
+}
+
+function stringify(value) {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(sanitize(value, new WeakSet()));
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeConsoleEntry(level, args, context) {
+  const values = Array.isArray(args) ? args : [];
+  let source = context || 'BetterBrowse';
+  if (typeof values[0] === 'string') {
+    const match = values[0].match(SOURCE_PREFIX);
+    if (match) source = match[1];
+  }
+  const message = values
+    .map(stringify)
+    .join(' ')
+    .replace(SENSITIVE_TEXT, '$1$2[已遮蔽]')
+    .slice(0, MAX_MESSAGE_LENGTH) || '-';
+  return { ts: Date.now(), level, source, context, category: 'runtime', message };
+}
+
+function installRuntimeLogger({ context = 'background', write }) {
+  if (console[INSTALLED_FLAG] || typeof write !== 'function') return;
+  Object.defineProperty(console, INSTALLED_FLAG, { value: true, configurable: true });
+  for (const level of LEVELS) {
+    const nativeMethod = console[level]?.bind(console) || console.log.bind(console);
+    console[level] = (...args) => {
+      nativeMethod(...args);
+      try {
+        Promise.resolve(write(normalizeConsoleEntry(level, args, context))).catch(() => {});
+      } catch {
+        // 日志旁路失败不得影响原业务
+      }
+    };
+  }
+}
 
 
 // ===== [模块: src/core/link/link-matcher.js] =====
@@ -1388,6 +1468,22 @@ class LinkInterceptor {
 
 
 
+
+
+installRuntimeLogger({
+  context: 'content',
+  write: (entry) => new Promise((resolve) => {
+    try {
+      const result = chrome.runtime.sendMessage({ action: ActionTypes.APPEND_RUNTIME_LOG, payload: entry }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+      if (result != null && typeof result.then === 'function') result.catch(() => {});
+    } catch {
+      resolve();
+    }
+  })
+});
 
 // 是否处于 iframe 中：iframe 内启用轻量模式（仅点击拦截与主世界桥接），
 // 跳过 DOM 全量扫描 / 悬浮预处理 / 倒计时卡片，避免广告等海量 iframe 拖累页面性能

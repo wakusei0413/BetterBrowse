@@ -27,6 +27,7 @@ import { WebdavCredentials } from '../core/sync/credentials.js';
 import { DeviceEventLog } from '../core/sync/device-events.js';
 import { filterCountableTabs, isOwnOptionsUrl } from '../core/extension-url.js';
 import { buildCapabilitiesDescriptor } from '../core/ai/ai-capabilities.js';
+import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
 
 /**
  * 构建统一 action 处理映射
@@ -418,10 +419,6 @@ export function createActionHandlers(deps) {
       return await SyncEngine.retireDevice(payload?.deviceId);
     },
 
-    [ActionTypes.LIST_DEVICE_EVENTS]: async () => {
-      return await DeviceEventLog.listRecent(50);
-    },
-
     [ActionTypes.GET_SYNC_RECOVERY_INFO]: async () => {
       return await SyncEngine.getRecoveryInfo();
     },
@@ -471,29 +468,27 @@ export function createActionHandlers(deps) {
 
     // === AI 桥接自身（选项页与 Agent 共用）===
     [ActionTypes.GET_AI_CAPABILITIES]: async () => {
-      const manifest = chrome.runtime.getManifest?.();
+      const manifest = chrome.runtime.getManifest?.() || {};
       return buildCapabilitiesDescriptor({
-        extensionVersion: manifest?.version || '',
+        softwareVersion: manifest.version_name || manifest.version || '',
         availableActions: Object.keys(handlers)
       });
     },
 
     [ActionTypes.GET_AI_BRIDGE_STATUS]: async () => {
-      const summary = aiBridge
+      return aiBridge
         ? aiBridge.getStatusSummary()
         : { armed: false, state: 'unavailable', extensionId: chrome.runtime.id || '' };
-      // 附带最近审计（读取失败不阻塞状态返回）
-      try {
-        summary.audit = (await StorageAdapter.get(StorageKeys.AI_AUDIT_LOG, [])) || [];
-      } catch {
-        summary.audit = [];
-      }
-      return summary;
     },
 
-    [ActionTypes.CLEAR_AI_AUDIT_LOG]: async () => {
-      const ok = await StorageAdapter.set(StorageKeys.AI_AUDIT_LOG, []);
-      return { success: ok };
+    // === 统一运行日志 ===
+    [ActionTypes.QUERY_RUNTIME_LOGS]: async (payload) => {
+      return await RuntimeLogRepository.query(payload || {});
+    },
+
+    [ActionTypes.CLEAR_RUNTIME_LOGS]: async (payload) => {
+      if (payload?.confirm !== true) return { success: false, error: '请先确认清空运行日志' };
+      return await RuntimeLogRepository.clear();
     }
   };
 

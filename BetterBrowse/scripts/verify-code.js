@@ -10,13 +10,17 @@ import { buildContentBundle } from './build-content.js';
 const projectRoot = resolve(dirname(fromFileUrl(import.meta.url)), '..');
 
 const allJsFiles = [
+  'src/constants/api-version.js',
   'src/constants/action-types.js',
   'src/constants/config.js',
+  'src/constants/format-revisions.js',
   'src/constants/storage-keys.js',
   'src/core/bus/message-bus.js',
   'src/core/storage/storage-adapter.js',
   'src/core/storage/indexed-db.js',
   'src/core/storage/migration.js',
+  'src/core/logging/runtime-logger.js',
+  'src/core/logging/runtime-log-repository.js',
   'src/core/extension-url.js',
   'src/core/link/link-matcher.js',
   'src/core/link/link-service.js',
@@ -60,7 +64,9 @@ const allJsFiles = [
   'src/options/options.js',
   'native-host/bb_native_host.js',
   'native-host/install.js',
-  'native-host/uninstall.js'
+  'native-host/uninstall.js',
+  'scripts/bump-api-version.js',
+  '../skills/better-browse/scripts/bb-bridge-client.js'
 ];
 
 console.log('=== 开始代码与静态规范校验 ===\n');
@@ -105,11 +111,20 @@ try {
   } else {
     console.log(`\n[PASS] manifest.json 格式正确 (Manifest V${manifest.manifest_version}, 名称: ${manifest.name})`);
   }
-  if (manifest.version_name !== 'Milestone 2') {
-    console.error('[FAIL] manifest.json 展示版本必须为 Milestone 2');
+  const apiVersionSource = await Deno.readTextFile(resolveProject('src/constants/api-version.js'));
+  const apiVersionMatch = /export const API_VERSION = (\d+);/.exec(apiVersionSource);
+  const apiVersion = Number(apiVersionMatch?.[1]);
+  if (!/^\d+(?:\.\d+){0,3}$/.test(String(manifest.version || ''))) {
+    console.error('[FAIL] manifest.json 软件版本不符合 Chrome 的数字版本格式');
     hasError = true;
   } else {
-    console.log('[PASS] 扩展展示版本为 Milestone 2');
+    console.log(`[PASS] 软件发布版本独立有效 (${manifest.version_name || manifest.version})`);
+  }
+  if (!Number.isSafeInteger(apiVersion) || apiVersion < 1) {
+    console.error('[FAIL] API_VERSION 必须是裸正整数');
+    hasError = true;
+  } else {
+    console.log(`[PASS] 内部 API 版本为裸整数 ${apiVersion}，与软件发布版本独立`);
   }
   if (!manifest.permissions?.includes('contextMenus')) {
     console.error('[FAIL] manifest.json 缺少 contextMenus 权限');
@@ -120,7 +135,33 @@ try {
   hasError = true;
 }
 
-// 3. 验证图标资源
+// 3. API 版本只能在唯一事实源中定义，其他组件必须导入或从 bridge.json 读取
+const duplicateVersionFiles = [
+  'src/core/ai/ai-capabilities.js',
+  'src/background/ai-bridge.js',
+  'native-host/bb_native_host.js',
+  '../skills/better-browse/scripts/bb-bridge-client.js'
+];
+const duplicateVersionPattern = /\b(?:AI_BRIDGE_PROTO|PROTOCOL_VERSION)\b|\b(?:const|let|var)\s+API_VERSION\s*=/;
+for (const file of duplicateVersionFiles) {
+  const content = await Deno.readTextFile(resolveProject(file));
+  if (duplicateVersionPattern.test(content)) {
+    console.error(`[FAIL] ${file} 定义了独立 API 版本，必须使用 src/constants/api-version.js`);
+    hasError = true;
+  } else {
+    console.log(`[PASS] ${file} 未定义独立 API 版本`);
+  }
+}
+
+const apiBumpSource = await Deno.readTextFile(resolveProject('scripts/bump-api-version.js'));
+if (/manifest(?:Path|\.json)|manifest\.version|version_name/.test(apiBumpSource)) {
+  console.error('[FAIL] api-version-bump 不得读取或修改软件发布版本');
+  hasError = true;
+} else {
+  console.log('[PASS] API 版本递增工具与软件发布版本完全解耦');
+}
+
+// 4. 验证图标资源
 const iconSizes = [16, 32, 48, 128, 256, 512];
 for (const size of iconSizes) {
   const iconPath = resolveProject(`src/icons/icon${size}.png`);
@@ -138,7 +179,7 @@ for (const size of iconSizes) {
   }
 }
 
-// 4. 验证 HTML 文件 ID 唯一性与编码
+// 5. 验证 HTML 文件 ID 唯一性与编码
 const htmlFiles = ['src/popup/popup.html', 'src/options/options.html'];
 for (const htmlFile of htmlFiles) {
   const fullPath = resolveProject(htmlFile);
@@ -166,7 +207,7 @@ for (const htmlFile of htmlFiles) {
   }
 }
 
-// 5. 校验内容脚本产物与当前源码严格一致，防止源码/Bundle 双真值分叉
+// 6. 校验内容脚本产物与当前源码严格一致，防止源码/Bundle 双真值分叉
 try {
   const expectedBundle = await buildContentBundle();
   const actualBundle = await Deno.readTextFile(resolveProject('src/content/content-bundle.js'));
@@ -191,7 +232,7 @@ try {
   hasError = true;
 }
 
-// 6. 内容脚本不得直读 chrome.storage / IndexedDB（必须经后台消息返回最小必要字段）
+// 7. 内容脚本不得直读 chrome.storage / IndexedDB（必须经后台消息返回最小必要字段）
 const contentSourceFiles = [
   'src/content/link-interceptor.js',
   'src/content/form-detector.js',
@@ -212,6 +253,45 @@ for (const file of contentSourceFiles) {
     }
   } catch {
     console.error(`[FAIL] 无法读取内容脚本: ${file}`);
+    hasError = true;
+  }
+}
+
+// 8. 已绑定标识符必须有对应导入/声明，避免 SW 事件回调在运行时 ReferenceError
+//    典型回归：pinned-tab-guard.js 使用 isOwnOptionsUrl 却漏掉 import
+const identifierBindingFiles = [
+  'src/background/pinned-tab-guard.js',
+  'src/background/context-menu-manager.js',
+  'src/background/threshold-monitor.js',
+  'src/background/service-worker.js',
+  'src/background/action-handlers.js',
+  'src/core/stash/stash-service.js',
+  'src/core/rules/rule-engine.js'
+];
+const identifierUseRegex = /\b(isOwnOptionsUrl|isExcludedFromTabCounting|isNewTabUrl|filterCountableTabs)\b/g;
+for (const file of identifierBindingFiles) {
+  const fullPath = resolveProject(file);
+  try {
+    const content = await Deno.readTextFile(fullPath);
+    const used = new Set();
+    let match;
+    while ((match = identifierUseRegex.exec(content)) !== null) {
+      used.add(match[1]);
+    }
+    const missing = [...used].filter((name) => {
+      const importRe = new RegExp(`import\\s*\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*['"][^'"]+['"]`);
+      const declRe = new RegExp(`(?:function|const|let|var|class)\\s+${name}\\b`);
+      const exportRe = new RegExp(`export\\s+function\\s+${name}\\b`);
+      return !importRe.test(content) && !declRe.test(content) && !exportRe.test(content);
+    });
+    if (missing.length > 0) {
+      console.error(`[FAIL] ${file} 使用了未导入标识符: ${missing.join(', ')}`);
+      hasError = true;
+    } else if (used.size > 0) {
+      console.log(`[PASS] ${file} 标识符绑定完整 (${[...used].join(', ')})`);
+    }
+  } catch {
+    console.error(`[FAIL] 无法读取绑定校验文件: ${file}`);
     hasError = true;
   }
 }

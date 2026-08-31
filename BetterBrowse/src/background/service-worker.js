@@ -4,6 +4,7 @@
  * @encoding UTF-8
  */
 
+import { API_VERSION } from '../constants/api-version.js';
 import { ActionTypes } from '../constants/action-types.js';
 import { MigrationManager } from '../core/storage/migration.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
@@ -18,9 +19,19 @@ import { AccountConfigSync } from '../core/sync/account-config-sync.js';
 import { isOwnOptionsUrl } from '../core/extension-url.js';
 import { createActionHandlers } from './action-handlers.js';
 import { AIBridgeManager } from './ai-bridge.js';
+import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
+import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
+import { DeviceEventLog } from '../core/sync/device-events.js';
+
+installRuntimeLogger({
+  context: 'background',
+  write: (entry) => RuntimeLogRepository.append(entry)
+});
 
 // 初始化模块实例
-console.info('[ServiceWorker] AI 桥接构建标记 20260830b（含存储超时保护与异步审计）');
+const softwareManifest = chrome.runtime.getManifest?.() || {};
+const softwareVersion = softwareManifest.version_name || softwareManifest.version || '';
+console.info(`[ServiceWorker] BetterBrowse 软件版本 ${softwareVersion}，API 版本 ${API_VERSION}`);
 const activityTracker = new TabActivityTracker();
 const stashService = new StashService();
 const pinnedTabGuard = new PinnedTabGuard();
@@ -62,7 +73,7 @@ chrome.runtime.onInstalled.addListener((details) => {
   });
 });
 
-// 浏览器启动时自动守护 + 迁移失败重试（迁移幂等，已完成时仅一次版本号读取）
+// 浏览器启动时自动守护 + 迁移失败重试（迁移幂等，已完成时仅读取一次修订号）
 if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(() => {
     (async () => {
@@ -85,10 +96,11 @@ if (chrome.runtime.onStartup) {
 }
 
 // Service Worker 冷启动兜底：确保未完成的存储迁移（如上次被休眠打断）尽快重试
-// 迁移幂等可重入，已迁移完成时仅产生一次版本号读取，不影响事件响应
+// 迁移幂等可重入，已迁移完成时仅产生一次修订号读取，不影响事件响应
 MigrationManager.runMigrations()
+  .then(() => DeviceEventLog.migrateLegacyLogs())
   .catch((err) => {
-    console.warn('[ServiceWorker] 存储迁移重试异常:', err);
+    console.warn('[ServiceWorker] 存储迁移或历史事件日志归档异常:', err);
   })
   .then(() => AccountConfigSync.init())
   .catch((err) => {
@@ -127,7 +139,19 @@ const actionHandlers = createActionHandlers({
   broadcastToTabs,
   aiBridge
 });
-MessageBus.registerListener(actionHandlers);
+const messageHandlers = {
+  ...actionHandlers,
+  [ActionTypes.APPEND_RUNTIME_LOG]: async (payload, sender) => {
+    const senderUrl = sender?.url || sender?.tab?.url || '';
+    const ownOrigin = chrome.runtime.getURL('');
+    if (senderUrl && !senderUrl.startsWith(ownOrigin) && !sender?.tab) {
+      return { success: false };
+    }
+    await RuntimeLogRepository.append(payload || {});
+    return { success: true };
+  }
+};
+MessageBus.registerListener(messageHandlers);
 
 // 弹窗打开后快速关闭视为扩展图标双击，直接执行当前窗口全量收纳
 chrome.runtime.onConnect.addListener((port) => {
