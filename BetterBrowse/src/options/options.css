@@ -867,6 +867,31 @@ a:focus-visible,
   opacity: 1;
 }
 
+.recycle-bin-card {
+  margin-top: 16px;
+}
+
+.recycle-bin-card > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.recycle-bin-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.stash-item-row .inline-title-input {
+  width: 100%;
+  max-width: 360px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.btn-icon-danger.btn-edit-item:hover {
+  color: var(--accent-color);
+  background-color: var(--accent-light);
+}
+
 .btn-icon-danger {
   background: transparent;
   border: none;

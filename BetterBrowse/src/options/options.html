@@ -174,6 +174,15 @@
               </svg>
               <span>正在加载更多标签组...</span>
             </div>
+
+            <details id="recycleBinCard" class="card recycle-bin-card">
+              <summary class="card-title">30 天回收站</summary>
+              <p class="card-desc">删除的收纳组与条目会在此保留 30 天，可恢复或永久删除。</p>
+              <div class="btn-group">
+                <button id="btnRecycleBinRefresh" class="btn btn-secondary btn-sm" type="button">刷新</button>
+              </div>
+              <div id="recycleBinList" class="sync-list"></div>
+            </details>
           </div>
 
           <!-- 右侧：高颜值单线时间轴滚动条 (分级收纳、直观日期、可拖拽游标) -->
@@ -192,7 +201,7 @@
         </div>
       </section>
 
-      <!-- Tab 2: 收纳箱设置 (14 项精细化运行偏好) -->
+      <!-- Tab 2: 收纳箱设置 -->
       <section id="tab-stash-settings" class="tab-panel" role="tabpanel" aria-labelledby="navTabStashSettings" hidden>
         <div class="panel-header">
           <div>
@@ -296,17 +305,6 @@
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkDeleteConfirmation" aria-labelledby="infoDeleteConfirmation">
-                <span class="slider"></span>
-              </label>
-            </div>
-
-            <div class="setting-item">
-              <div class="setting-info" id="infoShowTabCountBadge">
-                <span class="setting-label">扩展图标显示未恢复标签数</span>
-                <span class="setting-hint">在浏览器右上角 BetterBrowse 图标上显示当前收纳箱未恢复的标签总数 Badge</span>
-              </div>
-              <label class="switch">
-                <input type="checkbox" id="chkShowTabCountBadge" aria-labelledby="infoShowTabCountBadge">
                 <span class="slider"></span>
               </label>
             </div>
@@ -718,9 +716,16 @@
             </div>
           </div>
 
-          <!-- 3. 从第三方导入数据 -->
+          <!-- 3. 本地自动快照 -->
           <div class="card">
-            <h3 class="card-title">3. 从第三方导入数据（如 OneTab）</h3>
+            <h3 class="card-title">3. 本地自动快照</h3>
+            <p class="card-desc">列出收纳箱设置中开启的每日本地快照。恢复会把该快照中的收纳组写回，不删除现有其他组。</p>
+            <div id="autoBackupList" class="sync-list"></div>
+          </div>
+
+          <!-- 4. 从第三方导入数据 -->
+          <div class="card">
+            <h3 class="card-title">4. 从第三方导入数据（如 OneTab）</h3>
             <p class="card-desc">
               从 <strong>OneTab 纯文本</strong>（<code>URL | 网页标题</code>，空行分界）、<strong>OneTab 内部数据</strong> 或 <strong>网址列表</strong> 快速迁入标签页。<strong>注意：此操作仅导入收纳网页，不会修改插件原有的任何设置。</strong>
             </p>
@@ -792,9 +797,9 @@
             </div>
           </div>
 
-          <!-- 4. 智能数据清理与优化 -->
+          <!-- 5. 智能数据清理与优化 -->
           <div class="card">
-            <h3 class="card-title">4. 智能收纳数据优化与去重</h3>
+            <h3 class="card-title">5. 智能收纳数据优化与去重</h3>
             <p class="card-desc">自动扫描并清理收纳箱中重复导入的标签组。系统会智能识别各组的网页指纹，<strong>优先保留带有真实历史时间戳的版本</strong>，安全清除无时间戳或重复的多余副本（锁定组受保护）。</p>
             <div>
               <button id="btnDeduplicateStash" class="btn btn-secondary" type="button">
@@ -806,7 +811,7 @@
             </div>
           </div>
 
-          <!-- 5. 危险操作区 -->
+          <!-- 6. 危险操作区 -->
           <div class="card danger-zone">
             <div class="danger-header">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="danger-icon" aria-hidden="true">
@@ -950,6 +955,17 @@
               <p class="sync-empty">暂无跨设备事件</p>
             </div>
           </div>
+
+          <!-- 5. 数据损坏恢复 -->
+          <div class="card" id="syncRecoveryCard">
+            <h3 class="card-title">数据损坏恢复</h3>
+            <p class="card-desc">当远端清单或快照校验失败时，可回退上一份快照，或用本机快照从头重建同步状态。正常同步时按钮保持不可用，避免误操作。</p>
+            <p id="syncRecoveryMessage" class="sync-status-message"></p>
+            <div class="btn-group">
+              <button id="btnSyncFallbackSnapshot" class="btn btn-secondary" type="button" disabled>回退上一份快照</button>
+              <button id="btnSyncRebuildFromScratch" class="btn btn-danger" type="button" disabled>从本地快照重建</button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1043,6 +1059,12 @@
         <polyline points="10 9 9 9 8 9"></polyline>
       </svg>
       <span>复制标题与链接</span>
+    </button>
+    <button class="context-menu-item" data-action="edit-title" type="button" role="menuitem">
+      <svg class="menu-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+      </svg>
+      <span>编辑标题</span>
     </button>
     <div class="context-menu-divider"></div>
     <button class="context-menu-item context-menu-danger" data-action="delete" type="button" role="menuitem">

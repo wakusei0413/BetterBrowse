@@ -796,6 +796,8 @@ class StashTabComponent {
     this.timelineNodesContainer = document.getElementById('timelineNodesContainer');
     this.timelineScrubberThumb = document.getElementById('timelineScrubberThumb');
     this.timelineThumbText = document.getElementById('timelineThumbText');
+    this.recycleBinList = document.getElementById('recycleBinList');
+    this.btnRecycleBinRefresh = document.getElementById('btnRecycleBinRefresh');
 
     // 实例化单一直线时间轴分块滚动条组件
     this.timelineScrollbar = new SingleLineTimelineScrollbar({
@@ -956,6 +958,10 @@ class StashTabComponent {
     });
 
     // 2. 立即全量收纳全部窗口
+    this.btnRecycleBinRefresh?.addEventListener('click', () => this.loadRecycleBin());
+
+    this.recycleBinList?.addEventListener('click', (e) => this.handleRecycleBinClick(e));
+
     this.btnStashNow?.addEventListener('click', async () => {
       this.btnStashNow.disabled = true;
       Toast.show('正在收纳全部窗口标签页...');
@@ -1054,7 +1060,7 @@ class StashTabComponent {
 
     // 8. 监听右键自定义二级菜单
     this.container?.addEventListener('contextmenu', (e) => {
-      const itemRow = e.target.closest('.stash-tab-item');
+      const itemRow = e.target.closest('.stash-item-row');
       if (itemRow) {
         e.preventDefault();
         const card = itemRow.closest('.stash-group-card');
@@ -1101,6 +1107,9 @@ class StashTabComponent {
               await navigator.clipboard.writeText(`${url} | ${title}`);
               Toast.show('已复制标题与链接');
             }
+            break;
+          case 'edit-title':
+            this.startInlineItemEdit(groupId, itemId);
             break;
           case 'delete':
             this.handleDeleteItemWithAnimation(groupId, itemId);
@@ -1177,6 +1186,102 @@ class StashTabComponent {
       this.updateBadge();
       this.filterAndRender();
     }
+    this.loadRecycleBin();
+  }
+
+  /**
+   * 刷新 30 天回收站。后台动作尚未落地时静默展示空列表，不拖垮整页。
+   */
+  async loadRecycleBin() {
+    if (!this.recycleBinList) return;
+    try {
+      const res = await MessageBus.sendToBackground(ActionTypes.LIST_RECYCLE_BIN);
+      const items = Array.isArray(res?.data)
+        ? res.data
+        : (Array.isArray(res?.data?.items) ? res.data.items : []);
+      this.renderRecycleBin(res?.success ? items : []);
+    } catch {
+      this.renderRecycleBin([]);
+    }
+  }
+
+  renderRecycleBin(items) {
+    if (!this.recycleBinList) return;
+    this.recycleBinList.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'sync-empty';
+      empty.id = 'recycleBinEmpty';
+      empty.textContent = '回收站是空的';
+      this.recycleBinList.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      const tombstoneId = item.tombstoneId || item.id || '';
+      const row = document.createElement('div');
+      row.className = 'conflict-item';
+      row.dataset.tombstoneId = tombstoneId;
+
+      const head = document.createElement('div');
+      head.className = 'conflict-head';
+      head.textContent = item.title || item.entityId || tombstoneId || '未命名';
+
+      const meta = document.createElement('div');
+      meta.className = 'device-meta';
+      const typeLabel = this._recycleTypeLabel(item);
+      const deletedAt = item.deletedAt || item.createdAt;
+      const timeLabel = deletedAt ? new Date(deletedAt).toLocaleString('zh-CN') : '-';
+      meta.textContent = `${typeLabel} · ${timeLabel}`;
+
+      const actions = document.createElement('div');
+      actions.className = 'btn-group';
+      const btnRestore = document.createElement('button');
+      btnRestore.className = 'btn btn-secondary btn-sm btn-recycle-restore';
+      btnRestore.type = 'button';
+      btnRestore.dataset.tombstoneId = tombstoneId;
+      btnRestore.textContent = '恢复';
+      const btnPurge = document.createElement('button');
+      btnPurge.className = 'btn btn-danger btn-sm btn-recycle-purge';
+      btnPurge.type = 'button';
+      btnPurge.dataset.tombstoneId = tombstoneId;
+      btnPurge.textContent = '永久删除';
+      actions.append(btnRestore, btnPurge);
+      row.append(head, meta, actions);
+      this.recycleBinList.appendChild(row);
+    }
+  }
+
+  _recycleTypeLabel(item) {
+    const raw = String(item.type || item.entityType || '').toLowerCase();
+    if (raw.includes('group')) return '组';
+    if (raw.includes('entry') || raw.includes('item') || raw.includes('tab')) return '条目';
+    return raw ? raw : '条目';
+  }
+
+  async handleRecycleBinClick(e) {
+    const restoreBtn = e.target.closest('.btn-recycle-restore');
+    const purgeBtn = e.target.closest('.btn-recycle-purge');
+    const tombstoneId = restoreBtn?.dataset.tombstoneId || purgeBtn?.dataset.tombstoneId;
+    if (!tombstoneId) return;
+
+    if (restoreBtn) {
+      const res = await MessageBus.sendToBackground(ActionTypes.RESTORE_RECYCLE_BIN_ITEM, { tombstoneId });
+      const data = res?.data || {};
+      const ok = res?.success && data.success !== false;
+      Toast.show(ok ? '已从回收站恢复' : (data.error || res?.error || '恢复失败'));
+      await this.loadData();
+      return;
+    }
+
+    if (!window.confirm('确定永久删除该项？此操作不可撤销。')) return;
+    const res = await MessageBus.sendToBackground(ActionTypes.PURGE_RECYCLE_BIN_ITEM, {
+      tombstoneId,
+      confirm: true
+    });
+    const data = res?.data || {};
+    const ok = res?.success && data.success !== false;
+    Toast.show(ok ? '已永久删除' : (data.error || res?.error || '删除失败'));
+    await this.loadRecycleBin();
   }
 
   updateBadge() {
@@ -1363,10 +1468,15 @@ class StashTabComponent {
               </svg>
             `}
             <a href="${this.escapeHTML(tab.url)}" class="tab-link btn-restore-item-link" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="${this.escapeHTML(tab.title || tab.url)}&#10;${this.escapeHTML(tab.url)}">
-              ${this.escapeHTML(tab.title || tab.url)}
+              <span class="tab-title">${this.escapeHTML(tab.title || tab.url)}</span>
             </a>
           </div>
           <div class="tab-item-actions">
+            <button class="btn-icon-danger btn-edit-item" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="编辑标题" type="button" aria-label="编辑标题">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+              </svg>
+            </button>
             <button class="btn-icon-danger btn-delete-item" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="删除此网页" type="button" aria-label="删除此网页">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -1475,6 +1585,7 @@ class StashTabComponent {
           展开其余 ${tabCount - this.TABS_INITIAL_LIMIT} 个标签页...
         </button>
       ` : ''}
+
     `;
 
     return card;
@@ -1654,6 +1765,14 @@ class StashTabComponent {
       return;
     }
 
+    // 9b. 编辑单条标题
+    const btnEditItem = e.target.closest('.btn-edit-item');
+    if (btnEditItem) {
+      e.preventDefault();
+      this.startInlineItemEdit(btnEditItem.dataset.groupId, btnEditItem.dataset.itemId);
+      return;
+    }
+
     // 10. 展开超长组内所有标签
     const btnShowMore = e.target.closest('.btn-show-more-tabs');
     if (btnShowMore) {
@@ -1703,6 +1822,50 @@ class StashTabComponent {
       if (e.key === 'Enter') {
         saveNewTitle();
       } else if (e.key === 'Escape') {
+        isSaved = true;
+        this.filterAndRender();
+      }
+    });
+  }
+
+  startInlineItemEdit(groupId, itemId) {
+    const row = this.container.querySelector(
+      `.stash-item-row[data-group-id="${CSS.escape(groupId)}"][data-item-id="${CSS.escape(itemId)}"]`
+    );
+    if (!row) return;
+    const group = this.groups.find((g) => g.id === groupId);
+    const tab = group?.tabs?.find((t) => t.id === itemId);
+    const titleEl = row.querySelector('.tab-title');
+    if (!titleEl) return;
+
+    const oldTitle = tab?.title || titleEl.textContent || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'inline-title-input';
+    input.value = oldTitle;
+    input.setAttribute('aria-label', '修改网页标题');
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let isSaved = false;
+    const saveTitle = async () => {
+      if (isSaved) return;
+      isSaved = true;
+      const newTitle = input.value.trim();
+      const res = await MessageBus.sendToBackground(ActionTypes.UPDATE_STASH_ITEM, {
+        groupId,
+        itemId,
+        updates: { title: newTitle || oldTitle }
+      });
+      if (!res?.success) Toast.show(res?.error || '标题保存失败');
+      await this.loadData();
+    };
+
+    input.addEventListener('blur', saveTitle);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveTitle();
+      else if (e.key === 'Escape') {
         isSaved = true;
         this.filterAndRender();
       }
@@ -1770,7 +1933,7 @@ class StashTabComponent {
 }
 
 /**
- * 收纳箱设置组件 (StashSettingsComponent) - 管理 14 项收纳运行与展示偏好
+ * 收纳箱设置组件 (StashSettingsComponent) - 管理收纳运行与展示偏好
  */
 class StashSettingsComponent {
   constructor() {
@@ -1782,7 +1945,6 @@ class StashSettingsComponent {
       chkAutoOpenStashTab: document.getElementById('chkAutoOpenStashTab'),
       chkPinnedTabGuard: document.getElementById('chkPinnedTabGuard'),
       chkDeleteConfirmation: document.getElementById('chkDeleteConfirmation'),
-      chkShowTabCountBadge: document.getElementById('chkShowTabCountBadge'),
       selectDisplayDensity: document.getElementById('selectDisplayDensity'),
       chkAutoBackupEnabled: document.getElementById('chkAutoBackupEnabled'),
       selectBackupRetentionDays: document.getElementById('selectBackupRetentionDays'),
@@ -1825,9 +1987,6 @@ class StashSettingsComponent {
     if (this.dom.chkDeleteConfirmation) {
       this.dom.chkDeleteConfirmation.checked = settings.deleteConfirmation !== false;
     }
-    if (this.dom.chkShowTabCountBadge) {
-      this.dom.chkShowTabCountBadge.checked = settings.showTabCountBadge !== false;
-    }
     if (this.dom.selectDisplayDensity) {
       this.dom.selectDisplayDensity.value = settings.displayDensity || 'comfortable';
     }
@@ -1848,7 +2007,6 @@ class StashSettingsComponent {
       this.dom.chkAutoOpenStashTab,
       this.dom.chkPinnedTabGuard,
       this.dom.chkDeleteConfirmation,
-      this.dom.chkShowTabCountBadge,
       this.dom.selectDisplayDensity,
       this.dom.chkAutoBackupEnabled,
       this.dom.selectBackupRetentionDays
@@ -1871,7 +2029,6 @@ class StashSettingsComponent {
         autoOpenStashTab: Boolean(this.dom.chkAutoOpenStashTab?.checked),
         pinnedTabGuard: Boolean(this.dom.chkPinnedTabGuard?.checked),
         deleteConfirmation: Boolean(this.dom.chkDeleteConfirmation?.checked),
-        showTabCountBadge: Boolean(this.dom.chkShowTabCountBadge?.checked),
         displayDensity: this.dom.selectDisplayDensity?.value || 'comfortable',
         autoBackupEnabled: Boolean(this.dom.chkAutoBackupEnabled?.checked),
         backupRetentionDays: parseInt(this.dom.selectBackupRetentionDays?.value || '30', 10)
@@ -2287,12 +2444,14 @@ class BackupComponent {
 
     this.btnDeduplicate = document.getElementById('btnDeduplicateStash');
     this.btnClearAllStash = document.getElementById('btnClearAllStash');
+    this.autoBackupList = document.getElementById('autoBackupList');
 
     this.init();
   }
 
   init() {
     this.bindEvents();
+    this.loadAutoBackups();
   }
 
   bindEvents() {
@@ -2449,6 +2608,74 @@ class BackupComponent {
     });
   }
 
+  async loadAutoBackups() {
+    if (!this.autoBackupList) return;
+    const res = await MessageBus.sendToBackground(ActionTypes.LIST_AUTO_BACKUPS);
+    const items = Array.isArray(res?.data) ? res.data : [];
+    this.autoBackupList.innerHTML = '';
+    if (!res?.success || items.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'sync-empty';
+      empty.id = 'autoBackupEmpty';
+      empty.textContent = '暂无自动快照（可在收纳箱设置中开启每日快照）';
+      this.autoBackupList.appendChild(empty);
+      return;
+    }
+    for (const backup of items) {
+      const createdAt = Number(backup.createdAt) || 0;
+      const row = document.createElement('div');
+      row.className = 'conflict-item';
+
+      const head = document.createElement('div');
+      head.className = 'conflict-head';
+      head.textContent = createdAt ? new Date(createdAt).toLocaleString('zh-CN') : '未知时间';
+
+      const meta = document.createElement('div');
+      meta.className = 'device-meta';
+      meta.textContent = `${backup.groupCount ?? 0} 组 · ${backup.entryCount ?? 0} 条`;
+
+      const actions = document.createElement('div');
+      actions.className = 'btn-group';
+      const btnRestore = document.createElement('button');
+      btnRestore.className = 'btn btn-secondary btn-sm';
+      btnRestore.type = 'button';
+      btnRestore.textContent = '恢复';
+      btnRestore.addEventListener('click', () => this.restoreAutoBackup(createdAt));
+      const btnDelete = document.createElement('button');
+      btnDelete.className = 'btn btn-danger btn-sm';
+      btnDelete.type = 'button';
+      btnDelete.textContent = '删除';
+      btnDelete.addEventListener('click', () => this.deleteAutoBackup(createdAt));
+      actions.append(btnRestore, btnDelete);
+      row.append(head, meta, actions);
+      this.autoBackupList.appendChild(row);
+    }
+  }
+
+  async restoreAutoBackup(createdAt) {
+    if (!window.confirm('将把该快照中的收纳组写回，不删除现有其他组。确定恢复？')) return;
+    const res = await MessageBus.sendToBackground(ActionTypes.RESTORE_AUTO_BACKUP, {
+      createdAt,
+      confirm: true
+    });
+    const data = res?.data || {};
+    const ok = res?.success && data.success !== false;
+    Toast.show(ok ? `已恢复 ${data.groupCount ?? ''} 个收纳组`.trim() : (data.error || res?.error || '恢复失败'));
+    if (ok) this.onDataRestored?.();
+    await this.loadAutoBackups();
+  }
+
+  async deleteAutoBackup(createdAt) {
+    if (!window.confirm('确定删除该自动快照？此操作不可撤销。')) return;
+    const res = await MessageBus.sendToBackground(ActionTypes.DELETE_AUTO_BACKUP, {
+      createdAt,
+      confirm: true
+    });
+    const data = res?.data || {};
+    Toast.show(res?.success && data.success !== false ? '已删除该快照' : (data.error || res?.error || '删除失败'));
+    await this.loadAutoBackups();
+  }
+
   async executeRestoreJSON(backupData) {
     if (!backupData || typeof backupData !== 'object') {
       Toast.show('备份数据无效');
@@ -2504,6 +2731,9 @@ class WebdavSyncComponent {
     this.$conflictsList = document.getElementById('syncConflictsList');
     this.$devicesList = document.getElementById('syncDevicesList');
     this.$eventsList = document.getElementById('deviceEventsList');
+    this.$recoveryMessage = document.getElementById('syncRecoveryMessage');
+    this.$btnFallbackSnapshot = document.getElementById('btnSyncFallbackSnapshot');
+    this.$btnRebuildFromScratch = document.getElementById('btnSyncRebuildFromScratch');
     this.init();
   }
 
@@ -2514,6 +2744,8 @@ class WebdavSyncComponent {
     this.$enabled?.addEventListener('change', () => this.saveCredentials());
     this.$autoSync?.addEventListener('change', () => this.saveCredentials());
     this.$accountConfigSync?.addEventListener('change', () => this.saveAccountConfigSync());
+    this.$btnFallbackSnapshot?.addEventListener('click', () => this.fallbackPreviousSnapshot());
+    this.$btnRebuildFromScratch?.addEventListener('click', () => this.rebuildFromScratch());
     this.loadAll();
   }
 
@@ -2529,8 +2761,11 @@ class WebdavSyncComponent {
   async loadStatus() {
     await this.loadAccountConfigSync();
     const res = await MessageBus.sendToBackground(ActionTypes.GET_SYNC_STATUS);
-    if (!res?.success || !res.data) return;
-    const status = res.data;
+    const status = res?.success && res.data ? res.data : {};
+    if (!res?.success || !res.data) {
+      await this.loadRecoveryInfo(status);
+      return;
+    }
     if (this.$serverUrl && !this.$serverUrl.value) this.$serverUrl.value = status.serverUrl || '';
     if (this.$username && !this.$username.value) this.$username.value = status.username || '';
     if (this.$enabled) this.$enabled.checked = status.enabled === true;
@@ -2554,6 +2789,7 @@ class WebdavSyncComponent {
     if (this.$statusBadge) this.$statusBadge.textContent = labelMap[status.status] || '尚未同步';
     if (this.$statusDot) this.$statusDot.dataset.status = status.status || 'idle';
     if (this.$statusMessage) this.$statusMessage.textContent = status.message || '';
+    await this.loadRecoveryInfo(status);
   }
 
   async loadAccountConfigSync() {
@@ -2741,6 +2977,42 @@ class WebdavSyncComponent {
       item.append(text, time);
       this.$eventsList.appendChild(item);
     }
+  }
+
+  async loadRecoveryInfo(statusHint) {
+    const res = await MessageBus.sendToBackground(ActionTypes.GET_SYNC_RECOVERY_INFO);
+    const info = res?.success && res.data && typeof res.data === 'object' ? res.data : {};
+    const status = statusHint?.status || info.status || '';
+    const isCorrupt = status === 'corrupt' || info.corrupt === true;
+    const hasLocalSnapshot = info.hasLocalSnapshot === true;
+    const enableActions = isCorrupt || hasLocalSnapshot;
+
+    if (this.$recoveryMessage) {
+      if (isCorrupt) {
+        this.$recoveryMessage.textContent = info.message || statusHint?.message || '远端数据损坏，可回退上一份快照或从本机快照重建。';
+      } else if (hasLocalSnapshot) {
+        this.$recoveryMessage.textContent = '当前同步正常。本机有可用快照，损坏时可用于重建。';
+      } else {
+        this.$recoveryMessage.textContent = '当前同步正常。损坏时将在此启用恢复操作。';
+      }
+    }
+    if (this.$btnFallbackSnapshot) this.$btnFallbackSnapshot.disabled = !enableActions;
+    if (this.$btnRebuildFromScratch) this.$btnRebuildFromScratch.disabled = !enableActions;
+  }
+
+  async fallbackPreviousSnapshot() {
+    const res = await MessageBus.sendToBackground(ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT);
+    const data = res?.data || {};
+    Toast.show(res?.success && data.success !== false ? (data.message || '已回退上一份快照') : (data.error || res?.error || '回退失败'));
+    await this.loadAll();
+  }
+
+  async rebuildFromScratch() {
+    if (!window.confirm('危险：将用本机快照从头重建云端同步状态，可能覆盖远端损坏数据。确定继续？')) return;
+    const res = await MessageBus.sendToBackground(ActionTypes.REBUILD_SYNC_FROM_SCRATCH, { confirm: true });
+    const data = res?.data || {};
+    Toast.show(res?.success && data.success !== false ? (data.message || '已从本机快照重建') : (data.error || res?.error || '重建失败'));
+    await this.loadAll();
   }
 }
 

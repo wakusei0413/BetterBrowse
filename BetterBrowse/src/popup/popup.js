@@ -16,9 +16,12 @@ const MODES_CONFIG = [
   { mode: LinkModes.NEW, index: 2, label: '新标签页打开' }
 ];
 
+const popupPort = chrome.runtime.connect({ name: 'popup-lifecycle' });
+
 class PopupController {
   constructor() {
     this.currentTab = null;
+    this.popupPort = popupPort;
     this.currentDomain = '';
     this.currentMode = LinkModes.AUTO;
     this.isSpecialPage = false;
