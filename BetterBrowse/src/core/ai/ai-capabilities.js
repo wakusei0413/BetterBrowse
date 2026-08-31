@@ -29,7 +29,9 @@ export const AI_CONFIRM_REQUIRED_ACTIONS = new Set([
   ActionTypes.DEDUPLICATE_STASH_DATA, // 智能去重（删除重复组）
   ActionTypes.RESET_CONFIG,           // 恢复默认配置
   ActionTypes.RESTORE_AUTO_BACKUP,    // 恢复自动备份
-  ActionTypes.DELETE_AUTO_BACKUP      // 删除自动备份
+  ActionTypes.DELETE_AUTO_BACKUP,     // 删除自动备份
+  ActionTypes.PURGE_RECYCLE_BIN_ITEM, // 永久删除回收站项
+  ActionTypes.REBUILD_SYNC_FROM_SCRATCH // 从本机快照重建同步
 ]);
 
 /**
@@ -216,6 +218,24 @@ export const AI_ACTION_DOCS = {
     params: { deviceId: 'string' }
   },
   [ActionTypes.LIST_DEVICE_EVENTS]: { summary: '获取最近跨设备收纳/倒计时事件（上限 50 条）' },
+  [ActionTypes.GET_SYNC_RECOVERY_INFO]: { summary: '读取同步损坏状态与本机快照可用性' },
+  [ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT]: { summary: '回退上一份远端或本机快照' },
+  [ActionTypes.REBUILD_SYNC_FROM_SCRATCH]: {
+    summary: '用本机已缓存快照整体替换可同步实体（不改远端清单）',
+    note: '需 confirm'
+  },
+
+  // === 30 天回收站 ===
+  [ActionTypes.LIST_RECYCLE_BIN]: { summary: '列出 30 天内可恢复的已删收纳组与条目' },
+  [ActionTypes.RESTORE_RECYCLE_BIN_ITEM]: {
+    summary: '从回收站恢复一条墓碑（组或条目）',
+    params: { tombstoneId: 'string，墓碑标识' }
+  },
+  [ActionTypes.PURGE_RECYCLE_BIN_ITEM]: {
+    summary: '永久删除一条回收站记录',
+    params: { tombstoneId: 'string，墓碑标识' },
+    note: '需 confirm'
+  },
 
   // === 桥自身 ===
   [ActionTypes.GET_AI_CAPABILITIES]: { summary: '获取本能力清单（动作、参数、确认位要求与版本）' },

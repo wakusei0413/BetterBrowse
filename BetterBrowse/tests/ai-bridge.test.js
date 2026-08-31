@@ -103,7 +103,18 @@ const HUMAN_UI_ACTIONS = [
   ActionTypes.RESOLVE_SYNC_CONFLICT,
   ActionTypes.LIST_SYNC_DEVICES,
   ActionTypes.RETIRE_SYNC_DEVICE,
-  ActionTypes.LIST_DEVICE_EVENTS
+  ActionTypes.LIST_DEVICE_EVENTS,
+  ActionTypes.LIST_RECYCLE_BIN,
+  ActionTypes.RESTORE_RECYCLE_BIN_ITEM,
+  ActionTypes.PURGE_RECYCLE_BIN_ITEM,
+  ActionTypes.LIST_AUTO_BACKUPS,
+  ActionTypes.RESTORE_AUTO_BACKUP,
+  ActionTypes.DELETE_AUTO_BACKUP,
+  ActionTypes.ADD_STASH_ITEM,
+  ActionTypes.UPDATE_STASH_ITEM,
+  ActionTypes.GET_SYNC_RECOVERY_INFO,
+  ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT,
+  ActionTypes.REBUILD_SYNC_FROM_SCRATCH
 ];
 
 /** 构建最小依赖的共享处理映射（不触发真实服务调用） */
