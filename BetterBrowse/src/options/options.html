@@ -80,6 +80,16 @@
           <span class="nav-label">云端同步</span>
         </button>
 
+        <button class="nav-item" data-tab="logs" type="button" id="navTabLogs" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 19h16"></path>
+            <path d="M4 15h16"></path>
+            <path d="M4 11h10"></path>
+            <path d="M4 7h12"></path>
+          </svg>
+          <span class="nav-label">运行日志</span>
+        </button>
+
         <button class="nav-item" data-tab="ai-bridge" type="button" id="navTabAiBridge" role="tab" aria-selected="false" aria-controls="tab-ai-bridge" tabindex="-1">
           <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="4" y="7" width="16" height="10" rx="2"></rect>
@@ -93,7 +103,7 @@
       </nav>
 
       <div class="sidebar-footer">
-        <span class="version-tag">BetterBrowse · Milestone 2</span>
+        <span class="version-tag" id="softwareVersionTag">BetterBrowse · -</span>
       </div>
     </aside>
 
@@ -127,28 +137,6 @@
                 <path d="M12 22V12"></path>
               </svg>
               <span>立即收纳全部窗口</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 时间分块状态提示横幅与快捷切块控件 -->
-        <div id="stashTimeFilterBanner" class="time-filter-banner">
-          <div class="time-filter-info">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="10"></circle>
-              <polyline points="12 6 12 12 16 14"></polyline>
-            </svg>
-            <span id="stashTimeFilterText">正在分块浏览：最新一周</span>
-          </div>
-          <div class="time-filter-actions">
-            <button id="btnStashNextChunk" class="btn btn-secondary btn-sm" type="button" title="切换到更新的时段">
-              <span>▲ 较新时段</span>
-            </button>
-            <button id="btnStashPrevChunk" class="btn btn-secondary btn-sm" type="button" title="切换到更早的时段">
-              <span>▼ 更早时段</span>
-            </button>
-            <button id="btnStashClearTimeFilter" class="btn btn-secondary btn-sm" type="button">
-              <span id="btnStashClearTimeFilterText">查看全部</span>
             </button>
           </div>
         </div>
@@ -947,16 +935,7 @@
             </div>
           </div>
 
-          <!-- 4. 跨设备动态 -->
-          <div class="card">
-            <h3 class="card-title">4. 跨设备动态</h3>
-            <p class="card-desc">其他设备的倒计时与收纳事件会在此展示。按设计，只有事件来源设备本身会执行收纳动作。</p>
-            <div id="deviceEventsList" class="sync-list">
-              <p class="sync-empty">暂无跨设备事件</p>
-            </div>
-          </div>
-
-          <!-- 5. 数据损坏恢复 -->
+          <!-- 4. 数据损坏恢复 -->
           <div class="card" id="syncRecoveryCard">
             <h3 class="card-title">数据损坏恢复</h3>
             <p class="card-desc">当远端清单或快照校验失败时，可回退上一份快照，或用本机快照从头重建同步状态。正常同步时按钮保持不可用，避免误操作。</p>
@@ -969,12 +948,49 @@
         </div>
       </section>
 
-      <!-- Tab 7: AI 桥接 (本机 AI Agent 对等操控通道) -->
+      <!-- Tab 7: 统一运行日志 -->
+      <section id="tab-logs" class="tab-panel" role="tabpanel" aria-labelledby="navTabLogs" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">运行日志</h2>
+            <p class="panel-desc">集中查看扩展后台、弹窗、管理中心、内容脚本、跨设备事件和 AI 操作审计，最多保留最近 1000 条</p>
+          </div>
+          <div class="panel-actions">
+            <button id="btnRuntimeLogRefresh" class="btn btn-secondary" type="button">刷新</button>
+            <button id="btnRuntimeLogClear" class="btn btn-danger" type="button">清空日志</button>
+          </div>
+        </div>
+
+        <div class="runtime-log-workspace">
+          <div class="runtime-log-toolbar" aria-label="运行日志筛选">
+            <select id="runtimeLogLevel" class="form-select" aria-label="按日志级别筛选">
+              <option value="">全部级别</option>
+              <option value="error">错误</option>
+              <option value="warn">警告</option>
+              <option value="info">信息</option>
+              <option value="debug">调试</option>
+            </select>
+            <select id="runtimeLogSource" class="form-select" aria-label="按日志来源筛选">
+              <option value="">全部来源</option>
+            </select>
+            <input id="runtimeLogKeyword" class="text-input" type="search" placeholder="搜索来源或消息" aria-label="搜索日志来源或消息">
+            <span id="runtimeLogCount" class="runtime-log-count" aria-live="polite">0 条记录</span>
+          </div>
+          <div class="runtime-log-table-header" aria-hidden="true">
+            <span>时间</span><span>级别</span><span>来源</span><span>消息</span>
+          </div>
+          <div id="runtimeLogList" class="runtime-log-list" aria-live="polite">
+            <p class="sync-empty">暂无运行日志</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 8: AI 桥接 (本机 AI Agent 对等操控通道) -->
       <section id="tab-ai-bridge" class="tab-panel" role="tabpanel" aria-labelledby="navTabAiBridge" hidden>
         <div class="panel-header">
           <div>
             <h2 class="panel-title">AI 桥接</h2>
-            <p class="panel-desc">允许本机 AI 助手（如编码代理）经 Native Messaging 与插件通信。AI 与你拥有完全相同的操作能力，走同一条处理路径；不可逆操作需显式确认，凭据只写不可读，每次操作都记录在下方审计列表。</p>
+            <p class="panel-desc">允许本机 AI 助手（如编码代理）经 Native Messaging 与插件通信。AI 与你拥有完全相同的操作能力，走同一条处理路径；不可逆操作需显式确认，凭据只写不可读，操作审计统一在“运行日志”中查看。</p>
           </div>
         </div>
 
@@ -1005,24 +1021,12 @@
             </div>
             <div class="sync-meta-row">
               <span>扩展 ID：<code id="aiBridgeExtensionId">-</code></span>
-              <span>协议版本：<strong id="aiBridgeProto">-</strong></span>
+              <span>API 版本：<strong id="aiBridgeApiVersion">-</strong></span>
               <span>最近连接：<span id="aiBridgeLastAt">-</span></span>
             </div>
             <div class="btn-group">
               <button id="btnAiBridgeCopyId" class="btn btn-secondary" type="button">复制扩展 ID</button>
               <button id="btnAiBridgeRefresh" class="btn btn-secondary" type="button">刷新状态</button>
-            </div>
-          </div>
-
-          <!-- 2. 审计日志 -->
-          <div class="card">
-            <h3 class="card-title">2. AI 操作审计</h3>
-            <p class="card-desc">本机 AI 经桥接执行的最近 100 条操作（含来源、结果与失败原因）。审计只保存在本机，不进入同步与导出。</p>
-            <div id="aiBridgeAuditList" class="sync-list">
-              <p class="sync-empty">暂无 AI 操作记录</p>
-            </div>
-            <div class="btn-group">
-              <button id="btnAiBridgeClearAudit" class="btn btn-secondary" type="button">清空审计记录</button>
             </div>
           </div>
         </div>

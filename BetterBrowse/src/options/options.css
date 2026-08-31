@@ -448,55 +448,7 @@ a:focus-visible,
 }
 
 /* ==========================================================================
-   5. 时间分块状态导航条 (Time Filter Ribbon Toolbar)
-   ========================================================================== */
-.time-filter-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-color);
-  box-shadow: var(--shadow-xs);
-  padding: 8px 16px;
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-size: 12.5px;
-  font-weight: 500;
-  flex-shrink: 0;
-  margin: 12px 36px 0 36px;
-  transition: all 0.2s ease;
-}
-
-.time-filter-banner.hidden {
-  display: none;
-}
-
-.time-filter-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-secondary);
-}
-
-.time-filter-info svg {
-  color: var(--accent-color);
-  flex-shrink: 0;
-}
-
-.time-filter-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.time-filter-actions .btn {
-  font-size: 11.5px;
-  padding: 4px 10px;
-}
-
-/* ==========================================================================
-   6. 标签收纳箱两栏容器与主卡片流 (Stash Layout & Main Column)
+   5. 标签收纳箱两栏容器与主卡片流 (Stash Layout & Main Column)
    ========================================================================== */
 .stash-layout-container {
   display: flex;
@@ -2012,10 +1964,6 @@ input:checked + .slider:before {
     padding: 16px 24px 14px 24px;
   }
 
-  .time-filter-banner {
-    margin: 10px 24px 0 24px;
-  }
-
   .stash-layout-container {
     padding: 16px 24px 20px 24px;
     gap: 0;
@@ -2023,7 +1971,8 @@ input:checked + .slider:before {
 
   .settings-grid,
   .tab-scroll-body,
-  .backup-grid {
+  .backup-grid,
+  .runtime-log-workspace {
     padding: 18px 24px 24px 24px;
   }
 
@@ -2088,17 +2037,14 @@ input:checked + .slider:before {
     gap: 12px;
   }
 
-  .time-filter-banner {
-    margin: 8px 16px 0 16px;
-  }
-
   .stash-layout-container {
     padding: 12px 16px 16px 16px;
   }
 
   .settings-grid,
   .tab-scroll-body,
-  .backup-grid {
+  .backup-grid,
+  .runtime-log-workspace {
     padding: 14px 16px 20px 16px;
   }
 
@@ -2212,8 +2158,7 @@ input:checked + .slider:before {
 }
 
 .conflict-item,
-.device-item,
-.event-item {
+.device-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2261,56 +2206,117 @@ input:checked + .slider:before {
   color: var(--text-muted);
 }
 
-.event-item {
-  font-size: 13px;
-  color: var(--text-primary);
+/* ============ 统一运行日志 ============ */
+.runtime-log-workspace {
+  min-height: 0;
+  padding: 18px 32px 28px;
+  overflow: auto;
 }
 
-.event-item time {
-  font-size: 12px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-/* ============ AI 桥接（阶段三）============ */
-.ai-audit-item {
-  display: flex;
-  align-items: flex-start;
+.runtime-log-toolbar {
+  display: grid;
+  grid-template-columns: 150px minmax(180px, 240px) minmax(240px, 1fr) auto;
+  align-items: center;
   gap: 10px;
-  padding: 9px 10px;
-  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 14px;
 }
 
-.ai-audit-item:last-child {
+.runtime-log-toolbar .form-select,
+.runtime-log-toolbar .text-input {
+  width: 100%;
+}
+
+.runtime-log-count {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.runtime-log-table-header,
+.runtime-log-row {
+  display: grid;
+  grid-template-columns: 170px 68px minmax(130px, 200px) minmax(260px, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.runtime-log-table-header {
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-bottom: none;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.runtime-log-list {
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  min-height: 180px;
+}
+
+.runtime-log-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 12px;
+}
+
+.runtime-log-row:last-child {
   border-bottom: none;
 }
 
-.ai-audit-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-top: 6px;
-  flex-shrink: 0;
+.runtime-log-row time {
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
-.ai-audit-dot[data-ok="true"] { background: var(--success-color); }
-.ai-audit-dot[data-ok="false"] { background: var(--danger-color); }
-
-.ai-audit-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.ai-audit-action {
-  font-size: 13px;
-  font-weight: 600;
-  font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
-  word-break: break-all;
-}
-
-.ai-audit-detail {
-  font-size: 12px;
+.runtime-log-level {
   color: var(--text-secondary);
-  word-break: break-all;
-  margin-top: 2px;
+  font-weight: 700;
+}
+
+.runtime-log-row[data-level="error"] .runtime-log-level { color: var(--danger-color); }
+.runtime-log-row[data-level="warn"] .runtime-log-level { color: var(--warning-color); }
+.runtime-log-row[data-level="info"] .runtime-log-level { color: var(--accent-color); }
+
+.runtime-log-source {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.runtime-log-message {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 820px) {
+  .runtime-log-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .runtime-log-toolbar .text-input,
+  .runtime-log-count {
+    grid-column: 1 / -1;
+  }
+
+  .runtime-log-table-header {
+    display: none;
+  }
+
+  .runtime-log-row {
+    grid-template-columns: 1fr auto;
+    gap: 6px 12px;
+  }
+
+  .runtime-log-source,
+  .runtime-log-message {
+    grid-column: 1 / -1;
+  }
 }

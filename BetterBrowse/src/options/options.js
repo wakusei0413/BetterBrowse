@@ -9,6 +9,12 @@ import { StorageKeys } from '../constants/storage-keys.js';
 import { LinkModes } from '../constants/config.js';
 import { LinkMatcher } from '../core/link/link-matcher.js';
 import { MessageBus } from '../core/bus/message-bus.js';
+import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
+
+installRuntimeLogger({
+  context: 'options',
+  write: (entry) => MessageBus.sendToBackground(ActionTypes.APPEND_RUNTIME_LOG, entry)
+});
 
 /**
  * Toast 全局通知提示工具（支持 Action 回调与撤销按钮）
@@ -786,12 +792,7 @@ class StashTabComponent {
     this.contextMenu = document.getElementById('stashContextMenu');
     this.activeContextItem = null;
 
-    // 时间筛选横幅与单线时间滚动条相关 DOM
-    this.filterText = document.getElementById('stashTimeFilterText');
-    this.btnNextChunk = document.getElementById('btnStashNextChunk');
-    this.btnPrevChunk = document.getElementById('btnStashPrevChunk');
-    this.btnClearTimeFilter = document.getElementById('btnStashClearTimeFilter');
-    this.btnClearTimeFilterText = document.getElementById('btnStashClearTimeFilterText');
+    // 单线时间滚动条相关 DOM
     this.timelineScrollbarTrack = document.getElementById('timelineScrollbar');
     this.timelineNodesContainer = document.getElementById('timelineNodesContainer');
     this.timelineScrubberThumb = document.getElementById('timelineScrubberThumb');
@@ -980,24 +981,7 @@ class StashTabComponent {
       this.btnStashNow.disabled = false;
     });
 
-    // 3. 较新/更早分块切换与全部模式切换
-    this.btnNextChunk?.addEventListener('click', () => {
-      this.timelineScrollbar.stepPrevChunk();
-    });
-
-    this.btnPrevChunk?.addEventListener('click', () => {
-      this.timelineScrollbar.stepNextChunk();
-    });
-
-    this.btnClearTimeFilter?.addEventListener('click', () => {
-      if (this.timelineScrollbar.activeChunkIndex === -1) {
-        this.timelineScrollbar.selectChunk(0);
-      } else {
-        this.timelineScrollbar.selectChunk(-1);
-      }
-    });
-
-    // 主列表边界滚动（触顶或触底继续滚动）自动联动切换时段
+    // 3. 主列表边界滚动（触顶或触底继续滚动）自动联动切换时段
     let lastBoundaryScrollTime = 0;
     this.mainColumn?.addEventListener(
       'wheel',
@@ -1312,34 +1296,7 @@ class StashTabComponent {
       })
       .filter(Boolean);
 
-    // 2. 更新时间分块状态提示横幅与切换控件
-    const totalTabs = this.filteredGroups.reduce((sum, g) => sum + (g.tabs?.length || 0), 0);
-    if (this.activeTimeRangeFilter) {
-      if (this.filterText) {
-        this.filterText.textContent = `当前时段：${this.activeTimeRangeFilter.title}（共 ${this.filteredGroups.length} 组 · ${totalTabs} 个标签页）`;
-      }
-      if (this.btnClearTimeFilterText) {
-        this.btnClearTimeFilterText.textContent = '查看全部';
-      }
-      if (this.btnNextChunk) {
-        this.btnNextChunk.disabled = this.timelineScrollbar.activeChunkIndex <= 0;
-      }
-      if (this.btnPrevChunk) {
-        this.btnPrevChunk.disabled =
-          this.timelineScrollbar.activeChunkIndex >= this.timelineScrollbar.chunks.length - 1;
-      }
-    } else {
-      if (this.filterText) {
-        this.filterText.textContent = `浏览范围：全部历史记录（共 ${this.groups.length} 组 · ${totalTabs} 个标签页）`;
-      }
-      if (this.btnClearTimeFilterText) {
-        this.btnClearTimeFilterText.textContent = '按周分块查看';
-      }
-      if (this.btnNextChunk) this.btnNextChunk.disabled = true;
-      if (this.btnPrevChunk) this.btnPrevChunk.disabled = true;
-    }
-
-    // 3. 渲染主列表内容
+    // 2. 渲染主列表内容
     this.container.innerHTML = '';
     this.renderedGroupCount = 0;
 
@@ -1351,7 +1308,7 @@ class StashTabComponent {
       if (titleEl) titleEl.textContent = hasSearchQuery ? '未找到匹配的标签页' : '收纳箱目前是空的';
       if (descEl) {
         descEl.textContent = hasSearchQuery
-          ? '请尝试其他关键词，或点击「查看全部」浏览全部历史记录。'
+          ? '请尝试更换搜索关键词。'
           : '当您在右上角点击「立即收纳」或标签页数量超出阈值时，未活跃标签将自动保存于此处。';
       }
       this.container.appendChild(this.emptyState);
@@ -2708,7 +2665,7 @@ class BackupComponent {
 }
 
 /**
- * 云端同步 (WebDAV) 组件：凭据、连接探测、状态、冲突裁决、设备管理与跨设备动态
+ * 云端同步 (WebDAV) 组件：凭据、连接探测、状态、冲突裁决与设备管理
  */
 class WebdavSyncComponent {
   constructor() {
@@ -2730,7 +2687,6 @@ class WebdavSyncComponent {
     this.$lastAt = document.getElementById('syncLastAt');
     this.$conflictsList = document.getElementById('syncConflictsList');
     this.$devicesList = document.getElementById('syncDevicesList');
-    this.$eventsList = document.getElementById('deviceEventsList');
     this.$recoveryMessage = document.getElementById('syncRecoveryMessage');
     this.$btnFallbackSnapshot = document.getElementById('btnSyncFallbackSnapshot');
     this.$btnRebuildFromScratch = document.getElementById('btnSyncRebuildFromScratch');
@@ -2753,8 +2709,7 @@ class WebdavSyncComponent {
     await Promise.all([
       this.loadStatus(),
       this.loadConflicts(),
-      this.loadDevices(),
-      this.loadEvents()
+      this.loadDevices()
     ]);
   }
 
@@ -2952,33 +2907,6 @@ class WebdavSyncComponent {
     await this.loadDevices();
   }
 
-  async loadEvents() {
-    const res = await MessageBus.sendToBackground(ActionTypes.LIST_DEVICE_EVENTS);
-    const events = res?.success && Array.isArray(res.data) ? res.data : [];
-    if (!this.$eventsList) return;
-    if (events.length === 0) {
-      this.$eventsList.innerHTML = '<p class="sync-empty">暂无跨设备事件</p>';
-      return;
-    }
-    const typeLabels = {
-      countdown_start: '开始收纳倒计时',
-      countdown_cancel: '取消收纳倒计时',
-      countdown_confirm: '确认智能收纳',
-      stash_executed: '执行了智能收纳'
-    };
-    this.$eventsList.innerHTML = '';
-    for (const event of events) {
-      const item = document.createElement('div');
-      item.className = 'event-item';
-      const text = document.createElement('span');
-      text.textContent = `${event.originDeviceId === event.deviceId ? '本机' : '其他设备'} ${typeLabels[event.type] || event.type}`;
-      const time = document.createElement('time');
-      time.textContent = event.createdAt ? new Date(event.createdAt).toLocaleString('zh-CN') : '';
-      item.append(text, time);
-      this.$eventsList.appendChild(item);
-    }
-  }
-
   async loadRecoveryInfo(statusHint) {
     const res = await MessageBus.sendToBackground(ActionTypes.GET_SYNC_RECOVERY_INFO);
     const info = res?.success && res.data && typeof res.data === 'object' ? res.data : {};
@@ -3018,7 +2946,7 @@ class WebdavSyncComponent {
 
 /**
  * AI 桥接组件 (AIBridgeComponent)
- * 桥接开关 / 连接状态 / 扩展 ID 复制 / AI 操作审计（docs/03-ai-skill-bridge.md）
+ * 桥接开关 / 连接状态 / 扩展 ID 复制（操作审计统一在运行日志页查看）
  */
 class AIBridgeComponent {
   constructor() {
@@ -3027,12 +2955,10 @@ class AIBridgeComponent {
     this.$statusBadge = document.getElementById('aiBridgeStatusBadge');
     this.$statusMessage = document.getElementById('aiBridgeStatusMessage');
     this.$extensionId = document.getElementById('aiBridgeExtensionId');
-    this.$proto = document.getElementById('aiBridgeProto');
+    this.$proto = document.getElementById('aiBridgeApiVersion');
     this.$lastAt = document.getElementById('aiBridgeLastAt');
-    this.$auditList = document.getElementById('aiBridgeAuditList');
     this.$btnCopyId = document.getElementById('btnAiBridgeCopyId');
     this.$btnRefresh = document.getElementById('btnAiBridgeRefresh');
-    this.$btnClearAudit = document.getElementById('btnAiBridgeClearAudit');
     this.init();
   }
 
@@ -3040,7 +2966,6 @@ class AIBridgeComponent {
     this.$enabled?.addEventListener('change', () => this.saveEnabled());
     this.$btnCopyId?.addEventListener('click', () => this.copyExtensionId());
     this.$btnRefresh?.addEventListener('click', () => this.loadAll());
-    this.$btnClearAudit?.addEventListener('click', () => this.clearAudit());
     this.loadAll();
   }
 
@@ -3064,6 +2989,7 @@ class AIBridgeComponent {
       disabled: '未启用',
       connecting: '正在连接宿主…',
       connected: '宿主已连接',
+      incompatible: 'API 版本不兼容',
       reconnecting: '宿主连接中断，重连中…',
       host_missing: '宿主未安装',
       error: '连接异常',
@@ -3072,6 +2998,7 @@ class AIBridgeComponent {
     const dotStatusMap = {
       connected: 'synced',
       connecting: 'pending',
+      incompatible: 'auth_failed',
       reconnecting: 'pending',
       host_missing: 'auth_failed',
       error: 'auth_failed',
@@ -3086,51 +3013,11 @@ class AIBridgeComponent {
         : (status.lastError || '');
     }
     if (this.$extensionId) this.$extensionId.textContent = status.extensionId || chrome.runtime.id || '-';
-    if (this.$proto) this.$proto.textContent = `v${status.protocol ?? 1}`;
+    if (this.$proto) this.$proto.textContent = String(status.apiVersion ?? '-');
     if (this.$lastAt) {
       this.$lastAt.textContent = status.lastConnectedAt
         ? new Date(status.lastConnectedAt).toLocaleString('zh-CN')
         : '-';
-    }
-    this.renderAudit(Array.isArray(status.audit) ? status.audit : []);
-  }
-
-  renderAudit(audit) {
-    if (!this.$auditList) return;
-    this.$auditList.innerHTML = '';
-    if (audit.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'sync-empty';
-      empty.textContent = '暂无 AI 操作记录';
-      this.$auditList.appendChild(empty);
-      return;
-    }
-    for (const entry of audit) {
-      const item = document.createElement('div');
-      item.className = 'ai-audit-item';
-
-      const dot = document.createElement('span');
-      dot.className = 'ai-audit-dot';
-      dot.dataset.ok = entry.ok ? 'true' : 'false';
-
-      const main = document.createElement('div');
-      main.className = 'ai-audit-main';
-
-      const line1 = document.createElement('div');
-      line1.className = 'ai-audit-action';
-      line1.textContent = `${entry.action}${entry.ok ? '' : ' · 失败'}`;
-
-      const line2 = document.createElement('div');
-      line2.className = 'ai-audit-detail';
-      line2.textContent = entry.ok ? (entry.summary || '-') : (entry.error || entry.summary || '-');
-
-      main.append(line1, line2);
-
-      const time = document.createElement('time');
-      time.textContent = entry.ts ? new Date(entry.ts).toLocaleString('zh-CN') : '';
-
-      item.append(dot, main, time);
-      this.$auditList.appendChild(item);
     }
   }
 
@@ -3159,11 +3046,96 @@ class AIBridgeComponent {
       Toast.show('复制失败，请手动选择并复制');
     }
   }
+}
 
-  async clearAudit() {
-    const res = await MessageBus.sendToBackground(ActionTypes.CLEAR_AI_AUDIT_LOG);
-    Toast.show(res?.success ? '审计记录已清空' : (res?.error || '清空失败'));
-    await this.loadStatus();
+class RuntimeLogComponent {
+  constructor() {
+    this.$level = document.getElementById('runtimeLogLevel');
+    this.$source = document.getElementById('runtimeLogSource');
+    this.$keyword = document.getElementById('runtimeLogKeyword');
+    this.$count = document.getElementById('runtimeLogCount');
+    this.$list = document.getElementById('runtimeLogList');
+    this.$refresh = document.getElementById('btnRuntimeLogRefresh');
+    this.$clear = document.getElementById('btnRuntimeLogClear');
+    this.searchTimer = null;
+    this.bind();
+  }
+
+  bind() {
+    this.$level?.addEventListener('change', () => this.load());
+    this.$source?.addEventListener('change', () => this.load());
+    this.$keyword?.addEventListener('input', () => {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = setTimeout(() => this.load(), 180);
+    });
+    this.$refresh?.addEventListener('click', () => this.load());
+    this.$clear?.addEventListener('click', () => this.clear());
+  }
+
+  async load() {
+    const res = await MessageBus.sendToBackground(ActionTypes.QUERY_RUNTIME_LOGS, {
+      level: this.$level?.value || '',
+      source: this.$source?.value || '',
+      keyword: this.$keyword?.value || '',
+      limit: 1000
+    });
+    if (!res?.success || !res.data) {
+      this.render([]);
+      if (this.$count) this.$count.textContent = res?.error || '读取失败';
+      return;
+    }
+    this.updateSources(res.data.sources || []);
+    this.render(res.data.entries || []);
+    if (this.$count) this.$count.textContent = `${res.data.total || 0} 条记录`;
+  }
+
+  updateSources(sources) {
+    if (!this.$source) return;
+    const selected = this.$source.value;
+    this.$source.replaceChildren(new Option('全部来源', ''));
+    for (const source of sources) this.$source.add(new Option(source, source));
+    this.$source.value = sources.includes(selected) ? selected : '';
+  }
+
+  render(entries) {
+    if (!this.$list) return;
+    this.$list.replaceChildren();
+    if (entries.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'sync-empty';
+      empty.textContent = '暂无符合条件的运行日志';
+      this.$list.appendChild(empty);
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    for (const entry of entries) {
+      const row = document.createElement('div');
+      row.className = 'runtime-log-row';
+      row.dataset.level = entry.level;
+
+      const time = document.createElement('time');
+      time.textContent = entry.ts ? new Date(entry.ts).toLocaleString('zh-CN') : '-';
+      const level = document.createElement('span');
+      level.className = 'runtime-log-level';
+      level.textContent = ({ error: '错误', warn: '警告', info: '信息', debug: '调试' })[entry.level] || entry.level;
+      const source = document.createElement('span');
+      source.className = 'runtime-log-source';
+      source.textContent = entry.source || '-';
+      const message = document.createElement('code');
+      message.className = 'runtime-log-message';
+      message.textContent = entry.message || '-';
+      row.append(time, level, source, message);
+      fragment.appendChild(row);
+    }
+    this.$list.appendChild(fragment);
+  }
+
+  async clear() {
+    if (!window.confirm('确定清空全部运行日志和 AI 操作审计吗？此操作不可撤销。')) return;
+    const res = await MessageBus.sendToBackground(ActionTypes.CLEAR_RUNTIME_LOGS, { confirm: true });
+    const ok = res?.success && res.data?.success !== false;
+    Toast.show(ok ? '运行日志已清空' : (res?.data?.error || res?.error || '清空失败'));
+    if (ok) await this.load();
   }
 }
 
@@ -3179,14 +3151,14 @@ class OptionsApp {
   }
 
   init() {
-    this.bindNavigation();
-
     const stashComponent = new StashTabComponent();
     const stashSettingsComponent = new StashSettingsComponent();
     const rulesComponent = new RulesConfigComponent();
     const domainComponent = new DomainRulesComponent();
     const syncComponent = new WebdavSyncComponent();
+    this.runtimeLogComponent = new RuntimeLogComponent();
     const aiBridgeComponent = new AIBridgeComponent();
+    this.bindNavigation();
     new BackupComponent(() => {
       stashComponent.loadData();
       stashSettingsComponent.loadSettings();
@@ -3252,6 +3224,8 @@ class OptionsApp {
       }
     });
 
+    if (tabName === 'logs') this.runtimeLogComponent?.load();
+
     try {
       history.replaceState(null, '', `#${tabName}`);
     } catch {
@@ -3262,5 +3236,9 @@ class OptionsApp {
 
 // 启动管理中心应用
 document.addEventListener('DOMContentLoaded', () => {
+  const versionTag = document.getElementById('softwareVersionTag');
+  const manifest = chrome.runtime.getManifest?.() || {};
+  const softwareVersion = manifest.version_name || manifest.version || '-';
+  if (versionTag) versionTag.textContent = `BetterBrowse · ${softwareVersion}`;
   new OptionsApp();
 });

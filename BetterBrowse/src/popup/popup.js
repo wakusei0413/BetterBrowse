@@ -8,6 +8,12 @@ import { ActionTypes } from '../constants/action-types.js';
 import { LinkModes } from '../constants/config.js';
 import { LinkMatcher } from '../core/link/link-matcher.js';
 import { MessageBus } from '../core/bus/message-bus.js';
+import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
+
+installRuntimeLogger({
+  context: 'popup',
+  write: (entry) => MessageBus.sendToBackground(ActionTypes.APPEND_RUNTIME_LOG, entry)
+});
 
 // 模式配置与档位索引 (0: 当前标签 | 1: 自动模式 | 2: 新标签页)
 const MODES_CONFIG = [
