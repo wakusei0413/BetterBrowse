@@ -160,7 +160,18 @@ export class SyncEngine {
         return { success: false, error: '未配置 WebDAV' };
       }
       const client = this._client(creds);
-      const probe = await client.probeCapability();
+      let probe;
+      let lastNetworkError;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          probe = await client.probeCapability();
+          lastNetworkError = null;
+          break;
+        } catch (err) {
+          lastNetworkError = err;
+        }
+      }
+      if (lastNetworkError) throw lastNetworkError;
       if (!probe.ok) {
         await this._setStatus(SyncStatus.CAPABILITY_MISSING, probe.reason || '服务器能力不足');
         return { success: false, error: probe.reason, status: SyncStatus.CAPABILITY_MISSING };
@@ -247,7 +258,18 @@ export class SyncEngine {
   }
 
   static async _loadManifest(client) {
-    const res = await client.get('manifest.json');
+    let res;
+    let lastNetworkError;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        res = await client.get('manifest.json');
+        lastNetworkError = null;
+        break;
+      } catch (err) {
+        lastNetworkError = err;
+      }
+    }
+    if (lastNetworkError) throw lastNetworkError;
     if (res.status === 404) {
       return { manifest: null, etag: '', missing: true };
     }
@@ -406,19 +428,40 @@ export class SyncEngine {
     if (manifest.snapshotId && manifest.snapshotSha256) {
       const snapPath = `snapshots/${manifest.snapshotId}.json`;
       const snapRes = await client.get(snapPath);
-      if (snapRes.status >= 400) {
-        if (manifest.previousSnapshotId) {
-          return { success: false, error: '当前快照缺失，请回退上一代或从零重建', status: SyncStatus.CORRUPT };
+      let payload = null;
+      let appliedSnapshotId = manifest.snapshotId;
+      let watermarks = manifest.snapshotWatermarks || {};
+      let currentUsable = false;
+      if (snapRes.status < 400) {
+        const digest = await sha256Hex(snapRes.body);
+        if (digest === manifest.snapshotSha256) {
+          try {
+            payload = JSON.parse(snapRes.body);
+            currentUsable = true;
+            await SyncSnapshot.cacheLocal(manifest.snapshotId, payload, digest);
+          } catch {
+            currentUsable = false;
+          }
         }
-        return { success: false, error: '快照文件缺失', status: SyncStatus.CORRUPT };
       }
-      const digest = await sha256Hex(snapRes.body);
-      if (digest !== manifest.snapshotSha256) {
-        return { success: false, error: '快照摘要不匹配', status: SyncStatus.CORRUPT };
+      if (!currentUsable) {
+        payload = await this.fallbackToPreviousSnapshot(client, manifest.previousSnapshotId);
+        if (!payload) {
+          if (snapRes.status >= 400) {
+            if (manifest.previousSnapshotId) {
+              return { success: false, error: '当前快照缺失，请回退上一代或从零重建', status: SyncStatus.CORRUPT };
+            }
+            return { success: false, error: '快照文件缺失', status: SyncStatus.CORRUPT };
+          }
+          return { success: false, error: '快照摘要不匹配', status: SyncStatus.CORRUPT };
+        }
+        appliedSnapshotId = manifest.previousSnapshotId;
+        watermarks = payload.watermarks || {};
+      } else {
+        watermarks = manifest.snapshotWatermarks || payload.watermarks || {};
       }
-      const payload = JSON.parse(snapRes.body);
       const localStatus = await this._getMeta(STATUS_KEY);
-      const already = localStatus?.appliedSnapshotId === (manifest.snapshotId || payload.snapshotId);
+      const already = localStatus?.appliedSnapshotId === (appliedSnapshotId || payload.snapshotId);
       if (!already) {
         // 已有本地数据的设备采用合并模式（保护尚未同步的本地实体，如新设备离线期间创建的组）；
         // 空库新设备走整体替换
@@ -426,12 +469,12 @@ export class SyncEngine {
         await IndexedDBManager.withWriteLock(async () => {
           await SyncSnapshot.applyPayload(payload, { merge });
         });
-        await this._setStatus(SyncStatus.PENDING, '已应用远端快照', {
-          appliedSnapshotId: manifest.snapshotId
+        await this._setStatus(SyncStatus.PENDING, currentUsable ? '已应用远端快照' : '已回退上一份快照', {
+          appliedSnapshotId
         });
       }
       const ops = await this._downloadOperations(client, manifest);
-      const replay = SyncSnapshot.filterAfterWatermark(ops, manifest.snapshotWatermarks || payload.watermarks || {});
+      const replay = SyncSnapshot.filterAfterWatermark(ops, watermarks);
       await IndexedDBManager.withWriteLock(async () => {
         await SyncMerge.applyOperations(replay, { originIsCloudTentative: true });
       });
@@ -520,6 +563,7 @@ export class SyncEngine {
     if (![200, 201, 204, 409].includes(putSnap.status)) {
       return { manifest, etag };
     }
+    await SyncSnapshot.cacheLocal(snapshotId, payload, sha256);
     // generation 基于 fresh 远端清单递增；watermarks 必须取自快照载荷本身
     // （快照内容只覆盖到构建时刻的本地状态，更大 watermark 会漏放其他设备的新操作）
     const res = await this._updateManifest(client, (fresh) => {
@@ -637,6 +681,89 @@ export class SyncEngine {
       if (!changed) return null;
       return { ...fresh, knownDevices: known, updatedAt: now };
     });
+  }
+
+  /**
+   * 当前快照不可用时加载上一份：先查本地 SNAPSHOTS，再 GET 远端 previousSnapshotId。
+   * 清单只有当前代 sha256，上一份仅校验 JSON 可解析（本地命中时顺带比对已缓存摘要）。
+   * @param {{ get: Function }} client
+   * @param {string} previousSnapshotId
+   * @returns {Promise<object | null>}
+   */
+  static async fallbackToPreviousSnapshot(client, previousSnapshotId) {
+    if (!previousSnapshotId) return null;
+    const local = await SyncSnapshot.getLocal(previousSnapshotId);
+    if (local?.payload && typeof local.payload === 'object') return local.payload;
+    const res = await client.get(`snapshots/${previousSnapshotId}.json`);
+    if (res.status >= 400) return null;
+    try {
+      const payload = JSON.parse(res.body);
+      const digest = await sha256Hex(res.body);
+      await SyncSnapshot.cacheLocal(previousSnapshotId, payload, digest);
+      return payload;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 供 UI 展示损坏恢复入口所需的最小信息
+   * @returns {Promise<{ status: string, message: string, previousSnapshotId: string, hasLocalSnapshot: boolean, localSnapshotId: string }>}
+   */
+  static async getRecoveryInfo() {
+    const [status, cached, locals] = await Promise.all([
+      this._getMeta(STATUS_KEY),
+      this._getMeta(MANIFEST_CACHE_KEY),
+      SyncSnapshot.listLocal().catch(() => [])
+    ]);
+    const latest = Array.isArray(locals) && locals[0] ? locals[0] : null;
+    return {
+      status: status?.status || SyncStatus.IDLE,
+      message: status?.message || '',
+      previousSnapshotId: cached?.manifest?.previousSnapshotId || '',
+      hasLocalSnapshot: Boolean(latest?.snapshotId),
+      localSnapshotId: latest?.snapshotId || ''
+    };
+  }
+
+  /**
+   * 危险：从零重建——用本地已缓存的最新快照整体替换可同步实体；
+   * 本地没有则尝试拉取远端 previousSnapshotId。不会新建远端数据集，也不会改写清单。
+   * @param {{ confirm?: boolean }} [options]
+   */
+  static async rebuildFromScratch({ confirm } = {}) {
+    if (confirm !== true) return { success: false, error: '需显式确认' };
+
+    const locals = await SyncSnapshot.listLocal().catch(() => []);
+    const localSnap = Array.isArray(locals) ? locals.find((item) => item?.payload && typeof item.payload === 'object') : null;
+    if (localSnap) {
+      await IndexedDBManager.withWriteLock(async () => {
+        await SyncSnapshot.applyPayload(localSnap.payload, { merge: false });
+      });
+      await this._setStatus(SyncStatus.IDLE, '已从本地快照恢复', {
+        appliedSnapshotId: localSnap.snapshotId
+      });
+      return { success: true, source: 'local-snapshot' };
+    }
+
+    const creds = await WebdavCredentials.get();
+    if (creds.serverUrl) {
+      const client = this._client(creds);
+      const remote = await this._loadManifest(client);
+      const previousId = remote.manifest?.previousSnapshotId || '';
+      const payload = await this.fallbackToPreviousSnapshot(client, previousId);
+      if (payload) {
+        await IndexedDBManager.withWriteLock(async () => {
+          await SyncSnapshot.applyPayload(payload, { merge: false });
+        });
+        await this._setStatus(SyncStatus.IDLE, '已从远端上一份快照恢复', {
+          appliedSnapshotId: previousId
+        });
+        return { success: true, source: 'remote-previous' };
+      }
+    }
+
+    return { success: false, error: '没有可用的上一份快照，请改用本地 JSON 备份恢复' };
   }
 
   static async listDevices() {

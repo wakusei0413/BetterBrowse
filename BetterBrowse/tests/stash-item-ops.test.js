@@ -248,3 +248,57 @@ Deno.test("AI 增强：自动备份管理（list / restore 幂等 / delete）", 
     await idb.restore();
   }
 });
+
+Deno.test("回收站：删除组写入墓碑，恢复后组与条目回来且墓碑清除", async () => {
+  const idb = installFakeIndexedDB();
+  installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 8 });
+  try {
+    const created = await LocalStashRepository.createGroup(
+      [{ url: "https://recycle.example.com/a", title: "回收页" }],
+      "回收组"
+    );
+    assertEquals(created.success, true);
+    const groupId = created.group.id;
+
+    const deleted = await LocalStashRepository.deleteGroup(groupId);
+    assertEquals(deleted, true);
+    assertEquals((await LocalStashRepository.getAllGroups()).length, 0);
+
+    const bin = await LocalStashRepository.listRecycleBin();
+    assertEquals(bin.some((item) => item.entityType === 'stashGroup' && item.entityId === groupId), true);
+    const groupTomb = bin.find((item) => item.entityType === 'stashGroup' && item.entityId === groupId);
+
+    const restored = await LocalStashRepository.restoreFromRecycleBin(groupTomb.tombstoneId);
+    assertEquals(restored.success, true);
+    const groups = await LocalStashRepository.getAllGroups();
+    assertEquals(groups.length, 1);
+    assertEquals(groups[0].title, "回收组");
+    assertEquals(groups[0].tabs.length, 1);
+    assertEquals(groups[0].tabs[0].url, "https://recycle.example.com/a");
+    assertEquals((await LocalStashRepository.listRecycleBin()).some((item) => item.entityId === groupId), false);
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("回收站：过期墓碑不可恢复，永久删除后列表为空", async () => {
+  const idb = installFakeIndexedDB();
+  installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 8 });
+  try {
+    const created = await LocalStashRepository.createGroup(
+      [{ url: "https://purge.example.com/b", title: "待清页" }],
+      "待清组"
+    );
+    const groupId = created.group.id;
+    await LocalStashRepository.deleteGroup(groupId);
+    const bin = await LocalStashRepository.listRecycleBin();
+    const tomb = bin.find((item) => item.entityType === 'stashGroup');
+    const purged = await LocalStashRepository.purgeRecycleBinItem(tomb.tombstoneId);
+    assertEquals(purged.success, true);
+    assertEquals((await LocalStashRepository.listRecycleBin()).length, 0);
+    const again = await LocalStashRepository.restoreFromRecycleBin(tomb.tombstoneId);
+    assertEquals(again.success, false);
+  } finally {
+    await idb.restore();
+  }
+});

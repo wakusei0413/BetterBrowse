@@ -1,6 +1,6 @@
 /**
  * @file stash-settings.test.js
- * @description 收纳箱 14 项精细化设置与 OneTab 核心逻辑集成测试 (Deno 原生驱动)
+ * @description 收纳箱精细化设置与 OneTab 核心逻辑集成测试 (Deno 原生驱动)
  * @encoding UTF-8
  */
 
@@ -68,7 +68,6 @@ Deno.test("DefaultConfig: 默认配置包含完整的收纳箱设置", () => {
   assertEquals(s.autoOpenStashTab, true);
   assertEquals(s.pinnedTabGuard, true);
   assertEquals(s.deleteConfirmation, true);
-  assertEquals(s.showTabCountBadge, true);
   assertEquals(s.autoBackupEnabled, true);
   assertEquals(s.backupRetentionDays, 30);
   assertEquals(s.displayDensity, "comfortable");

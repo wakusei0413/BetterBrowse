@@ -759,6 +759,79 @@ export class LocalStashRepository {
   }
 
   /**
+   * 列出 30 天回收站（未过期墓碑；旧存储后端返回空列表）
+   * @returns {Promise<Array<{ tombstoneId: string, entityType: string, entityId: string, deletedAt: number, expiresAt: number, title: string, url: string, groupTitle: string, entryCount: number }>>}
+   */
+  static async listRecycleBin() {
+    const backend = await this._getBackend();
+    if (!backend) return [];
+    try {
+      return await backend.listTombstones();
+    } catch (err) {
+      console.warn('[LocalStashRepository] 读取回收站失败:', err);
+      return [];
+    }
+  }
+
+  /**
+   * 从回收站恢复一条墓碑
+   * @param {string} tombstoneId
+   * @returns {Promise<{ success: boolean, error?: string }>}
+   */
+  static async restoreFromRecycleBin(tombstoneId) {
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (!backend) return { success: false, error: '当前存储后端不支持回收站' };
+      try {
+        await backend.purgeExpiredTombstones();
+        const result = await backend.restoreTombstone(tombstoneId);
+        if (result?.success) await this._notifyStashChanged();
+        return result;
+      } catch (err) {
+        console.error('[LocalStashRepository] 回收站恢复失败:', err);
+        return { success: false, error: err.message || '回收站恢复失败' };
+      }
+    });
+  }
+
+  /**
+   * 永久删除一条回收站记录
+   * @param {string} tombstoneId
+   * @returns {Promise<{ success: boolean, error?: string }>}
+   */
+  static async purgeRecycleBinItem(tombstoneId) {
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (!backend) return { success: false, error: '当前存储后端不支持回收站' };
+      try {
+        await backend.purgeExpiredTombstones();
+        return await backend.purgeTombstone(tombstoneId);
+      } catch (err) {
+        console.error('[LocalStashRepository] 清空回收站条目失败:', err);
+        return { success: false, error: err.message || '清空回收站条目失败' };
+      }
+    });
+  }
+
+  /**
+   * 清理已过期的回收站墓碑
+   * @returns {Promise<{ success: boolean, removed?: number, error?: string }>}
+   */
+  static async purgeExpiredRecycleBin() {
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (!backend) return { success: false, error: '当前存储后端不支持回收站' };
+      try {
+        const removed = await backend.purgeExpiredTombstones();
+        return { success: true, removed };
+      } catch (err) {
+        console.error('[LocalStashRepository] 清理过期回收站失败:', err);
+        return { success: false, error: err.message || '清理过期回收站失败' };
+      }
+    });
+  }
+
+  /**
    * 导出所有收纳数据为 JSON 字符串 (基础版)
    * @returns {Promise<string>}
    */

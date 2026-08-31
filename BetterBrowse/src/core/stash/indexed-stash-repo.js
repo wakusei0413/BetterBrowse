@@ -3,7 +3,8 @@
  * @description 基于 IndexedDB 的收纳仓储实现（页面实体 + 收纳记录两层模型，支持索引去重、分页与关键字检索）
  *
  * ⚠️ 并发契约：本类的全部"写方法"（createGroup / updateGroup / deleteGroup / deleteTabItem /
- * clearAll / deduplicateGroups / importGroups）均不自行获取跨上下文写锁，
+ * clearAll / deduplicateGroups / importGroups / restoreTombstone / purgeTombstone /
+ * purgeExpiredTombstones）均不自行获取跨上下文写锁，
  * 必须由调用方（LocalStashRepository 门面或 MigrationManager 迁移流程）在持有
  * IndexedDBManager.withWriteLock 的事务临界区内调用；读方法可随时并发调用。
  * @encoding UTF-8
@@ -11,7 +12,7 @@
 
 import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
 import { SyncOutbox } from '../sync/outbox.js';
-import { SyncEntityTypes, SyncOps } from '../sync/sync-constants.js';
+import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS } from '../sync/sync-constants.js';
 
 /** 单批次写入的最大记录数（避免单次大事务被 Service Worker 休眠打断） */
 const WRITE_BATCH_SIZE = 500;
@@ -483,8 +484,8 @@ export class IndexedStashRepository {
    */
   static async _deleteGroupUnlocked(groupId, force = false) {
     const enqueue = await SyncOutbox.isActive();
-    const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES];
-    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS, IDBStores.TOMBSTONES);
+    const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES, IDBStores.PAGES, IDBStores.TOMBSTONES];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
     const ok = await IndexedDBManager.runTransaction(
       stores,
       'readwrite',
@@ -494,12 +495,24 @@ export class IndexedStashRepository {
         const group = await IndexedDBManager.requestToPromise(groupsStore.get(groupId));
         if (!group) return true; // 组不存在视为已删除（与旧版语义一致）
         if (group.locked && !force) return false;
-        groupsStore.delete(groupId);
         const entries = await IndexedDBManager.requestToPromise(
           entriesStore.index('groupId').getAll(groupId)
         );
+        const pages = await this._loadPagesForEntries(tx, entries);
+        const now = Date.now();
+        groupsStore.delete(groupId);
         for (const entry of entries) {
           entriesStore.delete(entry.entryId);
+          tx.objectStore(IDBStores.TOMBSTONES).put(this._buildTombstone(
+            SyncEntityTypes.STASH_ENTRY,
+            entry.entryId,
+            {
+              entry: this._clone(entry),
+              page: pages.find((page) => page.pageId === entry.pageId) || null,
+              groupId
+            },
+            now
+          ));
           if (enqueue) {
             await SyncOutbox.enqueueInTx(tx, {
               entityType: SyncEntityTypes.STASH_ENTRY,
@@ -507,28 +520,20 @@ export class IndexedStashRepository {
               op: SyncOps.DELETE,
               fields: { groupId }
             });
-            tx.objectStore(IDBStores.TOMBSTONES).put({
-              tombstoneId: `${SyncEntityTypes.STASH_ENTRY}::${entry.entryId}`,
-              entityType: SyncEntityTypes.STASH_ENTRY,
-              entityId: entry.entryId,
-              deletedAt: Date.now(),
-              expiresAt: Date.now() + 30 * 86400000
-            });
           }
         }
+        tx.objectStore(IDBStores.TOMBSTONES).put(this._buildTombstone(
+          SyncEntityTypes.STASH_GROUP,
+          groupId,
+          { group: this._clone(group), entries: entries.map((entry) => this._clone(entry)), pages },
+          now
+        ));
         if (enqueue) {
           await SyncOutbox.enqueueInTx(tx, {
             entityType: SyncEntityTypes.STASH_GROUP,
             entityId: groupId,
             op: SyncOps.DELETE,
             fields: { groupId }
-          });
-          tx.objectStore(IDBStores.TOMBSTONES).put({
-            tombstoneId: `${SyncEntityTypes.STASH_GROUP}::${groupId}`,
-            entityType: SyncEntityTypes.STASH_GROUP,
-            entityId: groupId,
-            deletedAt: Date.now(),
-            expiresAt: Date.now() + 30 * 86400000
           });
         }
         return true;
@@ -557,8 +562,8 @@ export class IndexedStashRepository {
    */
   static async deleteTabItem(groupId, itemId) {
     const enqueue = await SyncOutbox.isActive();
-    const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES];
-    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS, IDBStores.TOMBSTONES);
+    const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES, IDBStores.PAGES, IDBStores.TOMBSTONES];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
     const ok = await IndexedDBManager.runTransaction(
       stores,
       'readwrite',
@@ -571,12 +576,21 @@ export class IndexedStashRepository {
         const entries = await IndexedDBManager.requestToPromise(
           entriesStore.index('groupId').getAll(groupId)
         );
-        const remaining = entries.filter((entry) => entry.entryId !== itemId);
-        if (remaining.length === entries.length) {
+        const target = entries.find((entry) => entry.entryId === itemId);
+        if (!target) {
           // 条目不存在：与旧版一致，仍视为成功
           return true;
         }
+        const remaining = entries.filter((entry) => entry.entryId !== itemId);
+        const pages = await this._loadPagesForEntries(tx, [target]);
+        const now = Date.now();
         entriesStore.delete(itemId);
+        tx.objectStore(IDBStores.TOMBSTONES).put(this._buildTombstone(
+          SyncEntityTypes.STASH_ENTRY,
+          itemId,
+          { entry: this._clone(target), page: pages[0] || null, groupId },
+          now
+        ));
         if (enqueue) {
           await SyncOutbox.enqueueInTx(tx, {
             entityType: SyncEntityTypes.STASH_ENTRY,
@@ -584,29 +598,21 @@ export class IndexedStashRepository {
             op: SyncOps.DELETE,
             fields: { groupId }
           });
-          tx.objectStore(IDBStores.TOMBSTONES).put({
-            tombstoneId: `${SyncEntityTypes.STASH_ENTRY}::${itemId}`,
-            entityType: SyncEntityTypes.STASH_ENTRY,
-            entityId: itemId,
-            deletedAt: Date.now(),
-            expiresAt: Date.now() + 30 * 86400000
-          });
         }
         if (remaining.length === 0 && !group.locked) {
           groupsStore.delete(groupId);
+          tx.objectStore(IDBStores.TOMBSTONES).put(this._buildTombstone(
+            SyncEntityTypes.STASH_GROUP,
+            groupId,
+            { group: this._clone(group), entries: [this._clone(target)], pages },
+            now
+          ));
           if (enqueue) {
             await SyncOutbox.enqueueInTx(tx, {
               entityType: SyncEntityTypes.STASH_GROUP,
               entityId: groupId,
               op: SyncOps.DELETE,
               fields: { groupId }
-            });
-            tx.objectStore(IDBStores.TOMBSTONES).put({
-              tombstoneId: `${SyncEntityTypes.STASH_GROUP}::${groupId}`,
-              entityType: SyncEntityTypes.STASH_GROUP,
-              entityId: groupId,
-              deletedAt: Date.now(),
-              expiresAt: Date.now() + 30 * 86400000
             });
           }
         }
@@ -932,23 +938,36 @@ export class IndexedStashRepository {
    */
   static async clearAll(includeLocked = false) {
     const enqueue = await SyncOutbox.isActive();
-    const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES];
-    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS, IDBStores.TOMBSTONES);
+    const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES, IDBStores.PAGES, IDBStores.TOMBSTONES];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
     const ok = await IndexedDBManager.runTransaction(
       stores,
       'readwrite',
       async (tx) => {
         const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
         const entriesStore = tx.objectStore(IDBStores.STASH_ENTRIES);
+        const tombsStore = tx.objectStore(IDBStores.TOMBSTONES);
         const groups = await IndexedDBManager.requestToPromise(groupsStore.getAll());
+        const now = Date.now();
         for (const group of groups) {
           if (group.locked && !includeLocked) continue;
-          groupsStore.delete(group.groupId);
           const entries = await IndexedDBManager.requestToPromise(
             entriesStore.index('groupId').getAll(group.groupId)
           );
+          const pages = await this._loadPagesForEntries(tx, entries);
+          groupsStore.delete(group.groupId);
           for (const entry of entries) {
             entriesStore.delete(entry.entryId);
+            tombsStore.put(this._buildTombstone(
+              SyncEntityTypes.STASH_ENTRY,
+              entry.entryId,
+              {
+                entry: this._clone(entry),
+                page: pages.find((page) => page.pageId === entry.pageId) || null,
+                groupId: group.groupId
+              },
+              now
+            ));
             if (enqueue) {
               await SyncOutbox.enqueueInTx(tx, {
                 entityType: SyncEntityTypes.STASH_ENTRY,
@@ -958,6 +977,12 @@ export class IndexedStashRepository {
               });
             }
           }
+          tombsStore.put(this._buildTombstone(
+            SyncEntityTypes.STASH_GROUP,
+            group.groupId,
+            { group: this._clone(group), entries: entries.map((entry) => this._clone(entry)), pages },
+            now
+          ));
           if (enqueue) {
             await SyncOutbox.enqueueInTx(tx, {
               entityType: SyncEntityTypes.STASH_GROUP,
@@ -972,6 +997,354 @@ export class IndexedStashRepository {
     );
     if (ok && enqueue) SyncOutbox.flushDirty();
     return ok;
+  }
+
+  /**
+   * 浅拷贝记录，避免墓碑快照与仓储对象互相污染
+   * @param {any} value
+   * @returns {any}
+   */
+  static _clone(value) {
+    if (!value || typeof value !== 'object') return value;
+    return { ...value };
+  }
+
+  /**
+   * 构造带恢复快照的墓碑记录
+   * @param {string} entityType
+   * @param {string} entityId
+   * @param {any} snapshot
+   * @param {number} now
+   */
+  static _buildTombstone(entityType, entityId, snapshot, now = Date.now()) {
+    return {
+      tombstoneId: `${entityType}::${entityId}`,
+      entityType,
+      entityId,
+      deletedAt: now,
+      expiresAt: now + TOMBSTONE_TTL_MS,
+      snapshot
+    };
+  }
+
+  /**
+   * 在当前事务内按条目收集去重后的页面实体
+   * @param {IDBTransaction} tx
+   * @param {any[]} entries
+   * @returns {Promise<any[]>}
+   */
+  static async _loadPagesForEntries(tx, entries) {
+    const pagesStore = tx.objectStore(IDBStores.PAGES);
+    const pagesById = new Map();
+    for (const entry of entries || []) {
+      if (!entry?.pageId || pagesById.has(entry.pageId)) continue;
+      const page = await IndexedDBManager.requestToPromise(pagesStore.get(entry.pageId));
+      if (page) pagesById.set(entry.pageId, this._clone(page));
+    }
+    return [...pagesById.values()];
+  }
+
+  /**
+   * 从墓碑快照推导回收站列表展示字段
+   * @param {any} tomb
+   */
+  static _compactTombstoneView(tomb) {
+    const snapshot = tomb?.snapshot || {};
+    let title = '';
+    let url = '';
+    let groupTitle = '';
+    let entryCount = 0;
+    if (tomb.entityType === SyncEntityTypes.STASH_GROUP) {
+      groupTitle = snapshot.group?.title || '';
+      title = groupTitle;
+      entryCount = Array.isArray(snapshot.entries) ? snapshot.entries.length : 0;
+      const firstPage = Array.isArray(snapshot.pages) ? snapshot.pages[0] : null;
+      url = firstPage?.url || '';
+    } else if (tomb.entityType === SyncEntityTypes.STASH_ENTRY) {
+      title = snapshot.page?.title || snapshot.page?.url || '';
+      url = snapshot.page?.url || '';
+      groupTitle = snapshot.group?.title || '';
+      entryCount = 1;
+    }
+    return {
+      tombstoneId: tomb.tombstoneId,
+      entityType: tomb.entityType,
+      entityId: tomb.entityId,
+      deletedAt: tomb.deletedAt,
+      expiresAt: tomb.expiresAt,
+      title,
+      url,
+      groupTitle,
+      entryCount
+    };
+  }
+
+  /**
+   * 列出未过期墓碑（最新删除在前）
+   * @returns {Promise<Array<{ tombstoneId: string, entityType: string, entityId: string, deletedAt: number, expiresAt: number, title: string, url: string, groupTitle: string, entryCount: number }>>}
+   */
+  static async listTombstones() {
+    const now = Date.now();
+    return await IndexedDBManager.runTransaction([IDBStores.TOMBSTONES], 'readonly', async (tx) => {
+      const all = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.TOMBSTONES).getAll());
+      return (all || [])
+        .filter((tomb) =>
+          Number(tomb.expiresAt) > now &&
+          (tomb.entityType === SyncEntityTypes.STASH_GROUP || tomb.entityType === SyncEntityTypes.STASH_ENTRY)
+        )
+        .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
+        .map((tomb) => this._compactTombstoneView(tomb));
+    });
+  }
+
+  /**
+   * 删除已过期墓碑
+   * ⚠️ 调用方必须已持有跨上下文写锁
+   * @returns {Promise<number>} 删除条数
+   */
+  static async purgeExpiredTombstones() {
+    const now = Date.now();
+    return await IndexedDBManager.runTransaction([IDBStores.TOMBSTONES], 'readwrite', async (tx) => {
+      const store = tx.objectStore(IDBStores.TOMBSTONES);
+      const all = await IndexedDBManager.requestToPromise(store.getAll());
+      let removed = 0;
+      for (const tomb of all || []) {
+        if (Number(tomb.expiresAt) <= now) {
+          store.delete(tomb.tombstoneId);
+          removed += 1;
+        }
+      }
+      return removed;
+    });
+  }
+
+  /**
+   * 永久删除一条墓碑（组墓碑同时清掉仍在的子条目墓碑）
+   * ⚠️ 调用方必须已持有跨上下文写锁
+   * @param {string} tombstoneId
+   * @returns {Promise<{ success: boolean, error?: string }>}
+   */
+  static async purgeTombstone(tombstoneId) {
+    if (!tombstoneId) return { success: false, error: '缺少墓碑标识' };
+    return await IndexedDBManager.runTransaction([IDBStores.TOMBSTONES], 'readwrite', async (tx) => {
+      const store = tx.objectStore(IDBStores.TOMBSTONES);
+      const tomb = await IndexedDBManager.requestToPromise(store.get(tombstoneId));
+      if (!tomb) return { success: false, error: '回收站条目不存在' };
+      store.delete(tombstoneId);
+      if (tomb.entityType === SyncEntityTypes.STASH_GROUP) {
+        const entryIds = Array.isArray(tomb.snapshot?.entries)
+          ? tomb.snapshot.entries.map((entry) => entry?.entryId).filter(Boolean)
+          : [];
+        for (const entryId of entryIds) {
+          store.delete(`${SyncEntityTypes.STASH_ENTRY}::${entryId}`);
+        }
+      }
+      return { success: true };
+    });
+  }
+
+  /**
+   * 在事务内按需补齐缺失的页面实体（已有记录仅在缺 title/url 时补写）
+   * @param {IDBTransaction} tx
+   * @param {any[]} pages
+   * @param {boolean} enqueue
+   */
+  static async _restorePagesInTx(tx, pages, enqueue) {
+    const store = tx.objectStore(IDBStores.PAGES);
+    for (const page of pages || []) {
+      if (!page?.pageId) continue;
+      const existing = await IndexedDBManager.requestToPromise(store.get(page.pageId));
+      if (existing) {
+        let changed = false;
+        if (!existing.title && page.title) {
+          existing.title = page.title;
+          changed = true;
+        }
+        if (!existing.url && page.url) {
+          existing.url = page.url;
+          existing.domain = page.domain || this.extractDomain(page.url);
+          changed = true;
+        }
+        if (!changed) continue;
+        existing.updatedAt = Date.now();
+        if (enqueue) {
+          const op = await SyncOutbox.enqueueInTx(tx, {
+            entityType: SyncEntityTypes.PAGE,
+            entityId: existing.pageId,
+            op: SyncOps.UPSERT,
+            fields: {
+              url: existing.url,
+              domain: existing.domain,
+              title: existing.title,
+              favIconUrl: existing.favIconUrl,
+              createdAt: existing.createdAt
+            }
+          });
+          if (op) {
+            existing.fieldRevs = { ...(existing.fieldRevs || {}), ...op.fieldRevs };
+            existing.revision = op.lamport;
+            existing.originDeviceId = op.deviceId;
+          }
+        }
+        store.put(existing);
+        continue;
+      }
+      const record = this._clone(page);
+      if (enqueue) {
+        const op = await SyncOutbox.enqueueInTx(tx, {
+          entityType: SyncEntityTypes.PAGE,
+          entityId: record.pageId,
+          op: SyncOps.UPSERT,
+          fields: {
+            url: record.url,
+            domain: record.domain,
+            title: record.title,
+            favIconUrl: record.favIconUrl,
+            createdAt: record.createdAt
+          }
+        });
+        if (op) {
+          record.fieldRevs = { ...op.fieldRevs };
+          record.revision = op.lamport;
+          record.originDeviceId = op.deviceId;
+        }
+      }
+      store.put(record);
+    }
+  }
+
+  /**
+   * 在事务内恢复组记录
+   * @param {IDBTransaction} tx
+   * @param {any} group
+   * @param {boolean} enqueue
+   */
+  static async _restoreGroupInTx(tx, group, enqueue) {
+    if (!group?.groupId) return;
+    const store = tx.objectStore(IDBStores.STASH_GROUPS);
+    const record = this._clone(group);
+    if (enqueue) {
+      const op = await SyncOutbox.enqueueInTx(tx, {
+        entityType: SyncEntityTypes.STASH_GROUP,
+        entityId: record.groupId,
+        op: SyncOps.UPSERT,
+        fields: {
+          title: record.title,
+          locked: record.locked,
+          starred: record.starred,
+          archived: record.archived,
+          createdAt: record.createdAt
+        }
+      });
+      if (op) {
+        record.fieldRevs = { ...op.fieldRevs };
+        record.revision = op.lamport;
+        record.originDeviceId = op.deviceId;
+      }
+    }
+    store.put(record);
+  }
+
+  /**
+   * 在事务内恢复条目记录
+   * @param {IDBTransaction} tx
+   * @param {any[]} entries
+   * @param {boolean} enqueue
+   */
+  static async _restoreEntriesInTx(tx, entries, enqueue) {
+    const store = tx.objectStore(IDBStores.STASH_ENTRIES);
+    for (const entry of entries || []) {
+      if (!entry?.entryId) continue;
+      const record = this._clone(entry);
+      if (enqueue) {
+        const op = await SyncOutbox.enqueueInTx(tx, {
+          entityType: SyncEntityTypes.STASH_ENTRY,
+          entityId: record.entryId,
+          op: SyncOps.UPSERT,
+          fields: {
+            groupId: record.groupId,
+            pageId: record.pageId,
+            createdAt: record.createdAt,
+            position: record.position,
+            pinned: record.pinned,
+            archived: record.archived
+          }
+        });
+        if (op) {
+          record.fieldRevs = { ...op.fieldRevs };
+          record.revision = op.lamport;
+          record.originDeviceId = op.deviceId;
+        }
+      }
+      store.put(record);
+    }
+  }
+
+  /**
+   * 从墓碑快照恢复实体，并删除对应墓碑（用户主动恢复，需 UPSERT 同步到其他设备）
+   * ⚠️ 调用方必须已持有跨上下文写锁
+   * @param {string} tombstoneId
+   * @returns {Promise<{ success: boolean, error?: string }>}
+   */
+  static async restoreTombstone(tombstoneId) {
+    if (!tombstoneId) return { success: false, error: '缺少墓碑标识' };
+    const enqueue = await SyncOutbox.isActive();
+    const stores = [
+      IDBStores.TOMBSTONES,
+      IDBStores.PAGES,
+      IDBStores.STASH_GROUPS,
+      IDBStores.STASH_ENTRIES
+    ];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+    const result = await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
+      const tombsStore = tx.objectStore(IDBStores.TOMBSTONES);
+      const tomb = await IndexedDBManager.requestToPromise(tombsStore.get(tombstoneId));
+      if (!tomb) return { success: false, error: '回收站条目不存在' };
+      if (Number(tomb.expiresAt) <= Date.now()) {
+        tombsStore.delete(tomb.tombstoneId);
+        return { success: false, error: '回收站条目已过期' };
+      }
+      if (!tomb.snapshot) return { success: false, error: '回收站条目缺少可恢复快照' };
+
+      if (tomb.entityType === SyncEntityTypes.STASH_GROUP) {
+        const snapshot = tomb.snapshot;
+        await this._restorePagesInTx(tx, snapshot.pages || [], enqueue);
+        await this._restoreGroupInTx(tx, snapshot.group, enqueue);
+        await this._restoreEntriesInTx(tx, snapshot.entries || [], enqueue);
+        tombsStore.delete(tomb.tombstoneId);
+        for (const entry of snapshot.entries || []) {
+          if (entry?.entryId) tombsStore.delete(`${SyncEntityTypes.STASH_ENTRY}::${entry.entryId}`);
+        }
+        return { success: true };
+      }
+
+      if (tomb.entityType === SyncEntityTypes.STASH_ENTRY) {
+        const snapshot = tomb.snapshot;
+        const entry = snapshot.entry;
+        if (!entry?.entryId) return { success: false, error: '回收站条目缺少可恢复快照' };
+        const groupId = snapshot.groupId || entry.groupId;
+        const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
+        let group = groupId ? await IndexedDBManager.requestToPromise(groupsStore.get(groupId)) : null;
+        if (!group && groupId) {
+          const groupTombId = `${SyncEntityTypes.STASH_GROUP}::${groupId}`;
+          const groupTomb = await IndexedDBManager.requestToPromise(tombsStore.get(groupTombId));
+          group = groupTomb?.snapshot?.group || null;
+          if (group) {
+            await this._restoreGroupInTx(tx, group, enqueue);
+            tombsStore.delete(groupTombId);
+          }
+        }
+        if (!group) return { success: false, error: '所属收纳组已不可恢复' };
+        await this._restorePagesInTx(tx, snapshot.page ? [snapshot.page] : [], enqueue);
+        await this._restoreEntriesInTx(tx, [entry], enqueue);
+        tombsStore.delete(tomb.tombstoneId);
+        return { success: true };
+      }
+
+      return { success: false, error: '不支持的回收站条目类型' };
+    });
+    if (result?.success && enqueue) SyncOutbox.flushDirty();
+    return result;
   }
 
   /**

@@ -642,3 +642,97 @@ Deno.test("SyncSnapshot: 快照 watermark 之后才重放操作", () => {
   assertEquals(filtered.length, 1);
   assertEquals(filtered[0].sequence, 5);
 });
+
+Deno.test("SyncMerge: 冲突裁决写回页面标题、域名规则与收纳组", async () => {
+  const server = new FakeWebdavServer();
+  const { idb } = await setupDevice(server);
+  try {
+    await LocalStashRepository.createGroup([{ url: "https://resolve.test/p", title: "本机标题" }], "本机组名");
+    const groups = await LocalStashRepository.getAllGroups();
+    const groupId = groups[0].id;
+    const pageRecord = await IndexedDBManager.runTransaction([IDBStores.PAGES], 'readonly', async (tx) => {
+      const all = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.PAGES).getAll());
+      return all[0];
+    });
+
+    await IndexedDBManager.runTransaction([IDBStores.CONFLICTS], 'readwrite', async (tx) => {
+      tx.objectStore(IDBStores.CONFLICTS).put({
+        conflictId: 'page-title',
+        entityType: SyncEntityTypes.PAGE,
+        entityId: pageRecord.pageId,
+        field: 'title',
+        localValue: '本机标题',
+        incomingValue: '云端标题',
+        resolved: false
+      });
+      tx.objectStore(IDBStores.CONFLICTS).put({
+        conflictId: 'group-title',
+        entityType: SyncEntityTypes.STASH_GROUP,
+        entityId: groupId,
+        field: 'title',
+        localValue: '本机组名',
+        incomingValue: '云端组名',
+        resolved: false
+      });
+      tx.objectStore(IDBStores.CONFLICTS).put({
+        conflictId: 'rule-github',
+        entityType: SyncEntityTypes.LINK_RULES,
+        entityId: 'root',
+        field: 'github.com',
+        localValue: 'current',
+        incomingValue: 'new',
+        resolved: false
+      });
+    });
+
+    assertEquals((await SyncMerge.resolveConflict('page-title', 'incoming')).success, true);
+    assertEquals((await SyncMerge.resolveConflict('group-title', 'local')).success, true);
+    assertEquals((await SyncMerge.resolveConflict('rule-github', 'incoming')).success, true);
+
+    const pageAfter = await readRecord(IDBStores.PAGES, pageRecord.pageId);
+    assertEquals(pageAfter.title, '云端标题');
+    const groupAfter = await readRecord(IDBStores.STASH_GROUPS, groupId);
+    assertEquals(groupAfter.title, '本机组名');
+    const rules = await StorageAdapter.get(StorageKeys.LINK_RULES, {});
+    assertEquals(rules['github.com'], 'new');
+    assertEquals((await SyncMerge.listConflicts()).length, 0);
+  } finally {
+    SyncEngine.fetchImpl = null;
+    await idb.restore();
+  }
+});
+
+Deno.test("SyncEngine: 当前快照损坏时回退上一份本地缓存", async () => {
+  const server = new FakeWebdavServer();
+  const { idb } = await setupDevice(server);
+  try {
+    await LocalStashRepository.createGroup([{ url: "https://snap.test/a", title: "快照页" }], "快照组");
+    const first = await SyncEngine.run({ manual: true });
+    assertEquals(first.success, true);
+    const manifest = server.getManifest();
+    const previousId = manifest.snapshotId;
+    await SyncSnapshot.cacheLocal(previousId, await SyncSnapshot.buildPayload(), manifest.snapshotSha256);
+
+    const nextId = 'gen-0002';
+    manifest.previousSnapshotId = previousId;
+    manifest.snapshotId = nextId;
+    manifest.snapshotSha256 = 'deadbeef';
+    await server.putManifest(manifest);
+    server.files.set(`snapshots/${nextId}.json`, { body: '{not-json', etag: 'bad' });
+
+    const payload = await SyncEngine.fallbackToPreviousSnapshot(
+      SyncEngine._client(await WebdavCredentials.get()),
+      previousId
+    );
+    assertEquals(Boolean(payload?.stashGroups?.length), true);
+
+    const rebuilt = await SyncEngine.rebuildFromScratch({ confirm: true });
+    assertEquals(rebuilt.success, true);
+    assertEquals(rebuilt.source, 'local-snapshot');
+    const refused = await SyncEngine.rebuildFromScratch({});
+    assertEquals(refused.success, false);
+  } finally {
+    SyncEngine.fetchImpl = null;
+    await idb.restore();
+  }
+});

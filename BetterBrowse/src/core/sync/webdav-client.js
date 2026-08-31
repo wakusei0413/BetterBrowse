@@ -66,11 +66,17 @@ export class WebdavClient {
     if (options.ifMatch) headers['If-Match'] = options.ifMatch;
     if (options.ifNoneMatch) headers['If-None-Match'] = options.ifNoneMatch;
 
-    const response = await this.fetchImpl(this.resolve(relPath), {
-      method,
-      headers,
-      body: options.body
-    });
+    let response;
+    try {
+      response = await this.fetchImpl(this.resolve(relPath), {
+        method,
+        headers,
+        body: options.body
+      });
+    } catch (err) {
+      const detail = err?.message || String(err);
+      throw new Error(`WebDAV ${method} ${relPath} 请求失败：${detail}`);
+    }
     const body = await response.text();
     const etag = response.headers.get('ETag') || response.headers.get('etag') || '';
     return {

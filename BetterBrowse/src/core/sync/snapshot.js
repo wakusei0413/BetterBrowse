@@ -152,6 +152,50 @@ export class SyncSnapshot {
   }
 
   /**
+   * 缓存一份已校验的快照到本地 SNAPSHOTS 仓储（供损坏回退）
+   * @param {string} snapshotId
+   * @param {object} payload
+   * @param {string} [sha256]
+   */
+  static async cacheLocal(snapshotId, payload, sha256 = '') {
+    if (!snapshotId || !payload || typeof payload !== 'object') return;
+    const match = String(snapshotId).match(/(\d+)/);
+    const generation = match ? Number(match[1]) : 0;
+    await IndexedDBManager.runTransaction([IDBStores.SNAPSHOTS], 'readwrite', async (tx) => {
+      tx.objectStore(IDBStores.SNAPSHOTS).put({
+        snapshotId,
+        generation,
+        createdAt: Number(payload.createdAt) || Date.now(),
+        sha256: sha256 || '',
+        payload
+      });
+    });
+  }
+
+  /**
+   * 读取本地缓存的快照
+   * @param {string} snapshotId
+   * @returns {Promise<{ snapshotId: string, sha256?: string, payload?: object, createdAt?: number } | null>}
+   */
+  static async getLocal(snapshotId) {
+    if (!snapshotId) return null;
+    return await IndexedDBManager.runTransaction([IDBStores.SNAPSHOTS], 'readonly', async (tx) => {
+      return await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.SNAPSHOTS).get(snapshotId)) || null;
+    });
+  }
+
+  /**
+   * 列出本地缓存快照（按 createdAt 降序）
+   * @returns {Promise<object[]>}
+   */
+  static async listLocal() {
+    return await IndexedDBManager.runTransaction([IDBStores.SNAPSHOTS], 'readonly', async (tx) => {
+      const all = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.SNAPSHOTS).getAll());
+      return (all || []).sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+    });
+  }
+
+  /**
    * 过滤出快照 watermark 之后的操作
    * @param {object[]} operations
    * @param {Record<string, number>} watermarks

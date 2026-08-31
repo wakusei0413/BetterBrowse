@@ -5,13 +5,14 @@
  */
 
 import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
-import { IndexedStashRepository } from '../stash/indexed-stash-repo.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { StorageKeys } from '../../constants/storage-keys.js';
 import { DefaultConfig } from '../../constants/config.js';
 import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS } from './sync-constants.js';
 import { SyncOutbox } from './outbox.js';
 import { AccountConfigSync } from './account-config-sync.js';
+
+const PAGE_OWNED_FIELDS = new Set(['title', 'url', 'favIconUrl', 'domain']);
 
 export class SyncMerge {
   /**
@@ -429,7 +430,98 @@ export class SyncMerge {
   }
 
   /**
-   * 用户裁决冲突：写入本机新操作
+   * 将裁决值写入对应仓储（与 outbox PATCH 同事务；不走会再次入队的门面方法）
+   * @param {IDBTransaction} tx
+   * @param {object} conflict
+   * @param {*} value
+   * @param {object | null} operation
+   */
+  static async _writeResolvedValue(tx, conflict, value, operation) {
+    const field = conflict.field;
+    const rev = operation?.fieldRevs?.[field];
+    const now = Date.now();
+    const type = conflict.entityType;
+
+    if (type === SyncEntityTypes.PAGE) {
+      const store = tx.objectStore(IDBStores.PAGES);
+      const page = await IndexedDBManager.requestToPromise(store.get(conflict.entityId));
+      if (!page) return;
+      page[field] = value;
+      if (rev) page.fieldRevs = { ...(page.fieldRevs || {}), [field]: rev };
+      page.updatedAt = now;
+      if (operation) {
+        page.revision = operation.lamport;
+        page.originDeviceId = operation.deviceId;
+      }
+      store.put(page);
+      return;
+    }
+
+    if (type === SyncEntityTypes.STASH_GROUP) {
+      const store = tx.objectStore(IDBStores.STASH_GROUPS);
+      const group = await IndexedDBManager.requestToPromise(store.get(conflict.entityId));
+      if (!group) return;
+      group[field] = value;
+      if (rev) group.fieldRevs = { ...(group.fieldRevs || {}), [field]: rev };
+      group.updatedAt = now;
+      if (operation) {
+        group.revision = operation.lamport;
+        group.originDeviceId = operation.deviceId;
+      }
+      store.put(group);
+      return;
+    }
+
+    if (type === SyncEntityTypes.STASH_ENTRY) {
+      const store = tx.objectStore(IDBStores.STASH_ENTRIES);
+      const entry = await IndexedDBManager.requestToPromise(store.get(conflict.entityId));
+      if (!entry) return;
+      if (PAGE_OWNED_FIELDS.has(field) && entry.pageId) {
+        const pages = tx.objectStore(IDBStores.PAGES);
+        const page = await IndexedDBManager.requestToPromise(pages.get(entry.pageId));
+        if (page) {
+          page[field] = value;
+          if (rev) page.fieldRevs = { ...(page.fieldRevs || {}), [field]: rev };
+          page.updatedAt = now;
+          pages.put(page);
+        }
+      }
+      entry[field] = value;
+      if (rev) entry.fieldRevs = { ...(entry.fieldRevs || {}), [field]: rev };
+      entry.updatedAt = now;
+      if (operation) {
+        entry.revision = operation.lamport;
+        entry.originDeviceId = operation.deviceId;
+      }
+      store.put(entry);
+      return;
+    }
+
+    if (type === SyncEntityTypes.SETTINGS) {
+      const store = tx.objectStore(IDBStores.SETTINGS);
+      const record = await IndexedDBManager.requestToPromise(store.get(StorageKeys.USER_CONFIG));
+      const current = StorageAdapter.mergeUserConfig(record?.value || {});
+      current.fieldRevs = current.fieldRevs && typeof current.fieldRevs === 'object' ? current.fieldRevs : {};
+      this._setPath(current, field, value);
+      if (rev) current.fieldRevs[field] = rev;
+      store.put({ key: StorageKeys.USER_CONFIG, value: current, updatedAt: now });
+      return;
+    }
+
+    if (type === SyncEntityTypes.LINK_RULES) {
+      const store = tx.objectStore(IDBStores.SETTINGS);
+      const record = await IndexedDBManager.requestToPromise(store.get(StorageKeys.LINK_RULES));
+      const current = record?.value && typeof record.value === 'object' ? { ...record.value } : {};
+      current.fieldRevs = current.fieldRevs && typeof current.fieldRevs === 'object' ? current.fieldRevs : {};
+      if (value === undefined || value === null || value === 'auto') delete current[field];
+      else current[field] = value;
+      if (rev) current.fieldRevs[field] = rev;
+      store.put({ key: StorageKeys.LINK_RULES, value: current, updatedAt: now });
+    }
+  }
+
+  /**
+   * 用户裁决冲突：写入本机实体并入队 PATCH（云端传播）
    * @param {string} conflictId
    * @param {'local' | 'incoming'} choice
    */
@@ -451,23 +543,19 @@ export class SyncMerge {
             stored.resolvedAt = Date.now();
             tx.objectStore(IDBStores.CONFLICTS).put(stored);
           }
-          await SyncOutbox.enqueueInTx(tx, {
+          const operation = await SyncOutbox.enqueueInTx(tx, {
             entityType: conflict.entityType,
             entityId: conflict.entityId,
             op: SyncOps.PATCH,
             fields: { [conflict.field]: value },
             fieldNames: [conflict.field]
           });
+          await this._writeResolvedValue(tx, conflict, value, operation);
         }
       );
       SyncOutbox.flushDirty();
       if (conflict.entityType === SyncEntityTypes.SETTINGS) {
-        // 裁决值写入配置：StorageAdapter.set 会自动生成 outbox 补丁传播给其他设备
-        const config = await StorageAdapter.getUserConfig();
-        SyncMerge._setPath(config, conflict.field, value);
-        await StorageAdapter.set(StorageKeys.USER_CONFIG, config);
-      } else if (conflict.entityType === SyncEntityTypes.STASH_GROUP) {
-        await IndexedStashRepository.updateGroup(conflict.entityId, { [conflict.field]: value });
+        AccountConfigSync.scheduleMirror();
       }
       return { success: true };
     });
