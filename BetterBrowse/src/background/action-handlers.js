@@ -3,7 +3,7 @@
  * @description 统一 action 处理映射表（人类 UI 消息与 AI 桥接指令共用的同一条处理路径）
  *
  * 对等原则（docs/03-ai-skill-bridge.md）：MessageBus（人类）与 AIBridgeManager（AI Agent）
- * 复用同一份由本文件导出的处理映射，含 NOTIFY 广播与角标刷新收尾——
+ * 复用同一份由本文件导出的处理映射，含 NOTIFY 广播收尾——
  * 新增任何人类功能时自动对 AI 可用，新增 AI 动作时同样挂载于此。
  * @encoding UTF-8
  */
@@ -18,12 +18,14 @@ import { StashService } from '../core/stash/stash-service.js';
 import { LocalStashRepository } from '../core/stash/local-stash-repo.js';
 import { MessageBus } from '../core/bus/message-bus.js';
 import { SyncScheduler } from './sync-scheduler.js';
+import { IndexedDBManager } from '../core/storage/indexed-db.js';
 import { SyncEngine } from '../core/sync/sync-engine.js';
+import { SyncStatus } from '../core/sync/sync-constants.js';
 import { SyncMerge } from '../core/sync/merge.js';
+import { SyncSnapshot } from '../core/sync/snapshot.js';
 import { WebdavCredentials } from '../core/sync/credentials.js';
 import { DeviceEventLog } from '../core/sync/device-events.js';
 import { filterCountableTabs, isOwnOptionsUrl } from '../core/extension-url.js';
-import { updateStashBadge } from './stash-badge.js';
 import { buildCapabilitiesDescriptor } from '../core/ai/ai-capabilities.js';
 
 /**
@@ -141,7 +143,6 @@ export function createActionHandlers(deps) {
       const forceAll = payload?.forceAll !== false;
       const res = await stashService.executeStash(activityTracker.getStats(), { forceAll });
       broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      await updateStashBadge();
       DeviceEventLog.append('stash_executed', { via: 'manual', success: res?.success !== false }).catch(() => {});
       return res;
     },
@@ -161,7 +162,6 @@ export function createActionHandlers(deps) {
     [ActionTypes.CONFIRM_AUTO_STASH]: async () => {
       const res = await thresholdMonitor.handleConfirmAutoStash();
       broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      await updateStashBadge();
       return res;
     },
 
@@ -185,7 +185,6 @@ export function createActionHandlers(deps) {
       const { groupId, removeAfterRestore } = payload || {};
       const res = await StashService.restoreGroup(groupId, removeAfterRestore);
       broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      await updateStashBadge();
       return res;
     },
 
@@ -193,7 +192,6 @@ export function createActionHandlers(deps) {
       const { groupId, itemId, removeAfterRestore } = payload || {};
       const res = await StashService.restoreItem(groupId, itemId, removeAfterRestore);
       broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      await updateStashBadge();
       return res;
     },
 
@@ -201,7 +199,6 @@ export function createActionHandlers(deps) {
       const groupId = payload?.groupId;
       const res = await LocalStashRepository.deleteGroup(groupId, payload?.force === true);
       broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      await updateStashBadge();
       return res;
     },
 
@@ -215,7 +212,6 @@ export function createActionHandlers(deps) {
     [ActionTypes.CLEAR_ALL_STASH]: async () => {
       const res = await LocalStashRepository.clearAll();
       broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      await updateStashBadge();
       return res;
     },
 
@@ -223,7 +219,6 @@ export function createActionHandlers(deps) {
       const res = await LocalStashRepository.deduplicateGroups();
       if (res.success) {
         broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-        await updateStashBadge();
       }
       return res;
     },
@@ -232,7 +227,6 @@ export function createActionHandlers(deps) {
       const jsonString = payload?.jsonString || '';
       const res = await LocalStashRepository.importDataJSON(jsonString);
       broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      await updateStashBadge();
       return res;
     },
 
@@ -250,7 +244,6 @@ export function createActionHandlers(deps) {
       broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
       broadcastToTabs(ActionTypes.NOTIFY_RULE_UPDATED);
       broadcastToTabs(ActionTypes.NOTIFY_CONFIG_UPDATED);
-      await updateStashBadge();
       return res;
     },
 
@@ -258,7 +251,6 @@ export function createActionHandlers(deps) {
       const textString = payload?.textString || '';
       const res = await LocalStashRepository.importThirdPartyData(textString);
       broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      await updateStashBadge();
       return res;
     },
 
@@ -271,7 +263,6 @@ export function createActionHandlers(deps) {
       const res = await LocalStashRepository.addTabItemToGroup(payload?.groupId, payload?.item);
       if (res?.success && res.added) {
         broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-        await updateStashBadge();
       }
       return res;
     },
@@ -305,7 +296,6 @@ export function createActionHandlers(deps) {
       const res = await LocalStashRepository.restoreAutoBackup(payload?.createdAt);
       if (res?.success) {
         broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-        await updateStashBadge();
       }
       return res;
     },
@@ -340,7 +330,6 @@ export function createActionHandlers(deps) {
       // 广播收纳数据变更，保证其他上下文（如已打开的收纳箱页）即时刷新
       if (res) {
         broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-        await updateStashBadge();
       }
       return res;
     },
@@ -349,7 +338,6 @@ export function createActionHandlers(deps) {
       const res = await LocalStashRepository.restoreGroupSnapshot(payload?.group);
       if (res?.success) {
         broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-        await updateStashBadge();
       }
       return res;
     },
@@ -432,6 +420,53 @@ export function createActionHandlers(deps) {
 
     [ActionTypes.LIST_DEVICE_EVENTS]: async () => {
       return await DeviceEventLog.listRecent(50);
+    },
+
+    [ActionTypes.GET_SYNC_RECOVERY_INFO]: async () => {
+      return await SyncEngine.getRecoveryInfo();
+    },
+
+    [ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT]: async () => {
+      const info = await SyncEngine.getRecoveryInfo();
+      const previousId = info?.previousSnapshotId || '';
+      if (!previousId) {
+        const local = await SyncEngine.rebuildFromScratch({ confirm: true });
+        return local.success
+          ? { success: true, source: local.source, message: '已从本机快照恢复' }
+          : { success: false, error: local.error || '没有可回退的上一份快照' };
+      }
+      const creds = await WebdavCredentials.get();
+      const client = creds.serverUrl ? SyncEngine._client(creds) : null;
+      const payload = client
+        ? await SyncEngine.fallbackToPreviousSnapshot(client, previousId)
+        : (await SyncSnapshot.getLocal(previousId))?.payload || null;
+      if (!payload) return { success: false, error: '上一份快照不可用' };
+      await IndexedDBManager.withWriteLock(async () => {
+        await SyncSnapshot.applyPayload(payload, { merge: false });
+      });
+      await SyncEngine._setStatus(SyncStatus.IDLE, '已回退上一份快照', { appliedSnapshotId: previousId });
+      return { success: true, source: 'previous-snapshot', message: '已回退上一份快照' };
+    },
+
+    [ActionTypes.REBUILD_SYNC_FROM_SCRATCH]: async (payload) => {
+      return await SyncEngine.rebuildFromScratch({ confirm: payload?.confirm === true });
+    },
+
+    // === 30 天回收站 ===
+    [ActionTypes.LIST_RECYCLE_BIN]: async () => {
+      return await LocalStashRepository.listRecycleBin();
+    },
+
+    [ActionTypes.RESTORE_RECYCLE_BIN_ITEM]: async (payload) => {
+      const res = await LocalStashRepository.restoreFromRecycleBin(payload?.tombstoneId);
+      if (res?.success) {
+        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
+      }
+      return res;
+    },
+
+    [ActionTypes.PURGE_RECYCLE_BIN_ITEM]: async (payload) => {
+      return await LocalStashRepository.purgeRecycleBinItem(payload?.tombstoneId);
     },
 
     // === AI 桥接自身（选项页与 Agent 共用）===

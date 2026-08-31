@@ -9,7 +9,6 @@ import { StorageAdapter } from '../core/storage/storage-adapter.js';
 import { StorageKeys } from '../constants/storage-keys.js';
 import { MessageBus } from '../core/bus/message-bus.js';
 import { filterCountableTabs } from '../core/extension-url.js';
-import { updateStashBadge } from './stash-badge.js';
 import { DeviceEventLog, DeviceEventTypes } from '../core/sync/device-events.js';
 
 /** 恢复已过期倒计时的最大宽限期（超过则视为陈旧状态直接丢弃） */
@@ -350,11 +349,6 @@ export class ThresholdMonitor {
           }
         }
       });
-    } catch {}
-
-    // 恢复收纳计数徽章（倒计时期间 Badge 被临时覆写为秒数动画）
-    try {
-      await updateStashBadge();
     } catch {}
   }
 

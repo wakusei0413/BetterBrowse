@@ -52,7 +52,6 @@ export const DefaultConfig = {
     autoOpenStashTab: true,
     pinnedTabGuard: true,
     deleteConfirmation: true,
-    showTabCountBadge: true,
     excludePinnedTabs: true,
     excludeAudibleTabs: true,
     excludeFormDirtyTabs: true,

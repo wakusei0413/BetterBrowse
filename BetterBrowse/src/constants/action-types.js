@@ -81,5 +81,15 @@ export const ActionTypes = {
   DELETE_AUTO_BACKUP: 'DELETE_AUTO_BACKUP',   // 删除指定自动备份快照（需 confirm）
   GET_AI_CAPABILITIES: 'GET_AI_CAPABILITIES', // AI 能力自描述清单（动作、参数、确认位要求与版本）
   GET_AI_BRIDGE_STATUS: 'GET_AI_BRIDGE_STATUS', // AI 桥接连接状态与最近操作审计（选项页与 AI 共用）
-  CLEAR_AI_AUDIT_LOG: 'CLEAR_AI_AUDIT_LOG'    // 清空 AI 操作审计日志（选项页维护用）
+  CLEAR_AI_AUDIT_LOG: 'CLEAR_AI_AUDIT_LOG',    // 清空 AI 操作审计日志（选项页维护用）
+
+  // === 30 天回收站 ===
+  LIST_RECYCLE_BIN: 'LIST_RECYCLE_BIN',                 // 列出未过期墓碑（组/条目）
+  RESTORE_RECYCLE_BIN_ITEM: 'RESTORE_RECYCLE_BIN_ITEM', // 从回收站恢复 { tombstoneId }
+  PURGE_RECYCLE_BIN_ITEM: 'PURGE_RECYCLE_BIN_ITEM',     // 永久删除回收站项 { tombstoneId, confirm: true }
+
+  // === 云端同步损坏恢复 ===
+  GET_SYNC_RECOVERY_INFO: 'GET_SYNC_RECOVERY_INFO',         // 读取损坏状态与本机快照可用性
+  FALLBACK_PREVIOUS_SNAPSHOT: 'FALLBACK_PREVIOUS_SNAPSHOT', // 回退上一份远端/本地快照
+  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH'    // 从本机快照重建同步 { confirm: true }
 };

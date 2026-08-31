@@ -4,6 +4,7 @@
  * @encoding UTF-8
  */
 
+import { ActionTypes } from '../constants/action-types.js';
 import { MigrationManager } from '../core/storage/migration.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
 import { StashService } from '../core/stash/stash-service.js';
@@ -114,6 +115,8 @@ async function broadcastToTabs(action, data = {}) {
   }
 }
 
+try { chrome.action?.setBadgeText?.({ text: '' }); } catch {}
+
 const aiBridge = new AIBridgeManager();
 
 // 注册统一消息处理映射表（人类 UI 消息与 AI 桥接指令共用同一份，见 action-handlers.js）
@@ -125,6 +128,18 @@ const actionHandlers = createActionHandlers({
   aiBridge
 });
 MessageBus.registerListener(actionHandlers);
+
+// 弹窗打开后快速关闭视为扩展图标双击，直接执行当前窗口全量收纳
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'popup-lifecycle') return;
+  const openedAt = Date.now();
+  port.onDisconnect.addListener(() => {
+    if (Date.now() - openedAt > 800) return;
+    actionHandlers[ActionTypes.EXECUTE_STASH]({ forceAll: true }, null).catch((err) => {
+      console.warn('[ServiceWorker] 双击快速收纳失败:', err?.message || err);
+    });
+  });
+});
 
 // AI 桥接初始化（开关默认关闭时仅挂载看门狗与状态，不建立本机通道；见 docs/03-ai-skill-bridge.md）
 aiBridge.init(actionHandlers).catch((err) => {

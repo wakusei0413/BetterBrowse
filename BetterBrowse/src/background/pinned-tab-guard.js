@@ -6,7 +6,7 @@
 
 import { StashService } from '../core/stash/stash-service.js';
 import { LocalStashRepository } from '../core/stash/local-stash-repo.js';
-import { isExcludedFromTabCounting } from '../core/extension-url.js';
+import { isExcludedFromTabCounting, isOwnOptionsUrl } from '../core/extension-url.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
 
 export class PinnedTabGuard {

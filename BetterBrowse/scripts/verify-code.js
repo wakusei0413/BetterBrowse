@@ -46,7 +46,6 @@ const allJsFiles = [
   'src/background/threshold-monitor.js',
   'src/background/pinned-tab-guard.js',
   'src/background/context-menu-manager.js',
-  'src/background/stash-badge.js',
   'src/background/sync-scheduler.js',
   'src/background/action-handlers.js',
   'src/background/ai-bridge.js',
