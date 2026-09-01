@@ -7,7 +7,12 @@
 import { ActionTypes } from '../constants/action-types.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
 import { StorageKeys } from '../constants/storage-keys.js';
+import { MessageBus } from '../core/bus/message-bus.js';
 import { filterCountableTabs } from '../core/extension-url.js';
+import { DeviceEventLog, DeviceEventTypes } from '../core/sync/device-events.js';
+
+/** 恢复已过期倒计时的最大宽限期（超过则视为陈旧状态直接丢弃） */
+const EXPIRED_DEADLINE_GRACE_MS = 10 * 60 * 1000;
 
 export class ThresholdMonitor {
   /**
@@ -28,30 +33,34 @@ export class ThresholdMonitor {
     this.alarmName = 'better-browse-threshold-countdown';
 
     this.initListeners();
-    this.restoreState();
+    // 状态恢复是异步的：alarm 与事件回调必须先等待本 Promise 完成，
+    // 否则 SW 冷启动瞬间 deadline/lastActionTime 仍为 0，会导致倒计时丢失或重复触发
+    this.readyPromise = this.restoreState();
 
-    // 插件启动或 Service Worker 唤醒时，延迟 1 秒主动检测一次当前窗口标签数
+    // 插件启动或 Service Worker 唤醒时，延迟 1 秒主动检测一次当前窗口标签数（等待状态恢复完成）
     setTimeout(() => {
-      this.checkTabCount();
+      this.readyPromise
+        .then(() => this.checkTabCount())
+        .catch(() => {});
     }, 1000);
   }
 
   initListeners() {
     // 1. 监听新标签页创建
     chrome.tabs.onCreated.addListener(() => {
-      this.checkTabCount();
+      this.checkTabCount().catch(() => {});
     });
 
     // 2. 监听标签页切换激活
     chrome.tabs.onActivated.addListener(() => {
-      this.checkTabCount();
+      this.checkTabCount().catch(() => {});
     });
 
     // 3. 监听窗口获得焦点
     if (chrome.windows?.onFocusChanged) {
       chrome.windows.onFocusChanged.addListener((windowId) => {
         if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-          this.checkTabCount(windowId);
+          this.checkTabCount(windowId).catch(() => {});
         }
       });
     }
@@ -61,9 +70,10 @@ export class ThresholdMonitor {
       chrome.notifications.onButtonClicked.addListener((notifId, btnIdx) => {
         if (notifId === this.notificationId) {
           if (btnIdx === 0) {
-            this.handleConfirmAutoStash();
+            // 通知按钮允许在倒计时结束后仍可手动触发收纳（事件回调中的 rejection 必须就地兜底）
+            this.handleConfirmAutoStash({ force: true }).catch(() => {});
           } else if (btnIdx === 1 && this.onOpenOptions) {
-            this.onOpenOptions();
+            Promise.resolve(this.onOpenOptions()).catch(() => {});
           }
           chrome.notifications.clear(this.notificationId);
         }
@@ -71,7 +81,7 @@ export class ThresholdMonitor {
     }
     if (chrome.alarms?.onAlarm) {
       chrome.alarms.onAlarm.addListener((alarm) => {
-        if (alarm?.name === this.alarmName) this.handleAlarm();
+        if (alarm?.name === this.alarmName) this.handleAlarm().catch(() => {});
       });
     }
   }
@@ -79,7 +89,10 @@ export class ThresholdMonitor {
   async restoreState() {
     try {
       const state = await StorageAdapter.get(StorageKeys.THRESHOLD_STATE, null, 'session');
-      if (!state || !state.deadline || state.deadline <= Date.now()) return;
+      if (!state || !state.deadline) return;
+      // 刚过期不久的倒计时同样恢复：SW 休眠期间 alarm 触发时依赖本状态补发收纳，
+      // 只有远超宽限期的陈旧状态才直接丢弃
+      if (state.deadline <= Date.now() - EXPIRED_DEADLINE_GRACE_MS) return;
       this.deadline = state.deadline;
       this.activeWindowId = state.activeWindowId ?? null;
       this.totalSeconds = state.totalSeconds || 15;
@@ -138,6 +151,8 @@ export class ThresholdMonitor {
    */
   async checkTabCount(targetWindowId = null) {
     try {
+      // 等待持久化状态恢复完成，避免 SW 冷启动竞态导致冷却/倒计时判定失真
+      await this.readyPromise;
       const config = await StorageAdapter.getUserConfig();
       const { windowId, tabs } = await this.getActiveWindowInfo(targetWindowId);
       const countableTabs = filterCountableTabs(tabs);
@@ -190,6 +205,9 @@ export class ThresholdMonitor {
    * 启动全场景 15 秒倒计时体系（包含 Badge 动画、前台网页卡片与系统通知）
    */
   startCountdown(windowId, tabs, config) {
+    // 并发事件（如批量开标签触发多次 onCreated）可能同时进入本方法，倒计时进行中直接忽略
+    if (this.deadline > Date.now()) return;
+
     this.activeWindowId = windowId;
     this.totalSeconds = Math.max(3, config.countdownSeconds || 15);
     this.remainingSeconds = this.totalSeconds;
@@ -205,7 +223,7 @@ export class ThresholdMonitor {
       countdownSeconds: this.totalSeconds,
       currentCount,
       threshold
-    });
+    }).catch(() => {});
 
     // 3. 弹出系统桌面通知备用
     if (config.autoThresholdNotify) {
@@ -213,20 +231,38 @@ export class ThresholdMonitor {
     }
 
     this.deadline = Date.now() + this.totalSeconds * 1000;
-    this.persistState();
+    this.persistState().catch(() => {});
     try {
       if (chrome.alarms?.create) {
         chrome.alarms.create(this.alarmName, { when: this.deadline });
       }
     } catch {}
+    // 记录跨设备可见的倒计时事件（仅展示用途，其它设备不执行任何动作）
+    DeviceEventLog.append(DeviceEventTypes.COUNTDOWN_START, {
+      currentCount,
+      threshold,
+      countdownSeconds: this.totalSeconds
+    }).catch(() => {});
   }
 
   async handleAlarm() {
+    // SW 可能由 alarm 直接唤醒，此时持久化状态尚未恢复：先等待恢复再判定
+    try {
+      await this.readyPromise;
+    } catch {}
     if (!this.deadline || this.deadline > Date.now()) return;
     const windowId = this.activeWindowId;
-    this.clearCountdownUI();
+    await this.clearCountdownUI();
     this.lastActionTime = Date.now();
-    if (this.onStashRequested) await this.onStashRequested(windowId);
+    DeviceEventLog.append(DeviceEventTypes.COUNTDOWN_CONFIRM, { via: 'alarm' }).catch(() => {});
+    if (this.onStashRequested) {
+      try {
+        const res = await this.onStashRequested(windowId);
+        DeviceEventLog.append(DeviceEventTypes.STASH_EXECUTED, { via: 'alarm', success: res?.success !== false }).catch(() => {});
+      } catch (err) {
+        console.warn('[ThresholdMonitor] 倒计时归零后执行智能收纳失败:', err?.message || err);
+      }
+    }
   }
 
   /**
@@ -244,6 +280,7 @@ export class ThresholdMonitor {
 
   /**
    * 向当前窗口所有网页标签广播或动态注入倒计时卡片
+   * 走 MessageBus.sendToTab：统一吞掉 MV3 sendMessage 在 callback 模式下仍会拒绝的 Promise
    */
   async broadcastBannerToTabs(tabs, payload) {
     for (const tab of tabs) {
@@ -257,40 +294,30 @@ export class ThresholdMonitor {
 
       const tabId = tab.id;
       try {
-        chrome.tabs.sendMessage(
-          tabId,
-          {
-            action: ActionTypes.SHOW_AUTO_STASH_COUNTDOWN,
-            payload
-          },
-          async (res) => {
-            if (chrome.runtime.lastError || !res?.success) {
-              // 尝试动态注入脚本
-              try {
-                if (chrome.scripting) {
-                  await chrome.scripting.executeScript({
-                    target: { tabId },
-                    files: ['src/content/content-bundle.js']
-                  });
-                  setTimeout(() => {
-                    chrome.tabs.sendMessage(tabId, {
-                      action: ActionTypes.SHOW_AUTO_STASH_COUNTDOWN,
-                      payload
-                    });
-                  }, 120);
-                }
-              } catch {}
-            }
-          }
-        );
-      } catch {}
+        const res = await MessageBus.sendToTab(tabId, ActionTypes.SHOW_AUTO_STASH_COUNTDOWN, payload, 800);
+        if (res?.success) continue;
+
+        // 内容脚本尚未注入（刚打开的页面 / 被 CSP 阻断后动态注入）
+        if (!chrome.scripting) continue;
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['src/content/content-bundle.js']
+          });
+        } catch {
+          continue;
+        }
+        await MessageBus.sendToTab(tabId, ActionTypes.SHOW_AUTO_STASH_COUNTDOWN, payload, 800);
+      } catch {
+        // 标签页在探测/注入期间被关闭属正常竞态
+      }
     }
   }
 
   /**
    * 清除倒计时状态、徽章与前台卡片
    */
-  clearCountdownUI() {
+  async clearCountdownUI() {
     if (this.countdownInterval) {
       clearInterval(this.countdownInterval);
       this.countdownInterval = null;
@@ -298,7 +325,7 @@ export class ThresholdMonitor {
     this.remainingSeconds = 0;
     this.deadline = 0;
     try { chrome.alarms?.clear?.(this.alarmName); } catch {}
-    this.persistState();
+    this.persistState().catch(() => {});
 
     try {
       if (chrome.action?.setBadgeText) {
@@ -312,14 +339,13 @@ export class ThresholdMonitor {
       }
     } catch {}
 
-    // 广播隐藏所有页面的卡片
+    // 广播隐藏所有页面的卡片（遍历全部窗口，避免其他窗口的卡片残留）
     try {
-      chrome.tabs.query({ currentWindow: true }, (tabs) => {
-        if (tabs && tabs.length > 0) {
-          for (const tab of tabs) {
-            if (tab.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
-              chrome.tabs.sendMessage(tab.id, { action: ActionTypes.HIDE_AUTO_STASH_COUNTDOWN }).catch(() => {});
-            }
+      chrome.tabs.query({}, (tabs) => {
+        if (chrome.runtime.lastError || !tabs || tabs.length === 0) return;
+        for (const tab of tabs) {
+          if (tab.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
+            MessageBus.sendToTab(tab.id, ActionTypes.HIDE_AUTO_STASH_COUNTDOWN, null, 400).catch(() => {});
           }
         }
       });
@@ -329,22 +355,40 @@ export class ThresholdMonitor {
   /**
    * 用户取消自动收纳（清除定时器并进入冷却期）
    */
-  handleCancelAutoStash() {
-    this.clearCountdownUI();
+  async handleCancelAutoStash() {
+    await this.clearCountdownUI();
     this.lastActionTime = Date.now();
     this.persistState();
+    DeviceEventLog.append(DeviceEventTypes.COUNTDOWN_CANCEL, {}).catch(() => {});
     return { success: true };
   }
 
   /**
    * 确认执行自动智能收纳（立即收纳或倒计时结束）
+   * @param {{ force?: boolean }} [options] - force=true 时无视"倒计时已结束"守卫（如通知按钮路径）
+   * @returns {Promise<any>}
    */
-  async handleConfirmAutoStash() {
-    this.clearCountdownUI();
+  async handleConfirmAutoStash(options = {}) {
+    // 守卫：倒计时结束后，网页卡片残留的"立即收纳"按钮不得再次触发完整收纳流程
+    // （alarm 归零已执行过一次收纳；通知按钮等可信入口通过 force 绕过本守卫）
+    const countdownActive = this.deadline > Date.now() || this.remainingSeconds > 0;
+    if (!options.force && !countdownActive) {
+      return { success: false, note: '倒计时已结束，已忽略重复的收纳确认请求' };
+    }
+
+    await this.clearCountdownUI();
     this.lastActionTime = Date.now();
     await this.persistState();
+    DeviceEventLog.append(DeviceEventTypes.COUNTDOWN_CONFIRM, { via: 'manual' }).catch(() => {});
     if (this.onStashRequested) {
-      return await this.onStashRequested(this.activeWindowId);
+      try {
+        const res = await this.onStashRequested(this.activeWindowId);
+        DeviceEventLog.append(DeviceEventTypes.STASH_EXECUTED, { via: 'manual', success: res?.success !== false }).catch(() => {});
+        return res;
+      } catch (err) {
+        console.warn('[ThresholdMonitor] 手动确认智能收纳失败:', err?.message || err);
+        return { success: false, error: err?.message || '智能收纳执行异常' };
+      }
     }
     return { success: false, error: '未注册收纳回调' };
   }
@@ -389,7 +433,7 @@ export class ThresholdMonitor {
       },
       () => {
         if (chrome.runtime.lastError) {
-          console.warn('[ThresholdMonitor] 创建通知失败:', chrome.runtime.lastError);
+          console.warn('[ThresholdMonitor] 创建通知失败:', chrome.runtime.lastError?.message || '未知错误');
         }
       }
     );

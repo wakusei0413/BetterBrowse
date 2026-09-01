@@ -8,6 +8,12 @@ import { ActionTypes } from '../constants/action-types.js';
 import { LinkModes } from '../constants/config.js';
 import { LinkMatcher } from '../core/link/link-matcher.js';
 import { MessageBus } from '../core/bus/message-bus.js';
+import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
+
+installRuntimeLogger({
+  context: 'popup',
+  write: (entry) => MessageBus.sendToBackground(ActionTypes.APPEND_RUNTIME_LOG, entry)
+});
 
 // 模式配置与档位索引 (0: 当前标签 | 1: 自动模式 | 2: 新标签页)
 const MODES_CONFIG = [
@@ -16,14 +22,18 @@ const MODES_CONFIG = [
   { mode: LinkModes.NEW, index: 2, label: '新标签页打开' }
 ];
 
+const popupPort = chrome.runtime.connect({ name: 'popup-lifecycle' });
+
 class PopupController {
   constructor() {
     this.currentTab = null;
+    this.popupPort = popupPort;
     this.currentDomain = '';
     this.currentMode = LinkModes.AUTO;
     this.isSpecialPage = false;
     this.isGlobalApplied = false;
     this.statusTimer = null;
+    this.countdownPollTimer = null;
 
     // DOM 元素引用缓存
     this.dom = {
@@ -47,6 +57,9 @@ class PopupController {
   async init() {
     this.bindSegmentedEvents();
     this.bindActionEvents();
+    window.addEventListener('unload', () => {
+      if (this.countdownPollTimer) clearInterval(this.countdownPollTimer);
+    });
     await this.loadActiveTabInfo();
     await this.loadLinkRuleState();
     await this.loadTabCountInfo();
@@ -89,7 +102,7 @@ class PopupController {
         if (nextIndex !== -1) {
           const nextConfig = MODES_CONFIG[nextIndex];
           this.handleModeChange(nextConfig.mode);
-          const nextBtn = document.querySelector(`.segmented-item[data-mode="${nextConfig.mode}"]`);
+          const nextBtn = this.dom.segmentedItems[nextIndex];
           if (nextBtn) nextBtn.focus();
         }
       });
@@ -199,6 +212,17 @@ class PopupController {
           this.dom.tabCounterContainer.title = '当前窗口标签页数量及阈值';
         }
       }
+
+      // 倒计时进行中每秒轮询刷新，保证 popup 打开期间状态实时；结束后自动停止
+      const isCounting = Boolean(countdown && countdown.isCountingDown);
+      if (isCounting && !this.countdownPollTimer) {
+        this.countdownPollTimer = setInterval(() => {
+          this.loadTabCountInfo();
+        }, 1000);
+      } else if (!isCounting && this.countdownPollTimer) {
+        clearInterval(this.countdownPollTimer);
+        this.countdownPollTimer = null;
+      }
     }
   }
 
@@ -225,10 +249,10 @@ class PopupController {
     if (res.success) {
       // 直连当前标签页通知其立刻刷新内存模式（零延迟双重保障）
       if (this.currentTab && this.currentTab.id) {
-        chrome.tabs.sendMessage(this.currentTab.id, {
-          action: ActionTypes.NOTIFY_RULE_UPDATED,
-          payload: { domain: this.currentDomain, mode: mode }
-        }).catch(() => {});
+        MessageBus.sendToTab(this.currentTab.id, ActionTypes.NOTIFY_RULE_UPDATED, {
+          domain: this.currentDomain,
+          mode: mode
+        }, 800).catch(() => {});
       }
 
       const cfg = MODES_CONFIG.find((c) => c.mode === mode);
@@ -280,9 +304,7 @@ class PopupController {
    */
   async handleExecuteStash() {
     this.dom.btnExecuteStash.disabled = true;
-    if (this.dom.btnExecuteStashText) {
-      this.dom.btnExecuteStashText.textContent = '正在收纳...';
-    }
+    this.dom.btnExecuteStashText.textContent = '正在收纳...';
     this.showStatus('正在收纳当前窗口所有标签页...', 'info', 0);
 
     try {
@@ -302,9 +324,7 @@ class PopupController {
       this.showStatus('收纳请求异常', 'error');
     } finally {
       this.dom.btnExecuteStash.disabled = false;
-      if (this.dom.btnExecuteStashText) {
-        this.dom.btnExecuteStashText.textContent = '立即收纳当前窗口';
-      }
+      this.dom.btnExecuteStashText.textContent = '立即收纳当前窗口';
     }
   }
 

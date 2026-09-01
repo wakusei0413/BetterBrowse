@@ -5,6 +5,12 @@
  */
 (function() {
   'use strict';
+  // 防重复执行守卫：后台广播倒计时卡片时会对未响应的标签页动态重注入本产物，
+  // 二次执行会导致监听器叠加（如一次点击开两个标签），必须在最顶部拦截
+  if (window.__BETTER_BROWSE_CONTENT_BUNDLE_LOADED__) {
+    return;
+  }
+  window.__BETTER_BROWSE_CONTENT_BUNDLE_LOADED__ = true;
 
 // ===== [模块: src/constants/action-types.js] =====
 /**
@@ -23,6 +29,7 @@ const ActionTypes = {
   SET_DOMAIN_RULE: 'SET_DOMAIN_RULE',           // 设置指定域名跳转规则
   REMOVE_DOMAIN_RULE: 'REMOVE_DOMAIN_RULE',     // 删除指定域名跳转规则
   CLEAR_DOMAIN_RULES: 'CLEAR_DOMAIN_RULES',     // 清空全部域名跳转规则
+  GET_PAGE_LINK_CONTEXT: 'GET_PAGE_LINK_CONTEXT', // 内容脚本获取当前页最小必要跳转上下文（禁止内容脚本直读存储）
   OPEN_TAB_BACKGROUND: 'OPEN_TAB_BACKGROUND', // 后台打开新标签页
 
   // === 智能收纳与规则相关 ===
@@ -41,6 +48,7 @@ const ActionTypes = {
   UPDATE_STASH_GROUP: 'UPDATE_STASH_GROUP',   // 更新标签组（重命名、锁定、星标）
   RESTORE_STASH_GROUP: 'RESTORE_STASH_GROUP', // 恢复指定的收纳标签组
   RESTORE_STASH_ITEM: 'RESTORE_STASH_ITEM',   // 恢复单个收纳标签项
+  RESTORE_STASH_GROUP_DATA: 'RESTORE_STASH_GROUP_DATA', // 恢复单个收纳组数据快照（撤销删除专用：仅写入该组，不触碰现有组与配置）
   DELETE_STASH_GROUP: 'DELETE_STASH_GROUP',   // 删除指定的收纳标签组
   DELETE_STASH_ITEM: 'DELETE_STASH_ITEM',     // 删除单个收纳标签项
   CLEAR_ALL_STASH: 'CLEAR_ALL_STASH',         // 清空所有收纳数据
@@ -64,28 +72,45 @@ const ActionTypes = {
   // === 即时同步广播事件 ===
   NOTIFY_RULE_UPDATED: 'NOTIFY_RULE_UPDATED', // 广播通知各页面规则已变更，即时刷新内存
   NOTIFY_CONFIG_UPDATED: 'NOTIFY_CONFIG_UPDATED', // 广播通知各页面配置已变更
-  NOTIFY_STASH_UPDATED: 'NOTIFY_STASH_UPDATED'   // 广播通知收纳数据已变更
+  NOTIFY_STASH_UPDATED: 'NOTIFY_STASH_UPDATED',   // 广播通知收纳数据已变更
+  NOTIFY_SYNC_UPDATED: 'NOTIFY_SYNC_UPDATED',     // 广播云端同步状态变更
+
+  // === WebDAV 云端同步 ===
+  GET_SYNC_STATUS: 'GET_SYNC_STATUS',
+  SAVE_WEBDAV_CREDENTIALS: 'SAVE_WEBDAV_CREDENTIALS',
+  TEST_WEBDAV_CONNECTION: 'TEST_WEBDAV_CONNECTION',
+  RUN_SYNC_NOW: 'RUN_SYNC_NOW',
+  LIST_SYNC_CONFLICTS: 'LIST_SYNC_CONFLICTS',
+  RESOLVE_SYNC_CONFLICT: 'RESOLVE_SYNC_CONFLICT',
+  LIST_SYNC_DEVICES: 'LIST_SYNC_DEVICES',
+  RETIRE_SYNC_DEVICE: 'RETIRE_SYNC_DEVICE',
+
+  // === AI 桥接与增强读写（阶段三：人类 UI 与 AI Agent 共用同一处理路径）===
+  ADD_STASH_ITEM: 'ADD_STASH_ITEM',           // 向既有收纳组添加条目（AI 增强：URL 自动清洗、按设置去重）
+  UPDATE_STASH_ITEM: 'UPDATE_STASH_ITEM',     // 编辑收纳条目（标题/URL/置顶/归档；AI 增强）
+  SEARCH_STASH: 'SEARCH_STASH',               // 按关键字全局检索收纳条目（AI 增强）
+  GET_STASH_GROUP_PAGE: 'GET_STASH_GROUP_PAGE', // 组内条目分页读取（AI 增强，支撑超长组）
+  LIST_AUTO_BACKUPS: 'LIST_AUTO_BACKUPS',     // 列出本地自动备份快照摘要（AI 增强）
+  RESTORE_AUTO_BACKUP: 'RESTORE_AUTO_BACKUP', // 恢复指定自动备份中的收纳组（幂等 upsert，需 confirm）
+  DELETE_AUTO_BACKUP: 'DELETE_AUTO_BACKUP',   // 删除指定自动备份快照（需 confirm）
+  GET_AI_CAPABILITIES: 'GET_AI_CAPABILITIES', // AI 能力自描述清单（动作、参数、确认位要求与版本）
+  GET_AI_BRIDGE_STATUS: 'GET_AI_BRIDGE_STATUS', // AI 桥接连接状态（选项页与 AI 共用）
+
+  // === 统一运行日志 ===
+  APPEND_RUNTIME_LOG: 'APPEND_RUNTIME_LOG',      // 扩展内部上下文向后台追加运行日志（不暴露给 AI）
+  QUERY_RUNTIME_LOGS: 'QUERY_RUNTIME_LOGS',      // 查询本地运行日志
+  CLEAR_RUNTIME_LOGS: 'CLEAR_RUNTIME_LOGS',      // 清空本地运行日志（需 confirm）
+
+  // === 30 天回收站 ===
+  LIST_RECYCLE_BIN: 'LIST_RECYCLE_BIN',                 // 列出未过期墓碑（组/条目）
+  RESTORE_RECYCLE_BIN_ITEM: 'RESTORE_RECYCLE_BIN_ITEM', // 从回收站恢复 { tombstoneId }
+  PURGE_RECYCLE_BIN_ITEM: 'PURGE_RECYCLE_BIN_ITEM',     // 永久删除回收站项 { tombstoneId, confirm: true }
+
+  // === 云端同步损坏恢复 ===
+  GET_SYNC_RECOVERY_INFO: 'GET_SYNC_RECOVERY_INFO',         // 读取损坏状态与本机快照可用性
+  FALLBACK_PREVIOUS_SNAPSHOT: 'FALLBACK_PREVIOUS_SNAPSHOT', // 回退上一份远端/本地快照
+  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH'    // 从本机快照重建同步 { confirm: true }
 };
-
-
-// ===== [模块: src/constants/storage-keys.js] =====
-/**
- * @file storage-keys.js
- * @description 存储键名与命名空间定义
- * @encoding UTF-8
- */
-
-const StorageKeys = {
-  SCHEMA_VERSION: 'bb_schema_version',       // 数据架构版本号
-  USER_CONFIG: 'bb_user_config',             // 用户设置项配置
-  LINK_RULES: 'bb_link_rules',               // 各域名链接跳转偏好字典 { [domain]: 'auto' | 'current' | 'new' }
-  GLOBAL_LINK_RULE: 'bb_global_link_rule',   // 全局跳转规则配置 { enabled: boolean, mode: 'auto' | 'current' | 'new' }
-  STASH_GROUPS: 'bb_stash_groups',           // 本地存储的收纳标签组列表
-  ACTIVITY_STATS: 'bb_activity_stats',       // 标签页活跃度统计缓存
-  THRESHOLD_STATE: 'bb_threshold_state',     // 阈值倒计时与冷却状态
-  AUTO_BACKUPS: 'bb_auto_backups'            // 自动备份快照
-};
-
 
 
 // ===== [模块: src/constants/config.js] =====
@@ -105,8 +130,7 @@ const RulePriorities = {
   P0: 0, // 最高优先级（媒体播放、表单输入中）
   P1: 1, // 高优先级（最近访问）
   P2: 2, // 中优先级（高使用频率）
-  P3: 3, // 低优先级（固定标签页）
-  DEFAULT: 99 // 默认收纳
+  P3: 3  // 低优先级（固定标签页）
 };
 
 const DefaultConfig = {
@@ -116,8 +140,8 @@ const DefaultConfig = {
   autoStashOnThreshold: true,    // 达到阈值时是否自动倒计时智能收纳
   countdownSeconds: 15,          // 自动收纳倒计时时长（秒，默认15秒）
   thresholdCooldownMinutes: 5,   // 取消或触发后的防打扰冷却时间（分钟，默认5分钟）
-  recentActiveMinutes: 5,        // “最近访问”时间窗口（分钟，默认5分钟）
-  frequencyPercentile: 0.2,      // “高频使用”保留比例（前20%）
+  recentActiveMinutes: 5,        // "最近访问"时间窗口（分钟，默认5分钟）
+  frequencyPercentile: 0.2,      // "高频使用"保留比例（前20%）
   frequencyHistoryMinutes: 60,   // 统计使用频次的时间窗口（分钟，默认60分钟）
 
   // === 规则启用开关 ===
@@ -144,17 +168,134 @@ const DefaultConfig = {
     autoOpenStashTab: true,
     pinnedTabGuard: true,
     deleteConfirmation: true,
-    showTabCountBadge: true,
     excludePinnedTabs: true,
     excludeAudibleTabs: true,
     excludeFormDirtyTabs: true,
     autoBackupEnabled: true,
     backupRetentionDays: 30,
     displayDensity: 'comfortable'
+  },
+
+  // === 本地自动快照安全约束 ===
+  // 防止收纳数据过多时自动备份撑爆 chrome.storage.local 配额（默认约 5MB）
+  autoBackupLimits: {
+    maxBackups: 2,              // 最多保留几份快照（新 + 旧）
+    maxTotalBytes: 3 * 1024 * 1024, // 自动备份总大小软上限（字节，留余量给其它数据）
+    stripFavIcons: true         // 快照中剔除 favIconUrl 以显著减小体积
+  },
+
+  // === WebDAV 云端同步（非机密项；密码见 bb_webdav_credentials）===
+  webdavSync: {
+    enabled: false,
+    autoSync: true,
+    serverUrl: ''
+  },
+
+  // === 浏览器账号偏好同步（chrome.storage.sync；不含收纳列表 / 域名表 / 凭据）===
+  accountConfigSync: {
+    enabled: true             // 同品牌、已登录账号的设备之间镜像阈值与规则等偏好
+  },
+
+  // === AI 桥接（阶段三：本机 AI Agent 经 Native Messaging 与人类能力对等操控插件）===
+  // 设备本地偏好：不进入 chrome.storage.sync 账号镜像、不进入 WebDAV 同步与任何导出
+  aiBridge: {
+    enabled: false           // 总开关（默认关闭）：开启后扩展按需拉起本机宿主并接受 Agent 指令
+  },
+
+  // === 阶梯式降级收纳（Tiered Escalation Stash）===
+  // 当一轮智能收纳后标签页数量仍超过阈值时，逐级放宽"软性保护"
+  // （最近访问窗口逐级缩短、高频访问门槛逐级提高），直至降到阈值以下。
+  tieredStash: {
+    enabled: true,            // 总开关：是否启用阶梯式降级收纳
+    maxTiers: 5,              // 最大降级层数（0 = 不降级，仅执行标准一轮）
+    tierStepSeconds: 60,      // 每级将"最近访问"保护窗口缩短的秒数（默认 60 秒/级）
+    ultimateFallback: true,   // 终极兜底：软性保护全部放宽后仍超标时，按重要度从低到高强制回收
+    targetSafetyMargin: 0     // 达标安全余量：降到阈值以下后再额外多收纳的标签页数量
   }
 };
 
-const CURRENT_SCHEMA_VERSION = 3;
+// 本地数据修订 5：收纳组数据迁移至 IndexedDB 本地主库（页面实体 + 收纳记录两层模型）
+// 本地数据修订 6：修复历史恢复操作产生的双前缀重复条目并清理孤儿条目（见 MigrationManager.repairIndexedEntries）
+// 本地数据修订 7：配置、链接规则、活动统计与自动备份迁入 IndexedDB（阶段一 M2 全量）
+// 本地数据修订 8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
+const LOCAL_DATA_SCHEMA_REVISION = 8;
+
+
+// ===== [模块: src/core/logging/runtime-logger.js] =====
+/**
+ * @file runtime-logger.js
+ * @description 跨扩展上下文的统一控制台日志捕获器（保留原生输出并旁路持久化）
+ * @encoding UTF-8
+ */
+
+const LEVELS = ['debug', 'info', 'warn', 'error'];
+const MAX_DEPTH = 5;
+const MAX_MESSAGE_LENGTH = 4000;
+const SENSITIVE_KEY = /(password|passwd|token|authorization|credential|secret|cookie)/i;
+const SOURCE_PREFIX = /^\[([^\]]+)]\s*/;
+const SENSITIVE_TEXT = /(password|passwd|token|authorization|credential|secret|cookie)(\s*[=:]\s*)([^\s,;}&]+)/gi;
+const INSTALLED_FLAG = Symbol.for('betterbrowse.runtimeLoggerInstalled');
+
+function sanitize(value, seen, depth = 0, key = '') {
+  if (SENSITIVE_KEY.test(key)) return '[已遮蔽]';
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack || '' };
+  }
+  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return `${value}n`;
+  if (typeof value === 'function') return `[函数 ${value.name || '匿名'}]`;
+  if (typeof value !== 'object') return String(value);
+  if (depth >= MAX_DEPTH) return '[深度已截断]';
+  if (seen.has(value)) return '[循环引用]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.slice(0, 50).map((item) => sanitize(item, seen, depth + 1));
+  const output = {};
+  for (const [childKey, childValue] of Object.entries(value).slice(0, 50)) {
+    output[childKey] = sanitize(childValue, seen, depth + 1, childKey);
+  }
+  return output;
+}
+
+function stringify(value) {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(sanitize(value, new WeakSet()));
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeConsoleEntry(level, args, context) {
+  const values = Array.isArray(args) ? args : [];
+  let source = context || 'BetterBrowse';
+  if (typeof values[0] === 'string') {
+    const match = values[0].match(SOURCE_PREFIX);
+    if (match) source = match[1];
+  }
+  const message = values
+    .map(stringify)
+    .join(' ')
+    .replace(SENSITIVE_TEXT, '$1$2[已遮蔽]')
+    .slice(0, MAX_MESSAGE_LENGTH) || '-';
+  return { ts: Date.now(), level, source, context, category: 'runtime', message };
+}
+
+function installRuntimeLogger({ context = 'background', write }) {
+  if (console[INSTALLED_FLAG] || typeof write !== 'function') return;
+  Object.defineProperty(console, INSTALLED_FLAG, { value: true, configurable: true });
+  for (const level of LEVELS) {
+    const nativeMethod = console[level]?.bind(console) || console.log.bind(console);
+    console[level] = (...args) => {
+      nativeMethod(...args);
+      try {
+        Promise.resolve(write(normalizeConsoleEntry(level, args, context))).catch(() => {});
+      } catch {
+        // 日志旁路失败不得影响原业务
+      }
+    };
+  }
+}
 
 
 // ===== [模块: src/core/link/link-matcher.js] =====
@@ -330,13 +471,22 @@ class FormDetector {
       }
 
       // 3. 常见富文本/代码编辑器活跃编辑状态检测（精准排除静态只读代码块）
-      const richEditors = document.querySelectorAll('[contenteditable="true"], .monaco-editor, .CodeMirror, .ql-editor, .ProseMirror');
+      // ⚠️ 仅当编辑器（或其内部输入区）真正持有焦点时才判定为"正在编辑"：
+      //    Slack/Gmail/Notion 等页面常驻大型 contenteditable 容器，
+      //    若仅凭内容长度判定，此类页面将永远无法被自动收纳（系统性误报）
+      const richEditors = document.querySelectorAll(
+        '[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"], .monaco-editor, .CodeMirror, .ql-editor, .ProseMirror'
+      );
       for (const editor of richEditors) {
         if (editor.getAttribute('aria-readonly') === 'true' || editor.classList.contains('read-only')) {
           continue;
         }
-        // 若为真正的 contenteditable 编辑区域且有实质内容
-        if (editor.isContentEditable && editor.textContent && editor.textContent.trim().length > 5) {
+        // 仅当编辑器当前正在被编辑（自身或内部持有焦点）且有实质内容
+        const isEditingHere =
+          editor === document.activeElement ||
+          editor.contains(document.activeElement) ||
+          Boolean(editor.querySelector(':focus'));
+        if (isEditingHere && editor.isContentEditable && editor.textContent && editor.textContent.trim().length > 0) {
           return {
             hasActiveInput: true,
             reason: '富文本正文处于可编辑状态'
@@ -423,7 +573,6 @@ class CountdownBanner {
   render() {
     // 1. 创建容器 Host
     this.hostElement = document.createElement('better-browse-countdown-root');
-    this.hostElement.style.all = 'initial';
     this.shadowRoot = this.hostElement.attachShadow({ mode: 'open' });
 
     // 2. 注入独立样式与 HTML
@@ -683,7 +832,7 @@ class CountdownBanner {
         </div>
 
         <div class="progress-track">
-          <div class="progress-bar" id="progressBar" style="width: 100%;"></div>
+          <div class="progress-bar" id="progressBar"></div>
         </div>
 
         <div class="card-actions" id="cardActions">
@@ -764,7 +913,13 @@ class CountdownBanner {
   cancelAutoStash() {
     this.stopTimer();
     try {
-      chrome.runtime.sendMessage({ action: ActionTypes.CANCEL_AUTO_STASH });
+      const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.CANCEL_AUTO_STASH }, () => {
+        // 显式消费 lastError，避免扩展重载后产生未处理的错误噪音
+        void chrome.runtime.lastError;
+      });
+      if (chromeResult != null && typeof chromeResult.then === 'function') {
+        chromeResult.then(() => {}, () => {});
+      }
     } catch {
       // 忽略通信断开
     }
@@ -794,9 +949,26 @@ class CountdownBanner {
 
     try {
       const response = await new Promise((resolve) => {
-        chrome.runtime.sendMessage({ action: ActionTypes.CONFIRM_AUTO_STASH }, (res) => {
-          resolve(res);
-        });
+        const timeoutId = setTimeout(() => {
+          // 后台无响应（扩展重载/SW 休眠）时的超时兜底，避免卡片永久停留在"正在评估"
+          resolve(null);
+        }, 10000);
+        try {
+          const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.CONFIRM_AUTO_STASH }, (res) => {
+            clearTimeout(timeoutId);
+            if (chrome.runtime.lastError) {
+              resolve(null);
+              return;
+            }
+            resolve(res);
+          });
+          if (chromeResult != null && typeof chromeResult.then === 'function') {
+            chromeResult.then(() => {}, () => {});
+          }
+        } catch {
+          clearTimeout(timeoutId);
+          resolve(null);
+        }
       });
 
       if (response && response.success && response.data) {
@@ -808,9 +980,13 @@ class CountdownBanner {
             cardBody.innerHTML = 'ℹ️ 当前所有标签均处于活跃/保护状态，未收纳标签';
           }
         }
+      } else if (response && !response.success) {
+        if (cardBody) {
+          cardBody.innerHTML = 'ℹ️ 当前无可收纳的标签页';
+        }
       } else {
         if (cardBody) {
-          cardBody.innerHTML = '收纳已触发完成';
+          cardBody.innerHTML = '收纳指令已发送';
         }
       }
     } catch (err) {
@@ -872,8 +1048,11 @@ class CountdownBanner {
 
 
 
-
 class LinkInterceptor {
+  /** 开标签事件速率限制：滑动窗口内最多允许的次数与窗口时长 */
+  static OPEN_EVENT_LIMIT = 10;
+  static OPEN_EVENT_WINDOW_MS = 10000;
+
   constructor() {
     this.currentDomain = window.location.hostname.toLowerCase();
     this.linkRules = {};
@@ -881,6 +1060,24 @@ class LinkInterceptor {
     this.isInitialized = false;
     this.lastHandledUrl = '';
     this.lastHandledTime = 0;
+    this.openEventTimestamps = [];
+  }
+
+  /**
+   * 滑动窗口速率限制：__BETTER_BROWSE_OPEN_NEW_TAB__ 是页面脚本可伪造的公开事件，
+   * 协议校验之外还需限制频次，防止被恶意页面当作绕过弹窗拦截的广告/钓鱼发射器
+   * @returns {boolean} 是否允许本次开标签
+   */
+  shouldAllowOpenEvent() {
+    const now = Date.now();
+    this.openEventTimestamps = this.openEventTimestamps.filter(
+      (ts) => now - ts < LinkInterceptor.OPEN_EVENT_WINDOW_MS
+    );
+    if (this.openEventTimestamps.length >= LinkInterceptor.OPEN_EVENT_LIMIT) {
+      return false;
+    }
+    this.openEventTimestamps.push(now);
+    return true;
   }
 
   /**
@@ -890,11 +1087,14 @@ class LinkInterceptor {
   safeSendMessage(message) {
     if (!chrome.runtime?.id) return;
     try {
-      chrome.runtime.sendMessage(message, () => {
-        if (chrome.runtime.lastError) {
-          // 静默处理扩展重载上下文失效
-        }
+      const chromeResult = chrome.runtime.sendMessage(message, () => {
+        // 静默处理扩展重载上下文失效
+        void chrome.runtime.lastError;
       });
+      // MV3：传入 callback 时仍可能返回会拒绝的 Promise
+      if (chromeResult != null && typeof chromeResult.then === 'function') {
+        chromeResult.then(() => {}, () => {});
+      }
     } catch {
       // 静默处理异常
     }
@@ -902,16 +1102,19 @@ class LinkInterceptor {
 
   /**
    * 初始化拦截器，预加载规则并建立本地缓存与事件监听
+   * @param {{ lightweight?: boolean }} [options] - lightweight=true 时（iframe 内）跳过
+   *   DOM 全量扫描与悬浮预处理，仅保留点击拦截与主世界事件桥接
    */
-  async init() {
+  async init(options = {}) {
     if (this.isInitialized) return;
 
     await this.refreshRulesCache();
-    this.initStorageListener();
+    if (!options.lightweight) {
+      this.initHoverListener();
+      this.initDOMObserver();
+    }
     this.initMainWorldEvents();
     this.initClickListener();
-    this.initHoverListener();
-    this.initDOMObserver();
     this.syncModeToMainWorld();
     this.isInitialized = true;
   }
@@ -922,19 +1125,31 @@ class LinkInterceptor {
   initMainWorldEvents() {
     window.addEventListener('__BETTER_BROWSE_OPEN_NEW_TAB__', (event) => {
       const url = event?.detail?.url;
-      if (this.isSafeHttpUrl(url)) {
-        // 记录已由主世界拦截并处理的时间戳与 URL，彻底杜绝隔离世界二次重复发送消息
-        this.lastHandledUrl = url;
-        this.lastHandledTime = Date.now();
+      if (!this.isSafeHttpUrl(url)) return;
 
-        this.safeSendMessage({
-          action: ActionTypes.OPEN_TAB_BACKGROUND,
-          payload: {
-            url: url,
-            active: true
-          }
-        });
+      // 用户激活校验：合法路径（主世界点击拦截 / window.open 劫持）均在真实用户手势的
+      // 同步调用栈内派发事件，navigator.userActivation 为激活态；
+      // 页面脚本凭空伪造事件不产生用户激活，直接忽略（旧浏览器无此 API 时放行）
+      if (navigator.userActivation && !navigator.userActivation.isActive) {
+        return;
       }
+
+      // 频次限制兜底：即便页面持有真实用户激活，也不允许高频批量开标签
+      if (!this.shouldAllowOpenEvent()) {
+        return;
+      }
+
+      // 记录已由主世界拦截并处理的时间戳与 URL，彻底杜绝隔离世界二次重复发送消息
+      this.lastHandledUrl = url;
+      this.lastHandledTime = Date.now();
+
+      this.safeSendMessage({
+        action: ActionTypes.OPEN_TAB_BACKGROUND,
+        payload: {
+          url: url,
+          active: true
+        }
+      });
     });
   }
 
@@ -972,58 +1187,47 @@ class LinkInterceptor {
   }
 
   /**
-   * 从 Storage 刷新内存规则缓存
+   * 向后台请求当前页最小必要跳转上下文（内容脚本不得直读 chrome.storage / IndexedDB）
    */
   async refreshRulesCache() {
-    return new Promise((resolve) => {
-      if (!chrome.runtime?.id || !chrome.storage?.local) {
-        resolve();
-        return;
-      }
-      try {
-        chrome.storage.local.get([StorageKeys.LINK_RULES, StorageKeys.USER_CONFIG], (result) => {
-          if (!chrome.runtime.lastError && result) {
-            this.linkRules = result[StorageKeys.LINK_RULES] || {};
-            const config = result[StorageKeys.USER_CONFIG] || DefaultConfig;
-            this.globalLinkRule = config.globalLinkRule || { enabled: false, mode: LinkModes.AUTO };
+    if (!chrome.runtime?.id) return;
+    try {
+      const response = await new Promise((resolve) => {
+        const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT }, (result) => {
+          if (chrome.runtime.lastError) {
+            resolve(null);
+            return;
           }
-          resolve();
+          resolve(result);
         });
-      } catch {
-        resolve();
+        if (chromeResult != null && typeof chromeResult.then === 'function') {
+          chromeResult.then(() => {}, () => {});
+        }
+      });
+      const data = response?.data || response;
+      if (data && typeof data === 'object') {
+        this.linkRules = data.linkRules && typeof data.linkRules === 'object' ? data.linkRules : {};
+        this.globalLinkRule = data.globalLinkRule || DefaultConfig.globalLinkRule || {
+          enabled: false,
+          mode: LinkModes.AUTO
+        };
       }
-    });
+    } catch {
+      // 后台未就绪时保持现有内存缓存
+    }
   }
 
   /**
-   * 监听规则更新以实现即时同步（零刷新即时生效）
+   * 合并同步任务：后台 NOTIFY_RULE_UPDATED / NOTIFY_CONFIG_UPDATED 可能短时间内连发，
+   * 防抖后只刷新一次主世界模式与页面链接
    */
-  initStorageListener() {
-    if (!chrome.runtime?.id || !chrome.storage?.onChanged) return;
-    try {
-      chrome.storage.onChanged.addListener((changes, areaName) => {
-        if (!chrome.runtime?.id) return;
-        if (areaName !== 'local') return;
-
-        let changed = false;
-        if (changes[StorageKeys.LINK_RULES]) {
-          this.linkRules = changes[StorageKeys.LINK_RULES].newValue || {};
-          changed = true;
-        }
-        if (changes[StorageKeys.USER_CONFIG]) {
-          const newConfig = changes[StorageKeys.USER_CONFIG].newValue || {};
-          this.globalLinkRule = newConfig.globalLinkRule || { enabled: false, mode: LinkModes.AUTO };
-          changed = true;
-        }
-
-        if (changed) {
-          this.syncModeToMainWorld();
-          this.syncAllPageLinks();
-        }
-      });
-    } catch {
-      // 忽略监听异常
-    }
+  scheduleSync() {
+    clearTimeout(this._syncTimer);
+    this._syncTimer = setTimeout(() => {
+      this._syncTimer = null;
+      this.syncModeToMainWorld();
+      this.syncAllPageLinks();
+    }, 150);
   }
 
   /**
@@ -1120,6 +1324,9 @@ class LinkInterceptor {
       anchor.setAttribute('target', '_blank');
       const rel = anchor.getAttribute('rel') || '';
       if (!rel.includes('noopener')) {
+        if (!anchor.hasAttribute('data-bb-orig-rel')) {
+          anchor.setAttribute('data-bb-orig-rel', rel || '__NONE__');
+        }
         anchor.setAttribute('rel', (rel ? rel + ' ' : '') + 'noopener noreferrer');
       }
     } else if (mode === LinkModes.CURRENT) {
@@ -1136,6 +1343,16 @@ class LinkInterceptor {
           anchor.setAttribute('target', orig);
         }
         anchor.removeAttribute('data-bb-orig-target');
+      }
+      // 同步还原曾被追加的 rel 字段，避免 rel 残留改变站点原生行为
+      if (anchor.hasAttribute('data-bb-orig-rel')) {
+        const origRel = anchor.getAttribute('data-bb-orig-rel');
+        if (origRel === '__NONE__') {
+          anchor.removeAttribute('rel');
+        } else {
+          anchor.setAttribute('rel', origRel);
+        }
+        anchor.removeAttribute('data-bb-orig-rel');
       }
     }
   }
@@ -1157,7 +1374,9 @@ class LinkInterceptor {
     if (!targetElement || typeof targetElement.closest !== 'function') return;
 
     // 1. 过滤原生表单控件与原生 button（除非包含在 a[href] 中）
-    const formControl = targetElement.closest('input, textarea, select, [contenteditable="true"]');
+    const formControl = targetElement.closest(
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]'
+    );
     if (formControl) return;
 
     const buttonEl = targetElement.closest('button');
@@ -1202,15 +1421,17 @@ class LinkInterceptor {
     }
 
     if (effectiveMode === LinkModes.NEW) {
-      // 若 500ms 内主世界或当前拦截器已处理过相同 URL 的打开操作，则直接忽略，杜绝重复开标签
+      // 若 500ms 内主世界或当前拦截器已处理过相同 URL 的打开操作，则阻止默认行为后忽略，
+      // 杜绝重复开标签（该锚点已被 patch 为 target="_blank"，直接放行会触发浏览器原生开标签）
       if (this.lastHandledUrl === fullUrl && (Date.now() - this.lastHandledTime < 500)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         return;
       }
       this.lastHandledUrl = fullUrl;
       this.lastHandledTime = Date.now();
 
       event.preventDefault();
-      event.stopPropagation();
       event.stopImmediatePropagation();
 
       this.safeSendMessage({
@@ -1225,9 +1446,8 @@ class LinkInterceptor {
 
     if (effectiveMode === LinkModes.CURRENT) {
       const currentTarget = (anchor.getAttribute('target') || '').toLowerCase();
-      if (currentTarget === '_blank' || anchor.target === '_blank') {
+      if (currentTarget === '_blank') {
         event.preventDefault();
-        event.stopPropagation();
         event.stopImmediatePropagation();
         window.location.href = fullUrl;
         return;
@@ -1249,9 +1469,29 @@ class LinkInterceptor {
 
 
 
+
+installRuntimeLogger({
+  context: 'content',
+  write: (entry) => new Promise((resolve) => {
+    try {
+      const result = chrome.runtime.sendMessage({ action: ActionTypes.APPEND_RUNTIME_LOG, payload: entry }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+      if (result != null && typeof result.then === 'function') result.catch(() => {});
+    } catch {
+      resolve();
+    }
+  })
+});
+
+// 是否处于 iframe 中：iframe 内启用轻量模式（仅点击拦截与主世界桥接），
+// 跳过 DOM 全量扫描 / 悬浮预处理 / 倒计时卡片，避免广告等海量 iframe 拖累页面性能
+const IS_IN_IFRAME = window.top !== window.self;
+
 // 初始化并启动链接拦截器
 const linkInterceptor = new LinkInterceptor();
-linkInterceptor.init().catch((err) => {
+linkInterceptor.init({ lightweight: IS_IN_IFRAME }).catch((err) => {
   console.warn('[BetterBrowse] 内容脚本链接拦截器初始化失败:', err);
 });
 
@@ -1259,6 +1499,7 @@ linkInterceptor.init().catch((err) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.action) return false;
 
+  // 表单检测在 iframe 内同样有意义（用户可能在 iframe 表单中输入）
   if (message.action === ActionTypes.CHECK_FORM_INPUT) {
     const result = FormDetector.detectActiveForm();
     sendResponse({
@@ -1268,14 +1509,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (message.action === ActionTypes.SHOW_AUTO_STASH_COUNTDOWN) {
+  // 倒计时卡片仅在顶层框架展示
+  if (!IS_IN_IFRAME && message.action === ActionTypes.SHOW_AUTO_STASH_COUNTDOWN) {
     const { countdownSeconds, currentCount, threshold } = message.payload || {};
     CountdownBanner.show({ countdownSeconds, currentCount, threshold });
     sendResponse({ success: true });
     return false;
   }
 
-  if (message.action === ActionTypes.HIDE_AUTO_STASH_COUNTDOWN) {
+  if (!IS_IN_IFRAME && message.action === ActionTypes.HIDE_AUTO_STASH_COUNTDOWN) {
     CountdownBanner.hide();
     sendResponse({ success: true });
     return false;
@@ -1283,8 +1525,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === ActionTypes.NOTIFY_RULE_UPDATED || message.action === ActionTypes.NOTIFY_CONFIG_UPDATED) {
     linkInterceptor.refreshRulesCache().then(() => {
-      linkInterceptor.syncModeToMainWorld();
-      linkInterceptor.syncAllPageLinks();
+      linkInterceptor.scheduleSync();
     });
     sendResponse({ success: true });
     return false;

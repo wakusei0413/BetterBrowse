@@ -69,13 +69,22 @@ export class FormDetector {
       }
 
       // 3. 常见富文本/代码编辑器活跃编辑状态检测（精准排除静态只读代码块）
-      const richEditors = document.querySelectorAll('[contenteditable="true"], .monaco-editor, .CodeMirror, .ql-editor, .ProseMirror');
+      // ⚠️ 仅当编辑器（或其内部输入区）真正持有焦点时才判定为"正在编辑"：
+      //    Slack/Gmail/Notion 等页面常驻大型 contenteditable 容器，
+      //    若仅凭内容长度判定，此类页面将永远无法被自动收纳（系统性误报）
+      const richEditors = document.querySelectorAll(
+        '[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"], .monaco-editor, .CodeMirror, .ql-editor, .ProseMirror'
+      );
       for (const editor of richEditors) {
         if (editor.getAttribute('aria-readonly') === 'true' || editor.classList.contains('read-only')) {
           continue;
         }
-        // 若为真正的 contenteditable 编辑区域且有实质内容
-        if (editor.isContentEditable && editor.textContent && editor.textContent.trim().length > 5) {
+        // 仅当编辑器当前正在被编辑（自身或内部持有焦点）且有实质内容
+        const isEditingHere =
+          editor === document.activeElement ||
+          editor.contains(document.activeElement) ||
+          Boolean(editor.querySelector(':focus'));
+        if (isEditingHere && editor.isContentEditable && editor.textContent && editor.textContent.trim().length > 0) {
           return {
             hasActiveInput: true,
             reason: '富文本正文处于可编辑状态'

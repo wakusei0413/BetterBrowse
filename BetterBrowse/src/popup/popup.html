@@ -23,7 +23,7 @@
     </header>
 
     <!-- 核心功能 1：链接跳转控制（分段滑动胶囊控制器：左-当前标签 / 中-自动模式 / 右-新标签页） -->
-    <section class="card" id="cardLinkMode">
+    <section class="card">
       <div class="card-header">
         <span class="card-label">链接跳转控制</span>
         <span id="domainBadge" class="domain-badge" title="当前访问域名">检测中...</span>
@@ -62,17 +62,13 @@
       </div>
     </section>
 
-    <!-- 核心功能 2：标签页收纳（首位常驻固定小标签页） -->
+    <!-- 核心功能 2：标签页收纳 -->
     <section class="card">
       <div class="card-header">
         <span class="card-label">标签页收纳</span>
-        <div class="tab-counter" id="tabCounterContainer" title="当前窗口标签页数量及阈值">
+        <div class="tab-counter" id="tabCounterContainer" title="当前窗口标签页数量与阈值">
           <span id="tabCountText">标签: 0 / 15</span>
         </div>
-      </div>
-
-      <div class="stash-desc">
-        全量收纳当前窗口所有标签页至首位常驻收纳箱，释放内存保持清爽。
       </div>
 
       <div class="stash-action-row">
@@ -84,7 +80,7 @@
           </svg>
           <span id="btnExecuteStashText">立即收纳当前窗口</span>
         </button>
-        <button type="button" class="secondary-btn" id="btnViewStash" title="打开/激活最左侧第1位固定收纳标签页">
+        <button type="button" class="secondary-btn" id="btnViewStash" title="查看标签收纳箱">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect>
             <line x1="3" y1="9" x2="21" y2="9"></line>

@@ -6,6 +6,18 @@
 
 export class MessageBus {
   /**
+   * 吞掉 Chrome MV3 在传入 callback 时仍可能返回的拒绝 Promise。
+   * 典型症状：Uncaught (in promise) Error: No tab with id / Receiving end does not exist
+   * @param {any} result
+   */
+  static settleChromePromise(result) {
+    if (result != null && typeof result.then === 'function') {
+      result.then(() => {}, () => {});
+    }
+    return result;
+  }
+
+  /**
    * 发送消息至后台 Service Worker
    * @param {string} action - 动作名称（来自 ActionTypes）
    * @param {any} [payload=null] - 消息负载数据
@@ -14,7 +26,7 @@ export class MessageBus {
   static async sendToBackground(action, payload = null) {
     return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ action, payload }, (response) => {
+        const chromeResult = chrome.runtime.sendMessage({ action, payload }, (response) => {
           const lastError = chrome.runtime.lastError;
           if (lastError) {
             resolve({
@@ -25,6 +37,7 @@ export class MessageBus {
           }
           resolve(response || { success: false, error: '后台未处理该动作' });
         });
+        this.settleChromePromise(chromeResult);
       } catch (err) {
         resolve({
           success: false,
@@ -57,7 +70,7 @@ export class MessageBus {
         resolve(value);
       };
       try {
-        chrome.tabs.sendMessage(tabId, { action, payload }, (response) => {
+        const chromeResult = chrome.tabs.sendMessage(tabId, { action, payload }, (response) => {
           const lastError = chrome.runtime.lastError;
           if (lastError) {
             // 很多特殊标签页（如 chrome://, edge://, 空白页）无法注入脚本，属正常预期
@@ -69,6 +82,8 @@ export class MessageBus {
           }
           finish(response || { success: true });
         });
+        // MV3：即使传入 callback，sendMessage 仍可能返回会拒绝的 Promise
+        this.settleChromePromise(chromeResult);
       } catch (err) {
         finish({
           success: false,

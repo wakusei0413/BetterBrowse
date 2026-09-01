@@ -7,7 +7,7 @@
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { RuleEngine } from '../rules/rule-engine.js';
 import { LocalStashRepository } from './local-stash-repo.js';
-import { isExcludedFromTabCounting, isOwnOptionsUrl } from '../extension-url.js';
+import { filterCountableTabs, isExcludedFromTabCounting, isOwnOptionsUrl } from '../extension-url.js';
 
 export class StashService {
   /**
@@ -31,6 +31,32 @@ export class StashService {
       activityStats,
       config
     });
+  }
+
+  /**
+   * 安全批量关闭标签页（容忍收纳评估期间标签页已被用户手动关闭的竞态）
+   * 批量 chrome.tabs.remove 中只要有一个 ID 已不存在就会整体抛出
+   * "No tab with id" 并使整个收纳流程失败，此处降级为逐个关闭并跳过已消失的标签。
+   * @param {number[]} tabIds - 待关闭的标签页 ID 列表
+   * @returns {Promise<number>} 实际成功关闭的标签页数量
+   */
+  static async closeTabsSafely(tabIds) {
+    if (!Array.isArray(tabIds) || tabIds.length === 0) return 0;
+    try {
+      await chrome.tabs.remove(tabIds);
+      return tabIds.length;
+    } catch {
+      let closedCount = 0;
+      for (const tabId of tabIds) {
+        try {
+          await chrome.tabs.remove([tabId]);
+          closedCount += 1;
+        } catch {
+          // 标签页已关闭或不存在的竞态，直接跳过
+        }
+      }
+      return closedCount;
+    }
   }
 
   /**
@@ -154,22 +180,29 @@ export class StashService {
         return { success: false, stashedCount: 0, error: createRes?.error || '写入本地收纳仓储失败' };
       }
 
-      // 2. 唤起并置顶第 1 个位置的常驻固定小标签页（Pinned Tab）
+      // 2. 仅关闭 URL 确实已持久化的标签页：
+      //    allowDuplicates=false 时重复项会被仓储跳过（group 可能为 null），绝不关闭未保存的标签
+      const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
+      const closableTabs = tabsToStash.filter((tab) => savedUrls.has(tab.url));
+
+      if (closableTabs.length === 0) {
+        return { success: true, stashedCount: 0 };
+      }
+
+      // 3. 唤起并置顶第 1 个位置的常驻固定小标签页（Pinned Tab）
       const settings = (await StorageAdapter.getUserConfig()).stashSettings || {};
       await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
 
-      // 3. 关闭所有被收纳的标签页
-      const tabIdsToClose = tabsToStash
+      // 4. 关闭所有被收纳的标签页（容忍收纳期间被用户手动关闭的竞态）
+      const tabIdsToClose = closableTabs
         .map((tab) => tab.id)
         .filter((id) => typeof id === 'number');
 
-      if (tabIdsToClose.length > 0) {
-        await chrome.tabs.remove(tabIdsToClose);
-      }
+      const closedCount = await StashService.closeTabsSafely(tabIdsToClose);
 
       return {
         success: true,
-        stashedCount: tabIdsToClose.length
+        stashedCount: closedCount
       };
     } catch (err) {
       console.error('[StashService] 全量收纳执行异常:', err);
@@ -179,33 +212,141 @@ export class StashService {
 
   /**
    * 智能规则过滤收纳（仅在达到标签阈值时后台自动提醒/触发使用）
+   *
+   * 采用"阶梯式降级收纳"策略，确保收纳后必定降到阈值以下：
+   * 1. 以标准规则（P0~P3）执行第一轮评估；
+   * 2. 若收纳后可计数标签页数量仍不低于阈值，则逐级放宽软性保护
+   *    （"最近访问"窗口逐级缩短、"高频访问"门槛逐级提高），直至降到阈值以下；
+   * 3. 所有软性保护放宽到极限仍不达标时，若启用终极兜底，则按重要度从低到高
+   *    强制回收最不重要的标签页（始终保护正在播放媒体、正在输入表单、
+   *    前台激活、固定标签页及系统页面）；
+   * 4. 若硬性保护标签数量本身超出目标剩余数量，则放弃本次自动收纳并明确提示。
+   *
    * @param {Record<number, { lastActivated: number, activationTimestamps: number[] }>} [activityStats={}]
    * @param {number} [targetWindowId=null]
-   * @returns {Promise<{ success: boolean, stashedCount: number, keptCount: number, error?: string }>}
+   * @returns {Promise<{ success: boolean, stashedCount: number, keptCount: number, tierLevel: number|string, reachedTarget: boolean, note?: string, error?: string }>}
    */
   async executeSmartStash(activityStats = {}, targetWindowId = null) {
     const config = await StorageAdapter.getUserConfig();
+    const tierSettings = config.tieredStash && typeof config.tieredStash === 'object' ? config.tieredStash : {};
     const queryOptions = targetWindowId ? { windowId: targetWindowId } : { currentWindow: true };
     const allTabs = await chrome.tabs.query(queryOptions);
 
     // 记录用户当前正在前台浏览的页面
     const currentActiveTab = allTabs.find((t) => t.active);
+    const windowId = targetWindowId || (allTabs.length > 0 ? allTabs[0].windowId : null);
 
-    const evaluation = await this.ruleEngine.evaluateTabs({
-      allTabs,
-      activityStats,
-      config
-    });
+    // 与阈值监控保持同一计数口径（排除系统页/新标签页/插件自身页面）
+    const countableTabs = filterCountableTabs(allTabs);
+    const currentCount = countableTabs.length;
+    const threshold = Number.isFinite(config.tabThreshold) ? Math.max(1, Math.floor(config.tabThreshold)) : 15;
+
+    // 当前可计数标签页数量未达到阈值，无需任何回收
+    if (currentCount < threshold) {
+      return {
+        success: true,
+        stashedCount: 0,
+        keptCount: allTabs.length,
+        tierLevel: 0,
+        reachedTarget: true,
+        note: '标签页数量未超出阈值，无需智能收纳'
+      };
+    }
+
+    const tierEnabled = tierSettings.enabled !== false;
+    const maxTiers = tierEnabled ? Math.max(0, Number.isFinite(tierSettings.maxTiers) ? Math.floor(tierSettings.maxTiers) : 5) : 0;
+    const safetyMargin = Math.max(0, Number.isFinite(tierSettings.targetSafetyMargin) ? Math.floor(tierSettings.targetSafetyMargin) : 0);
+    // 达标标准：收纳后可计数数量 < 阈值（再额外减去安全余量），确保不再触发提醒
+    const targetRemaining = Math.max(0, threshold - 1 - safetyMargin);
+
+    // 跨阶梯复用表单检测结果，避免多轮评估时重复向页面发消息
+    const formResultsCache = new Map();
+
+    let evaluation = null;
+    let finalTierLevel = 0;
+    let reachedTarget = false;
+
+    // === 阶梯循环：逐级放宽软性保护，直至收纳后降到阈值以下 ===
+    for (let level = 0; level <= maxTiers; level++) {
+      const tierContext = RuleEngine.buildTierContext(config, level, tierSettings);
+      evaluation = await this.ruleEngine.evaluateTabs({
+        allTabs,
+        activityStats,
+        config,
+        tierContext,
+        formResultsCache
+      });
+
+      const stashCountable = evaluation.tabsToStash.filter(({ tab }) => !isExcludedFromTabCounting(tab)).length;
+      const remainingAfter = currentCount - stashCountable;
+      finalTierLevel = level;
+      if (remainingAfter <= targetRemaining) {
+        reachedTarget = true;
+        break;
+      }
+    }
+
+    // === 终极兜底：软性保护已全部放开仍不达标时，按重要度强制回收 ===
+    if (!reachedTarget && tierSettings.ultimateFallback !== false) {
+      const hardCoreContext = { hardCoreOnly: true, level: -1, softRulesEscalated: true };
+      const hardEvaluation = await this.ruleEngine.evaluateTabs({
+        allTabs,
+        activityStats,
+        config,
+        tierContext: hardCoreContext,
+        formResultsCache
+      });
+
+      const hardCount = hardEvaluation.tabsToKeep.filter(({ tab }) => !isExcludedFromTabCounting(tab)).length;
+
+      // 若硬性保护标签数量本身就超出目标剩余数，则无论如何都无法降到阈值以下
+      if (hardCount > targetRemaining) {
+        await StashService.ensurePinnedStashTab(false, windowId);
+        return {
+          success: false,
+          stashedCount: 0,
+          keptCount: hardEvaluation.tabsToKeep.length,
+          tierLevel: 'hardLimit',
+          reachedTarget: false,
+          error: `当前受硬性保护的标签页数量（${hardCount}）已超出目标剩余数量（${targetRemaining}），无法自动降至阈值以下，请手动整理`,
+          note: '硬性保护包括：正在播放媒体、正在输入表单、前台激活、固定标签页及系统页面'
+        };
+      }
+
+      // 从未被硬性保护的标签页中，按重要度从低到高依次强制回收，直到达标
+      const candidates = hardEvaluation.tabsToStash
+        .map(({ tab }) => ({ tab, score: this.computeImportanceScore(tab, activityStats) }))
+        .sort((a, b) => a.score - b.score);
+
+      const needCount = currentCount - targetRemaining; // 需要回收的可计数标签页数量
+      let collectedCount = 0;
+      const forcedStash = [];
+      for (const item of candidates) {
+        if (collectedCount >= needCount) break;
+        if (isExcludedFromTabCounting(item.tab)) continue; // 跳过不计数的无意义页面
+        collectedCount++;
+        forcedStash.push(item.tab);
+      }
+
+      evaluation = {
+        tabsToKeep: hardEvaluation.tabsToKeep,
+        tabsToStash: forcedStash.map((tab) => ({ tab })),
+        total: allTabs.length
+      };
+      finalTierLevel = 'ultimateFallback';
+      reachedTarget = true;
+    }
 
     const { tabsToKeep, tabsToStash } = evaluation;
-    const windowId = targetWindowId || (allTabs.length > 0 ? allTabs[0].windowId : null);
 
     if (!tabsToStash || tabsToStash.length === 0) {
       await StashService.ensurePinnedStashTab(false, windowId);
       return {
         success: true,
         stashedCount: 0,
-        keptCount: tabsToKeep.length
+        keptCount: tabsToKeep.length,
+        tierLevel: finalTierLevel,
+        reachedTarget
       };
     }
 
@@ -223,24 +364,41 @@ export class StashService {
         success: false,
         stashedCount: 0,
         keptCount: tabsToKeep.length,
+        tierLevel: finalTierLevel,
+        reachedTarget,
         error: createRes?.error || '写入本地收纳仓储失败'
       };
     }
 
-    // 2. 确保首位常驻固定小标签存在（静默后台处理，activate: false 绝不抢占用户焦点）
+    // 2. 仅关闭 URL 确实已持久化的标签页：
+    //    allowDuplicates=false 时重复项会被仓储跳过（group 可能为 null），
+    //    此时若照常关闭，被跳过的 URL 将既不在任何可见收纳组中、标签也被关闭，造成数据静默丢失
+    const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
+    const closableStash = tabsToStash.filter(({ tab }) => savedUrls.has(tab.url));
+
+    if (closableStash.length === 0) {
+      return {
+        success: true,
+        stashedCount: 0,
+        keptCount: tabsToKeep.length,
+        tierLevel: finalTierLevel,
+        reachedTarget,
+        note: '所选标签页均已存在于收纳箱中（跳过重复项），未关闭任何标签页'
+      };
+    }
+
+    // 3. 确保首位常驻固定小标签存在（静默后台处理，activate: false 绝不抢占用户焦点）
     const settings = config.stashSettings || {};
     await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
 
-    // 3. 安全关闭所有被收纳的闲置标签页
-    const tabIdsToClose = tabsToStash
+    // 4. 安全关闭所有被收纳的闲置标签页（容忍收纳期间被用户手动关闭的竞态）
+    const tabIdsToClose = closableStash
       .map(({ tab }) => tab.id)
       .filter((id) => typeof id === 'number');
 
-    if (tabIdsToClose.length > 0) {
-      await chrome.tabs.remove(tabIdsToClose);
-    }
+    const closedCount = await StashService.closeTabsSafely(tabIdsToClose);
 
-    // 4. 确保用户当前浏览的前台页面稳固保持激活，实现 100% 无感浏览体验
+    // 5. 确保用户当前浏览的前台页面稳固保持激活，实现 100% 无感浏览体验
     if (currentActiveTab && typeof currentActiveTab.id === 'number' && !tabIdsToClose.includes(currentActiveTab.id)) {
       try {
         await chrome.tabs.update(currentActiveTab.id, { active: true });
@@ -249,9 +407,43 @@ export class StashService {
 
     return {
       success: true,
-      stashedCount: tabIdsToClose.length,
-      keptCount: tabsToKeep.length
+      stashedCount: closedCount,
+      keptCount: tabsToKeep.length,
+      tierLevel: finalTierLevel,
+      reachedTarget
     };
+  }
+
+  /**
+   * 计算标签页重要度评分（分数越低越不重要，越先被强制回收）
+   *
+   * 评分维度：
+   * - 最近 1 小时内的激活次数（每次 +10 分）
+   * - 最近访问时间（60 分钟内线性衰减，越近越重要，最高 +60 分）
+   * - 从未产生激活记录的标签页视为最低优先级（-100 分，最先回收）
+   *
+   * @param {chrome.tabs.Tab} tab
+   * @param {Record<number, { lastActivated: number, activationTimestamps: number[] }>} [activityStats={}]
+   * @returns {number}
+   */
+  computeImportanceScore(tab, activityStats = {}) {
+    const stat = activityStats?.[tab.id];
+    const activationCount = stat?.activationTimestamps?.length || 0;
+    const lastActivated = stat?.lastActivated || 0;
+    const now = Date.now();
+
+    let score = 0;
+    // 激活次数越多越重要（每次 +10 分）
+    score += activationCount * 10;
+    // 最近访问越近越重要（最近 60 分钟内线性衰减，超出 60 分钟记为 0）
+    if (lastActivated > 0) {
+      score += Math.max(0, 60 - (now - lastActivated) / 60000);
+    }
+    // 从未产生过激活记录的标签页优先级最低，最先被回收
+    if (activationCount === 0 && lastActivated <= 0) {
+      score -= 100;
+    }
+    return score;
   }
 
   /**

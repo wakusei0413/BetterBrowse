@@ -69,10 +69,41 @@
           </svg>
           <span class="nav-label">数据备份与迁移</span>
         </button>
+
+        <button class="nav-item" data-tab="sync" type="button" id="navTabSync" role="tab" aria-selected="false" aria-controls="tab-sync" tabindex="-1">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 7h-9"></path>
+            <path d="M14 17H5"></path>
+            <circle cx="17" cy="17" r="3"></circle>
+            <circle cx="7" cy="7" r="3"></circle>
+          </svg>
+          <span class="nav-label">云端同步</span>
+        </button>
+
+        <button class="nav-item" data-tab="logs" type="button" id="navTabLogs" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 19h16"></path>
+            <path d="M4 15h16"></path>
+            <path d="M4 11h10"></path>
+            <path d="M4 7h12"></path>
+          </svg>
+          <span class="nav-label">运行日志</span>
+        </button>
+
+        <button class="nav-item" data-tab="ai-bridge" type="button" id="navTabAiBridge" role="tab" aria-selected="false" aria-controls="tab-ai-bridge" tabindex="-1">
+          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="7" width="16" height="10" rx="2"></rect>
+            <path d="M12 3v4"></path>
+            <circle cx="9" cy="12" r="1"></circle>
+            <circle cx="15" cy="12" r="1"></circle>
+            <path d="M9 21h6"></path>
+          </svg>
+          <span class="nav-label">AI 桥接</span>
+        </button>
       </nav>
 
       <div class="sidebar-footer">
-        <span class="version-tag">BetterBrowse · Milestone 1</span>
+        <span class="version-tag" id="softwareVersionTag">BetterBrowse · -</span>
       </div>
     </aside>
 
@@ -83,7 +114,7 @@
         <div class="panel-header">
           <div>
             <h2 class="panel-title">标签收纳箱</h2>
-            <p class="panel-desc">常驻首位小标签，智能保护活跃内容，支持即地命名、星标置顶、锁定保护与一键恢复</p>
+            <p class="panel-desc">管理已收纳的网页与标签组</p>
           </div>
           <div class="panel-actions">
             <div class="search-box-wrapper">
@@ -110,24 +141,6 @@
           </div>
         </div>
 
-        <!-- 时间区间筛选状态提示横幅 -->
-        <div id="stashTimeFilterBanner" class="time-filter-banner hidden">
-          <div class="time-filter-info">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="10"></circle>
-              <polyline points="12 6 12 12 16 14"></polyline>
-            </svg>
-            <span id="stashTimeFilterText">正在查看指定时间段：2026年08月</span>
-          </div>
-          <button id="btnStashClearTimeFilter" class="btn btn-secondary btn-sm" type="button">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-            <span>清除筛选并查看全部</span>
-          </button>
-        </div>
-
         <!-- 左右分栏容器 -->
         <div class="stash-layout-container">
           <!-- 左侧：主要收纳卡片流 -->
@@ -139,7 +152,7 @@
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
                 </svg>
                 <span class="empty-title">收纳箱目前是空的</span>
-                <span class="empty-desc">当您在右上角点击「立即收纳」或标签页数量超出阈值时，未活跃标签将自动保存于此处。</span>
+                <span class="empty-desc">点击「立即收纳」或标签页数量超过阈值时，未活跃标签将自动保存于此处。</span>
               </div>
             </div>
             <div id="stashScrollSentinel" class="stash-scroll-sentinel"></div>
@@ -149,83 +162,58 @@
               </svg>
               <span>正在加载更多标签组...</span>
             </div>
+
+            <details id="recycleBinCard" class="card recycle-bin-card">
+              <summary class="card-title">30 天回收站</summary>
+              <p class="card-desc">删除的收纳组与条目会在此保留 30 天，可恢复或永久删除。</p>
+              <div class="btn-group">
+                <button id="btnRecycleBinRefresh" class="btn btn-secondary btn-sm" type="button">刷新</button>
+              </div>
+              <div id="recycleBinList" class="sync-list"></div>
+            </details>
           </div>
 
-          <!-- 右侧：时间导航目录吸顶面板 -->
-          <aside id="stashTimelineAside" class="stash-timeline-aside" aria-label="收纳时间导航目录">
-            <div class="timeline-card">
-              <div class="timeline-header">
-                <div class="timeline-title-wrap">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="timeline-icon" aria-hidden="true">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <polyline points="12 6 12 12 16 14"></polyline>
-                  </svg>
-                  <h3 class="timeline-title">时间索引目录</h3>
-                </div>
-                <div class="timeline-header-actions">
-                  <button id="btnToggleAllTimeTree" class="timeline-action-icon-btn" title="全部展开 / 全部收起" type="button" aria-label="全部展开或收起目录">
-                    <svg class="icon-toggle-expand" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="7 13 12 18 17 13"></polyline>
-                      <polyline points="7 6 12 11 17 6"></polyline>
-                    </svg>
-                  </button>
-                  <button id="btnCloseTimelineDrawer" class="timeline-action-icon-btn timeline-drawer-close" title="关闭目录" type="button" aria-label="关闭目录">
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <line x1="18" y1="6" x2="6" y2="18"></line>
-                      <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                  </button>
-                </div>
-              </div>
-
-              <!-- 星标置顶快捷入口 -->
-              <div id="timelineStarredNode" class="timeline-starred-entry hidden" role="button" tabindex="0" title="跳转至置顶星标组">
-                <div class="timeline-starred-main">
-                  <svg class="star-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="none" aria-hidden="true">
-                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
-                  </svg>
-                  <span class="timeline-starred-label">星标置顶标签组</span>
-                </div>
-                <span id="timelineStarredCount" class="tree-badge">0</span>
-              </div>
-
-              <!-- 时间树容器 (年 > 月 > 周 > 日) -->
-              <div id="stashTimeTree" class="stash-time-tree" role="tree" aria-label="收纳时间目录树">
-                <!-- 动态渲染时间树节点 -->
-              </div>
+          <!-- 右侧：高颜值单线时间轴滚动条 (分级收纳、直观日期、可拖拽游标) -->
+          <div id="timelineScrollbar" class="timeline-scrollbar-track" aria-label="时间线滚动条">
+            <!-- 时间游标滑块 (在轴线上滑动；轴线由节点容器的 ::before 伪元素贯通绘制) -->
+            <div id="timelineScrubberThumb" class="timeline-scrubber-thumb">
+              <div class="thumb-cursor-dot"></div>
             </div>
-          </aside>
+
+            <!-- 纯自然时间树（年 > 月 > 周）单轴节点流容器 -->
+            <div id="timelineNodesContainer" class="timeline-nodes-axis-container"></div>
+          </div>
         </div>
       </section>
 
-      <!-- Tab 2: 收纳箱设置 (14 项精细化运行偏好) -->
+      <!-- Tab 2: 收纳箱设置 -->
       <section id="tab-stash-settings" class="tab-panel" role="tabpanel" aria-labelledby="navTabStashSettings" hidden>
         <div class="panel-header">
           <div>
             <h2 class="panel-title">收纳箱设置</h2>
-            <p class="panel-desc">精细化配置标签页收纳、恢复、去重、备份及视觉展示行为（自动实时保存）</p>
+            <p class="panel-desc">配置标签页收纳、恢复与显示偏好</p>
           </div>
           <div class="autosave-badge" id="stashSettingsAutoSaveIndicator">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <polyline points="20 6 9 17 4 12"></polyline>
             </svg>
-            <span>设置已自动保存</span>
+            <span>修改已自动保存</span>
           </div>
         </div>
 
         <div class="settings-grid">
           <!-- 1. 恢复与打开行为 -->
           <div class="card">
-            <h3 class="card-title">1. 标签恢复与打开偏好</h3>
+            <h3 class="card-title">恢复与打开行为</h3>
             
             <div class="setting-item">
               <div class="setting-info" id="infoRestoreBehavior">
                 <span class="setting-label">恢复标签后的处理方式</span>
-                <span class="setting-hint">当您点击单个标签或整组恢复时，原收纳记录的处理策略</span>
+                <span class="setting-hint">恢复单个标签或整组标签后，原收纳记录的处理策略</span>
               </div>
               <select id="selectRestoreBehavior" class="form-select" aria-labelledby="infoRestoreBehavior">
-                <option value="remove">恢复后从收纳箱删除 (默认)</option>
-                <option value="keep">恢复后在列表中保留</option>
+                <option value="remove">恢复后从收纳箱移除 (默认)</option>
+                <option value="keep">恢复后继续保留在列表中</option>
                 <option value="archive">恢复后标记为已归档</option>
               </select>
             </div>
@@ -233,23 +221,23 @@
             <div class="setting-item">
               <div class="setting-info" id="infoRestorePosition">
                 <span class="setting-label">恢复标签的窗口位置</span>
-                <span class="setting-hint">一键恢复整组标签页时是在当前窗口打开还是新建窗口</span>
+                <span class="setting-hint">恢复整组标签页时的打开位置</span>
               </div>
               <select id="selectRestorePosition" class="form-select" aria-labelledby="infoRestorePosition">
-                <option value="currentWindow">在当前浏览器窗口打开 (默认)</option>
-                <option value="newWindow">新建独立窗口全部打开</option>
+                <option value="currentWindow">在当前窗口打开 (默认)</option>
+                <option value="newWindow">在新窗口打开</option>
               </select>
             </div>
           </div>
 
           <!-- 2. 重复标签与标题策略 -->
           <div class="card">
-            <h3 class="card-title">2. 重复收纳与标题更新</h3>
+            <h3 class="card-title">重复收纳与标题</h3>
 
             <div class="setting-item">
               <div class="setting-info" id="infoAllowDuplicates">
-                <span class="setting-label">允许收纳重复的网址 (URL)</span>
-                <span class="setting-hint">关闭后，若收纳箱已存在相同 URL 则静默跳过，避免内容冗余</span>
+                <span class="setting-label">允许收纳重复网址</span>
+                <span class="setting-hint">关闭后，若收纳箱已存在相同网址则自动跳过</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkAllowDuplicates" aria-labelledby="infoAllowDuplicates">
@@ -260,23 +248,23 @@
             <div class="setting-item">
               <div class="setting-info" id="infoExistingTabTitle">
                 <span class="setting-label">重复收纳时的标题策略</span>
-                <span class="setting-hint">当再次收纳已存在的网址时，使用初次收纳的标题还是更新为最新网页标题</span>
+                <span class="setting-hint">再次收纳已存在网址时的标题更新策略</span>
               </div>
               <select id="selectExistingTabTitle" class="form-select" aria-labelledby="infoExistingTabTitle">
-                <option value="useOriginal">保留初次收纳标题 (默认)</option>
-                <option value="useLatest">更新为最新网页标题</option>
+                <option value="useOriginal">保留初次收纳时的标题 (默认)</option>
+                <option value="useLatest">更新为当前最新网页标题</option>
               </select>
             </div>
           </div>
 
           <!-- 3. 交互与视觉体验 -->
           <div class="card">
-            <h3 class="card-title">3. 交互体验与首位守护</h3>
+            <h3 class="card-title">交互与常驻守护</h3>
 
             <div class="setting-item">
               <div class="setting-info" id="infoAutoOpenStashTab">
                 <span class="setting-label">收纳后自动切换至收纳箱</span>
-                <span class="setting-hint">点击右上角或弹出窗「立即收纳」后自动激活首位收纳箱页面</span>
+                <span class="setting-hint">收纳完成后自动激活首位收纳箱页面</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkAutoOpenStashTab" aria-labelledby="infoAutoOpenStashTab">
@@ -286,8 +274,8 @@
 
             <div class="setting-item">
               <div class="setting-info" id="infoPinnedTabGuard">
-                <span class="setting-label">首位常驻收纳箱守护 (Pinned Guard)</span>
-                <span class="setting-hint">在浏览器首位固定收纳箱小图标，防止误关并提供快速访问</span>
+                <span class="setting-label">首位常驻收纳箱守护</span>
+                <span class="setting-hint">在浏览器最左侧固定收纳箱标签页，防止误关并方便快速打开</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkPinnedTabGuard" aria-labelledby="infoPinnedTabGuard">
@@ -298,7 +286,7 @@
             <div class="setting-item">
               <div class="setting-info" id="infoDeleteConfirmation">
                 <span class="setting-label">删除收纳组二次确认</span>
-                <span class="setting-hint">点击删除或清空收纳组前弹出确认提示，防止误删</span>
+                <span class="setting-hint">删除或清空收纳组前弹出确认提示，防止误删</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkDeleteConfirmation" aria-labelledby="infoDeleteConfirmation">
@@ -307,36 +295,25 @@
             </div>
 
             <div class="setting-item">
-              <div class="setting-info" id="infoShowTabCountBadge">
-                <span class="setting-label">扩展图标显示未恢复标签数</span>
-                <span class="setting-hint">在浏览器右上角 BetterBrowse 图标上显示当前收纳箱未恢复的标签总数 Badge</span>
-              </div>
-              <label class="switch">
-                <input type="checkbox" id="chkShowTabCountBadge" aria-labelledby="infoShowTabCountBadge">
-                <span class="slider"></span>
-              </label>
-            </div>
-
-            <div class="setting-item">
               <div class="setting-info" id="infoDisplayDensity">
-                <span class="setting-label">收纳箱列表展示密度</span>
-                <span class="setting-hint">选择收纳箱列表的行高与间距模式</span>
+                <span class="setting-label">收纳列表排版密度</span>
+                <span class="setting-hint">调整收纳箱列表的行高与间距模式</span>
               </div>
               <select id="selectDisplayDensity" class="form-select" aria-labelledby="infoDisplayDensity">
-                <option value="comfortable">舒适模式 (间距适中，默认)</option>
-                <option value="compact">紧凑模式 (高信息密度)</option>
+                <option value="comfortable">舒适模式 (推荐)</option>
+                <option value="compact">紧凑模式</option>
               </select>
             </div>
           </div>
 
           <!-- 4. 自动定时备份与归档 -->
           <div class="card">
-            <h3 class="card-title">4. 本地自动快照与安全备份</h3>
+            <h3 class="card-title">本地自动快照</h3>
 
             <div class="setting-item">
               <div class="setting-info" id="infoAutoBackupEnabled">
-                <span class="setting-label">开启本地每日自动安全快照</span>
-                <span class="setting-hint">每日首次使用时在本地持久化仓储中自动生成全量数据快照，防止误操作丢失</span>
+                <span class="setting-label">每日自动本地快照</span>
+                <span class="setting-hint">每日首次使用时在本地生成数据快照，防止误操作丢失</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkAutoBackupEnabled" aria-labelledby="infoAutoBackupEnabled">
@@ -346,8 +323,8 @@
 
             <div class="setting-item">
               <div class="setting-info" id="infoBackupRetentionDays">
-                <span class="setting-label">自动备份快照保留周期</span>
-                <span class="setting-hint">历史快照自动清理时间周期</span>
+                <span class="setting-label">快照保留周期</span>
+                <span class="setting-hint">超出此周期的快照将被自动清理</span>
               </div>
               <select id="selectBackupRetentionDays" class="form-select" aria-labelledby="infoBackupRetentionDays">
                 <option value="7">保留最近 7 天</option>
@@ -363,26 +340,26 @@
       <section id="tab-rules" class="tab-panel" role="tabpanel" aria-labelledby="navTabRules" hidden>
         <div class="panel-header">
           <div>
-            <h2 class="panel-title">智能收纳规则配置</h2>
-            <p class="panel-desc">自定义标签页保留优先级与自动收纳触发阈值（修改即刻自动保存）</p>
+            <h2 class="panel-title">智能收纳规则</h2>
+            <p class="panel-desc">自定义保留规则与触发阈值</p>
           </div>
           <div class="autosave-badge" id="rulesAutoSaveIndicator">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <polyline points="20 6 9 17 4 12"></polyline>
             </svg>
-            <span>配置已自动同步</span>
+            <span>修改已自动保存</span>
           </div>
         </div>
 
         <div class="settings-grid">
           <!-- 阈值与时间设置 -->
           <div class="card">
-            <h3 class="card-title">触发与时间参数</h3>
+            <h3 class="card-title">触发与时间设置</h3>
             
             <div class="setting-item">
               <div class="setting-info" id="infoTabThreshold">
                 <span class="setting-label">标签页数量阈值</span>
-                <span class="setting-hint">当当前窗口标签页总数达到此数值时，将触发收纳提示</span>
+                <span class="setting-hint">当前窗口标签页数量达到此数值时触发收纳提醒</span>
               </div>
               <div class="input-with-unit">
                 <input type="number" id="inputTabThreshold" class="num-input" min="5" max="100" value="15" aria-labelledby="infoTabThreshold" />
@@ -392,8 +369,8 @@
 
             <div class="setting-item">
               <div class="setting-info" id="infoRecentMinutes">
-                <span class="setting-label">“最近访问”保留窗口</span>
-                <span class="setting-hint">在此时间段内激活浏览过的标签页将被视为活跃并予以保留</span>
+                <span class="setting-label">“最近访问”保护时间</span>
+                <span class="setting-hint">此时间内访问过的标签页将被保留</span>
               </div>
               <div class="input-with-unit">
                 <input type="number" id="inputRecentMinutes" class="num-input" min="1" max="60" value="5" aria-labelledby="infoRecentMinutes" />
@@ -403,8 +380,8 @@
 
             <div class="setting-item">
               <div class="setting-info" id="infoAutoStash">
-                <span class="setting-label">超出阈值自动智能收纳</span>
-                <span class="setting-hint">当标签达到阈值时，在前台弹出倒计时悬浮卡片并自动收纳闲置标签（可随时点击取消）</span>
+                <span class="setting-label">达到阈值时自动收纳</span>
+                <span class="setting-hint">标签超标时在网页显示倒计时卡片并自动收纳闲置标签（可随时取消）</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkAutoStash" aria-labelledby="infoAutoStash">
@@ -414,8 +391,8 @@
 
             <div class="setting-item">
               <div class="setting-info" id="infoCountdownSeconds">
-                <span class="setting-label">自动收纳倒计时时长</span>
-                <span class="setting-hint">触发自动收纳前的倒数缓冲时长（秒）</span>
+                <span class="setting-label">倒计时时长</span>
+                <span class="setting-hint">自动收纳前的倒计时缓冲时间</span>
               </div>
               <div class="input-with-unit">
                 <input type="number" id="inputCountdownSeconds" class="num-input" min="3" max="60" value="15" aria-labelledby="infoCountdownSeconds" />
@@ -425,11 +402,70 @@
 
             <div class="setting-item">
               <div class="setting-info" id="infoAutoNotify">
-                <span class="setting-label">桌面通知备用提醒</span>
-                <span class="setting-hint">在无法展示网页倒计时卡片时（如特殊系统页）弹出系统通知</span>
+                <span class="setting-label">系统通知备用提醒</span>
+                <span class="setting-hint">在系统内置页等无法展示网页卡片时发送系统通知</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkAutoNotify" aria-labelledby="infoAutoNotify">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- 阶梯式降级收纳设置组 -->
+            <div class="setting-divider" role="separator"></div>
+            <h4 class="sub-section-title">阶梯式降级收纳</h4>
+
+            <div class="setting-item">
+              <div class="setting-info" id="infoTieredStash">
+                <span class="setting-label">启用阶梯式降级收纳</span>
+                <span class="setting-hint">标准收纳后标签仍超标时，逐级放宽软性保护（缩短访问窗口、提高频次门槛）直至降到阈值以下</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkTieredStash" aria-labelledby="infoTieredStash">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="setting-item" id="rowTierStepSeconds">
+              <div class="setting-info" id="infoTierStepSeconds">
+                <span class="setting-label">每级降级步长</span>
+                <span class="setting-hint">每放宽一级将“最近访问”保护窗口缩短的时长</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTierStepSeconds" class="num-input" min="1" max="300" value="60" aria-labelledby="infoTierStepSeconds" />
+                <span class="unit-text">秒/级</span>
+              </div>
+            </div>
+
+            <div class="setting-item" id="rowTierMaxLevels">
+              <div class="setting-info" id="infoTierMaxLevels">
+                <span class="setting-label">最大降级层数</span>
+                <span class="setting-hint">软性保护最多放宽的轮数（设为 0 表示不降级）</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTierMaxLevels" class="num-input" min="0" max="20" value="5" aria-labelledby="infoTierMaxLevels" />
+                <span class="unit-text">级</span>
+              </div>
+            </div>
+
+            <div class="setting-item" id="rowTierSafetyMargin">
+              <div class="setting-info" id="infoTierSafetyMargin">
+                <span class="setting-label">达标缓冲余量</span>
+                <span class="setting-hint">标签数降到阈值以下后额外多收纳的标签数量</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTierSafetyMargin" class="num-input" min="0" max="20" value="0" aria-labelledby="infoTierSafetyMargin" />
+                <span class="unit-text">个</span>
+              </div>
+            </div>
+
+            <div class="setting-item" id="rowTierUltimateFallback">
+              <div class="setting-info" id="infoTierUltimateFallback">
+                <span class="setting-label">终极兜底强制回收</span>
+                <span class="setting-hint">软性保护全部放宽后仍超标时，按活跃度强制收纳多余标签（始终保护音频、表单、固定与前台标签）</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkTierUltimateFallback" aria-labelledby="infoTierUltimateFallback">
                 <span class="slider"></span>
               </label>
             </div>
@@ -437,13 +473,13 @@
 
           <!-- 优先级保留规则链开关 -->
           <div class="card">
-            <h3 class="card-title">优先级保护规则链 (P0 ~ P3)</h3>
+            <h3 class="card-title">标签保护规则 (P0 ~ P3)</h3>
             
             <div class="rule-row">
               <div class="rule-priority p0">P0</div>
               <div class="rule-info" id="infoRuleAudible">
                 <span class="rule-name">媒体播放保护</span>
-                <span class="rule-desc">正在播放音频或视频的标签页绝不收纳 (tab.audible)</span>
+                <span class="rule-desc">正在播放音频或视频的标签页不收纳</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkRuleAudible" aria-labelledby="infoRuleAudible">
@@ -455,7 +491,7 @@
               <div class="rule-priority p0">P0</div>
               <div class="rule-info" id="infoRuleFormGuard">
                 <span class="rule-name">表单输入保护</span>
-                <span class="rule-desc">包含正在编辑的 input/textarea 或未提交内容的标签页不收纳</span>
+                <span class="rule-desc">包含正在编辑表单或未保存输入的标签页不收纳</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkRuleFormGuard" aria-labelledby="infoRuleFormGuard">
@@ -466,8 +502,8 @@
             <div class="rule-row">
               <div class="rule-priority p1">P1</div>
               <div class="rule-info" id="infoRuleRecentActive">
-                <span class="rule-name">最近访问与前台活跃保护</span>
-                <span class="rule-desc">当前浏览的前台标签及最近窗口内访问过的标签保留</span>
+                <span class="rule-name">最近访问与当前标签保护</span>
+                <span class="rule-desc">当前浏览的标签页及最近访问过的标签页保留</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkRuleRecentActive" aria-labelledby="infoRuleRecentActive">
@@ -478,8 +514,8 @@
             <div class="rule-row">
               <div class="rule-priority p2">P2</div>
               <div class="rule-info" id="infoRuleHighFrequency">
-                <span class="rule-name">高频使用标签保护</span>
-                <span class="rule-desc">近 1 小时内切换频次排名前 20% 的活跃标签保留</span>
+                <span class="rule-name">高频访问标签保护</span>
+                <span class="rule-desc">近 1 小时内访问频次排名前 20% 的标签页保留</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkRuleHighFrequency" aria-labelledby="infoRuleHighFrequency">
@@ -490,8 +526,8 @@
             <div class="rule-row">
               <div class="rule-priority p3">P3</div>
               <div class="rule-info" id="infoRulePinned">
-                <span class="rule-name">固定标签页保护</span>
-                <span class="rule-desc">固定在浏览器左侧的标签保留 (tab.pinned)</span>
+                <span class="rule-name">固定标签保护</span>
+                <span class="rule-desc">已固定的标签页不收纳</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkRulePinned" aria-labelledby="infoRulePinned">
@@ -506,8 +542,8 @@
       <section id="tab-links" class="tab-panel" role="tabpanel" aria-labelledby="navTabLinks" hidden>
         <div class="panel-header">
           <div>
-            <h2 class="panel-title">域名链接跳转规则</h2>
-            <p class="panel-desc">管理全局跳转覆盖行为及已配置的独立网站跳转偏好列表</p>
+            <h2 class="panel-title">域名跳转规则</h2>
+            <p class="panel-desc">配置网站链接的默认打开方式（当前标签 / 新标签页）</p>
           </div>
           <button id="btnClearAllDomainRules" class="btn btn-danger" type="button">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -531,7 +567,7 @@
                   </svg>
                   <h3 class="card-title" style="border: none; padding: 0; margin: 0;">全局跳转规则覆盖</h3>
                 </div>
-                <p class="setting-hint" style="margin: 0;">对所有网站启用统一的强制跳转行为（开启后将优先于下方各网站独立偏好）</p>
+                <p class="setting-hint" style="margin: 0;">对所有网站统一生效，优先于下方单独配置的域名规则</p>
               </div>
               <div class="global-override-controls">
                 <select id="selectGlobalLinkMode" class="form-select" aria-label="全局跳转模式">
@@ -554,14 +590,14 @@
               <line x1="12" y1="8" x2="12" y2="12"></line>
               <line x1="12" y1="16" x2="12.01" y2="16"></line>
             </svg>
-            <span>全局跳转规则正在生效中，下方各域名的独立规则已被全局策略覆盖。</span>
+            <span>全局跳转规则已生效，下方各域名独立规则暂被覆盖。</span>
           </div>
 
           <div class="card">
             <!-- 手动添加规则 -->
             <div class="add-rule-form">
               <div class="domain-input-wrapper">
-                <input type="text" id="inputNewDomain" class="text-input" placeholder="输入域名，例如 github.com 或 linux.do（自动清洗协议与路径）" aria-label="输入网站域名" />
+                <input type="text" id="inputNewDomain" class="text-input" placeholder="输入域名，例如 github.com 或 linux.do" aria-label="输入网站域名" />
               </div>
               <select id="selectNewDomainMode" class="form-select" aria-label="选择跳转行为">
                 <option value="new">新标签页打开 (new)</option>
@@ -601,18 +637,18 @@
         <div class="panel-header">
           <div>
             <h2 class="panel-title">数据备份与迁移</h2>
-            <p class="panel-desc">完整备份/恢复插件所有数据与配置（支持跨设备无缝迁移），以及从 OneTab 等第三方工具导入标签页</p>
+            <p class="panel-desc">导入、导出与迁移数据</p>
           </div>
         </div>
 
         <div class="backup-grid">
           <!-- 1. 恢复数据 -->
           <div class="card">
-            <h3 class="card-title">1. 恢复全量数据（多设备迁移）</h3>
+            <h3 class="card-title">从备份还原</h3>
             <p class="card-desc">
-              从 BetterBrowse 官方备份文件（<code>.json</code>）还原。将完整恢复<strong>所有收纳标签组</strong>、<strong>智能收纳规则与阈值配置</strong>以及<strong>各域名链接跳转偏好</strong>，使新设备与原电脑保持 100% 一致。
+              从导出的 JSON 备份文件还原标签组、规则与配置。
             </p>
-            <textarea id="restoreJSONTextarea" class="code-textarea" placeholder="在此粘贴 BetterBrowse 导出的完整 JSON 备份数据..." aria-label="粘贴备份 JSON 数据"></textarea>
+            <textarea id="restoreJSONTextarea" class="code-textarea" placeholder="在此粘贴导出的 JSON 备份数据..." aria-label="粘贴备份 JSON 数据"></textarea>
             <div class="btn-group">
               <label class="btn btn-primary file-upload-btn">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -620,31 +656,23 @@
                   <polyline points="17 8 12 3 7 8"></polyline>
                   <line x1="12" y1="3" x2="12" y2="15"></line>
                 </svg>
-                <span>选择备份文件恢复 (.json)</span>
+                <span>选择备份文件 (.json)</span>
                 <input type="file" id="fileRestoreJSON" accept=".json" style="display: none;">
               </label>
               <button id="btnRestoreFromText" class="btn btn-secondary" type="button">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
                 </svg>
-                <span>解析文本内容恢复</span>
+                <span>解析文本还原</span>
               </button>
-            </div>
-            <div class="tip-box">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tip-icon" aria-hidden="true">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="16" x2="12" y2="12"></line>
-                <line x1="12" y1="8" x2="12.01" y2="8"></line>
-              </svg>
-              <div><strong>全量恢复说明</strong>：支持导入当前及历史版本的 BetterBrowse JSON 备份文件。系统会自动解析并同步更新收纳箱与全部设置项。</div>
             </div>
           </div>
 
           <!-- 2. 备份数据 -->
           <div class="card">
-            <h3 class="card-title">2. 备份全量数据（导出备份）</h3>
+            <h3 class="card-title">导出备份</h3>
             <p class="card-desc">
-              将当前收纳箱中所有标签组，以及当前的<strong>全部插件设置</strong>（智能收纳规则、阈值）与<strong>域名跳转偏好规则</strong>整体打包备份，方便长期归档或迁移到其他电脑。
+              将全部收纳标签组、规则与配置导出为 JSON 备份文件。
             </p>
             <div class="btn-group">
               <button id="btnExportFullJSON" class="btn btn-primary" type="button">
@@ -653,23 +681,30 @@
                   <polyline points="7 10 12 15 17 10"></polyline>
                   <line x1="12" y1="15" x2="12" y2="3"></line>
                 </svg>
-                <span>导出完整 JSON 备份文件</span>
+                <span>导出 JSON 文件</span>
               </button>
               <button id="btnCopyFullJSON" class="btn btn-secondary" type="button">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
                   <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
                 </svg>
-                <span>复制完整备份 JSON 数据</span>
+                <span>复制 JSON 数据</span>
               </button>
             </div>
           </div>
 
-          <!-- 3. 从第三方导入数据 -->
+          <!-- 3. 本地自动快照 -->
           <div class="card">
-            <h3 class="card-title">3. 从第三方导入数据（如 OneTab）</h3>
+            <h3 class="card-title">本地自动快照</h3>
+            <p class="card-desc">每日首次启动自动保存的快照。恢复时将标签组写回收纳箱，不影响现有其他组。</p>
+            <div id="autoBackupList" class="sync-list"></div>
+          </div>
+
+          <!-- 4. 从第三方导入数据 -->
+          <div class="card">
+            <h3 class="card-title">从第三方导入</h3>
             <p class="card-desc">
-              从 <strong>OneTab 纯文本</strong>（<code>URL | 网页标题</code>，空行分界）、<strong>OneTab 内部数据</strong> 或 <strong>网址列表</strong> 快速迁入标签页。<strong>注意：此操作仅导入收纳网页，不会修改插件原有的任何设置。</strong>
+              支持导入 OneTab 导出的文本（每行 <code>URL | 标题</code>）或网页链接列表，不影响现有设置。
             </p>
             <textarea id="importThirdPartyTextarea" class="code-textarea" placeholder="在此粘贴 OneTab 导出的文本（每行 URL | 标题）或网页链接列表..." aria-label="粘贴第三方数据"></textarea>
             <div class="btn-group">
@@ -677,7 +712,7 @@
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
                 </svg>
-                <span>一键智能解析导入</span>
+                <span>解析并导入</span>
               </button>
               <label class="btn btn-secondary file-upload-btn">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -685,11 +720,11 @@
                   <polyline points="17 8 12 3 7 8"></polyline>
                   <line x1="12" y1="3" x2="12" y2="15"></line>
                 </svg>
-                <span>选择第三方文件导入 (.txt / .json)</span>
+                <span>选择文本文件 (.txt / .json)</span>
                 <input type="file" id="fileImportThirdParty" accept=".txt,.json" style="display: none;">
               </label>
             </div>
-            <!-- OneTab 无损时间戳提取专属指南 -->
+            <!-- OneTab 时间戳提取指引 -->
             <div class="tip-box onetab-guide-box">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tip-icon" aria-hidden="true">
                 <circle cx="12" cy="12" r="10"></circle>
@@ -697,15 +732,15 @@
               </svg>
               <div class="onetab-guide-content">
                 <div class="onetab-guide-title">
-                  <strong>💡 如何 100% 完整保留 OneTab 的所有历史真实时间戳与星标？</strong>
+                  <strong>💡 如何从 OneTab 完整导入历史时间戳与星标？</strong>
                 </div>
                 <p class="onetab-guide-desc">
-                  OneTab 默认的纯文本导出（URL | 网页标题）<strong>本身不含任何时间信息</strong>。若想将过去积累的所有网页按<strong>原始历史年份、月份、日期与星标/锁定状态</strong>无损迁入：
+                  OneTab 默认导出的纯文本不含时间信息。如需保留创建时间、星标与锁定状态：
                 </p>
                 <ol class="onetab-guide-steps">
-                  <li>在浏览器打开 <strong>OneTab</strong> 页面（展示标签列表的主页）；</li>
-                  <li>按下键盘 <code>F12</code> 打开开发者工具，切换到 <strong>Console (控制台)</strong>；</li>
-                  <li>输入或直接复制执行下方命令（将自动把完整时间戳数据复制到剪贴板）：</li>
+                  <li>在浏览器打开 OneTab 页面；</li>
+                  <li>按 <code>F12</code> 打开开发者工具，切换到 Console 控制台；</li>
+                  <li>运行下方命令（自动将完整数据复制到剪贴板）：</li>
                 </ol>
                 <div class="code-snippet-row">
                   <code class="code-snippet">copy(localStorage.state)</code>
@@ -718,7 +753,7 @@
                   </button>
                 </div>
                 <div class="onetab-guide-footer">
-                  ④ 复制完成后，粘贴到上方文本框点击「一键智能解析导入」，时间树目录即可精准恢复所有历史年份与周次！
+                  复制完成后粘贴到上方文本框，点击「解析并导入」即可。
                 </div>
               </div>
             </div>
@@ -730,30 +765,30 @@
                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
               </svg>
               <div>
-                <strong>OneTab 导出互操作</strong>：如需将收纳箱数据导出为 OneTab 格式纯文本，可使用下方工具：
+                <strong>导出为 OneTab 格式</strong>：
                 <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
-                  <button id="btnExportOneTabText" class="btn btn-secondary btn-sm" type="button">导出 OneTab 格式文本 (.txt)</button>
-                  <button id="btnCopyOneTabText" class="btn btn-secondary btn-sm" type="button">复制 OneTab 格式文本</button>
+                  <button id="btnExportOneTabText" class="btn btn-secondary btn-sm" type="button">导出文本 (.txt)</button>
+                  <button id="btnCopyOneTabText" class="btn btn-secondary btn-sm" type="button">复制文本</button>
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- 4. 智能数据清理与优化 -->
+          <!-- 5. 智能数据清理与优化 -->
           <div class="card">
-            <h3 class="card-title">4. 智能收纳数据优化与去重</h3>
-            <p class="card-desc">自动扫描并清理收纳箱中重复导入的标签组。系统会智能识别各组的网页指纹，<strong>优先保留带有真实历史时间戳的版本</strong>，安全清除无时间戳或重复的多余副本（锁定组受保护）。</p>
+            <h3 class="card-title">数据去重与整理</h3>
+            <p class="card-desc">扫描并清理重复导入的标签组，优先保留带历史时间戳的版本（锁定组不受影响）。</p>
             <div>
               <button id="btnDeduplicateStash" class="btn btn-secondary" type="button">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path>
                 </svg>
-                <span>一键智能去重清理</span>
+                <span>扫描并去重</span>
               </button>
             </div>
           </div>
 
-          <!-- 5. 危险操作区 -->
+          <!-- 6. 危险操作区 -->
           <div class="card danger-zone">
             <div class="danger-header">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="danger-icon" aria-hidden="true">
@@ -761,17 +796,225 @@
                 <line x1="12" y1="9" x2="12" y2="13"></line>
                 <line x1="12" y1="17" x2="12.01" y2="17"></line>
               </svg>
-              <h3 class="card-title" style="border: none; padding: 0; margin: 0; color: var(--danger-color);">危险操作区</h3>
+              <h3 class="card-title" style="border: none; padding: 0; margin: 0; color: var(--danger-color);">危险区域</h3>
             </div>
-            <p class="card-desc">清空所有历史收纳数据（锁定组除外）。此操作不可撤销，请提前做好备份。</p>
+            <p class="card-desc">清空所有未锁定的收纳组。此操作无法撤销。</p>
             <div>
               <button id="btnClearAllStash" class="btn btn-danger" type="button">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polyline points="3 6 5 6 21 6"></polyline>
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
                 </svg>
-                <span>清空收纳箱非锁定数据</span>
+                <span>清空所有未锁定标签组</span>
               </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 6: 云端同步 (WebDAV) -->
+      <section id="tab-sync" class="tab-panel" role="tabpanel" aria-labelledby="navTabSync" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">云端同步</h2>
+            <p class="panel-desc">通过 WebDAV 在多台设备间同步收纳数据与配置</p>
+          </div>
+        </div>
+
+        <div class="backup-grid">
+          <div class="tip-box">
+            <span class="tip-icon">⚠️</span>
+            <span>隐私提示：开启后会将收纳的网址同步至你的 WebDAV 服务器（必须为 HTTPS）。服务器密码仅保存在本机，绝不同步。</span>
+          </div>
+
+          <!-- 0. 浏览器账号偏好 -->
+          <div class="card">
+            <h3 class="card-title">浏览器账号偏好同步</h3>
+            <p class="card-desc">通过 Chrome 或 Edge 账号同步基本偏好设置（收纳列表与密码不通过浏览器账号同步）。</p>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="chkAccountConfigSync">随浏览器账号同步偏好</label>
+                <span class="setting-hint">关闭后不再写入 chrome.storage.sync，本机与 WebDAV 同步不受影响</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkAccountConfigSync" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 1. 连接设置 -->
+          <div class="card">
+            <h3 class="card-title">WebDAV 连接设置</h3>
+            <p class="card-desc">填写 WebDAV 服务器地址与账号信息。</p>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="webdavServerUrl">服务器地址</label>
+                <span class="setting-hint">必须以 https:// 开头，例如 https://dav.example.com/dav/</span>
+              </div>
+              <input id="webdavServerUrl" class="text-input" type="url" placeholder="https://dav.example.com/dav/" aria-label="WebDAV 服务器地址">
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="webdavUsername">账号</label>
+                <span class="setting-hint">WebDAV 用户名（仅保存在本机）</span>
+              </div>
+              <input id="webdavUsername" class="text-input" type="text" autocomplete="off" aria-label="WebDAV 账号">
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="webdavPassword">密码</label>
+                <span class="setting-hint">WebDAV 密码（仅保存在本机，不进入同步与导出）</span>
+              </div>
+              <input id="webdavPassword" class="text-input" type="password" autocomplete="new-password" aria-label="WebDAV 密码">
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="chkWebdavEnabled">启用云端同步</label>
+                <span class="setting-hint">开启后本机变更将自动上传，并定期拉取其他设备的变更</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkWebdavEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="chkWebdavAutoSync">自动同步</label>
+                <span class="setting-hint">变更防抖上传 + 启动/联网/定时拉取；关闭后仅手动同步</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkWebdavAutoSync" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="btn-group">
+              <button id="btnWebdavSave" class="btn btn-primary" type="button">保存凭据</button>
+              <button id="btnWebdavTest" class="btn btn-secondary" type="button">测试连接</button>
+              <button id="btnSyncNow" class="btn btn-secondary" type="button">立即同步</button>
+            </div>
+            <div class="sync-status-row" aria-live="polite">
+              <span class="sync-status-dot" id="syncStatusDot"></span>
+              <span id="syncStatusBadge" class="sync-status-badge">尚未同步</span>
+              <span id="syncStatusMessage" class="sync-status-message"></span>
+            </div>
+            <div class="sync-meta-row">
+              <span>本机设备 ID：<code id="syncDeviceId">-</code></span>
+              <span>待上传操作：<strong id="syncPendingCount">0</strong></span>
+              <span>未裁决冲突：<strong id="syncConflictCount">0</strong></span>
+              <span>上次同步：<span id="syncLastAt">-</span></span>
+            </div>
+          </div>
+
+          <!-- 2. 冲突裁决 -->
+          <div class="card">
+            <h3 class="card-title">冲突裁决</h3>
+            <p class="card-desc">多台设备同时修改同一字段时保留双方候选值，由你选择最终结果。</p>
+            <div id="syncConflictsList" class="sync-list">
+              <p class="sync-empty">当前没有待裁决的冲突 🎉</p>
+            </div>
+          </div>
+
+          <!-- 3. 设备管理 -->
+          <div class="card">
+            <h3 class="card-title">设备管理</h3>
+            <p class="card-desc">连续 90 天未同步的设备会自动退役；也可以在此手动提前退役。</p>
+            <div id="syncDevicesList" class="sync-list">
+              <p class="sync-empty">尚未获取设备列表</p>
+            </div>
+          </div>
+
+          <!-- 4. 数据损坏恢复 -->
+          <div class="card" id="syncRecoveryCard">
+            <h3 class="card-title">数据损坏恢复</h3>
+            <p class="card-desc">远端清单或快照校验失败时，可回退上一份快照，或用本机快照从头重建同步状态。</p>
+            <p id="syncRecoveryMessage" class="sync-status-message"></p>
+            <div class="btn-group">
+              <button id="btnSyncFallbackSnapshot" class="btn btn-secondary" type="button" disabled>回退上一份快照</button>
+              <button id="btnSyncRebuildFromScratch" class="btn btn-danger" type="button" disabled>从本地快照重建</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 7: 统一运行日志 -->
+      <section id="tab-logs" class="tab-panel" role="tabpanel" aria-labelledby="navTabLogs" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">运行日志</h2>
+            <p class="panel-desc">查看扩展运行与操作审计记录</p>
+          </div>
+          <div class="panel-actions">
+            <button id="btnRuntimeLogRefresh" class="btn btn-secondary" type="button">刷新</button>
+            <button id="btnRuntimeLogClear" class="btn btn-danger" type="button">清空日志</button>
+          </div>
+        </div>
+
+        <div class="runtime-log-workspace">
+          <div class="runtime-log-toolbar" aria-label="运行日志筛选">
+            <select id="runtimeLogLevel" class="form-select" aria-label="按日志级别筛选">
+              <option value="">全部级别</option>
+              <option value="error">错误</option>
+              <option value="warn">警告</option>
+              <option value="info">信息</option>
+              <option value="debug">调试</option>
+            </select>
+            <select id="runtimeLogSource" class="form-select" aria-label="按日志来源筛选">
+              <option value="">全部来源</option>
+            </select>
+            <input id="runtimeLogKeyword" class="text-input" type="search" placeholder="搜索来源或消息" aria-label="搜索日志来源或消息">
+            <span id="runtimeLogCount" class="runtime-log-count" aria-live="polite">0 条记录</span>
+          </div>
+          <div class="runtime-log-table-header" aria-hidden="true">
+            <span>时间</span><span>级别</span><span>来源</span><span>消息</span>
+          </div>
+          <div id="runtimeLogList" class="runtime-log-list" aria-live="polite">
+            <p class="sync-empty">暂无运行日志</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 8: AI 桥接 (本机 AI Agent 对等操控通道) -->
+      <section id="tab-ai-bridge" class="tab-panel" role="tabpanel" aria-labelledby="navTabAiBridge" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">AI 桥接</h2>
+            <p class="panel-desc">允许本机 AI 助手管理收纳箱与配置</p>
+          </div>
+        </div>
+
+        <div class="backup-grid">
+          <div class="tip-box">
+            <span class="tip-icon">🔒</span>
+            <span>安全说明：仅监听本机回环地址并采用令牌鉴权；密码等敏感信息不可读；删除、清空等操作需显式确认。</span>
+          </div>
+
+          <!-- 1. 桥接开关与状态 -->
+          <div class="card">
+            <h3 class="card-title">桥接开关与状态</h3>
+            <p class="card-desc">开启后允许本机 AI 助手按需连接。可通过 <code>deno task ai-host-install</code> 安装本机桥接。</p>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="chkAiBridgeEnabled">允许本机 AI 助手操控插件</label>
+                <span class="setting-hint">默认关闭。开启后 AI 可按规范调用插件能力</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkAiBridgeEnabled">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="sync-status-row" aria-live="polite">
+              <span class="sync-status-dot" id="aiBridgeStatusDot"></span>
+              <span id="aiBridgeStatusBadge" class="sync-status-badge">未启用</span>
+              <span id="aiBridgeStatusMessage" class="sync-status-message"></span>
+            </div>
+            <div class="sync-meta-row">
+              <span>扩展 ID：<code id="aiBridgeExtensionId">-</code></span>
+              <span>API 版本：<strong id="aiBridgeApiVersion">-</strong></span>
+            </div>
+            <div class="btn-group">
+              <button id="btnAiBridgeCopyId" class="btn btn-secondary" type="button">复制扩展 ID</button>
+              <button id="btnAiBridgeRefresh" class="btn btn-secondary" type="button">刷新状态</button>
             </div>
           </div>
         </div>
@@ -809,6 +1052,12 @@
       </svg>
       <span>复制标题与链接</span>
     </button>
+    <button class="context-menu-item" data-action="edit-title" type="button" role="menuitem">
+      <svg class="menu-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+      </svg>
+      <span>编辑标题</span>
+    </button>
     <div class="context-menu-divider"></div>
     <button class="context-menu-item context-menu-danger" data-action="delete" type="button" role="menuitem">
       <svg class="menu-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -819,8 +1068,8 @@
     </button>
   </div>
 
-  <!-- 窄屏悬浮呼出时间目录按钮 -->
-  <button id="btnStashTimelineFloat" class="timeline-float-btn" title="查看时间导航目录" type="button" aria-label="查看时间导航目录">
+  <!-- 窄屏悬浮呼出时间目录按钮（已有可见文字与 aria-label，省去原生 title 避免右下角提示被屏幕边缘裁切） -->
+  <button id="btnStashTimelineFloat" class="timeline-float-btn" type="button" aria-label="查看时间导航目录">
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="10"></circle>
       <polyline points="12 6 12 12 16 14"></polyline>
