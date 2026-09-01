@@ -14,6 +14,25 @@ import { DeviceEventLog, DeviceEventTypes } from '../core/sync/device-events.js'
 /** 恢复已过期倒计时的最大宽限期（超过则视为陈旧状态直接丢弃） */
 const EXPIRED_DEADLINE_GRACE_MS = 10 * 60 * 1000;
 
+/**
+ * 生成倒计时操作一次性凭证（内容脚本确认/取消必须回传）
+ * @returns {string}
+ */
+function generateActionNonce() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export class ThresholdMonitor {
   /**
    * @param {Object} [options={}]
@@ -30,6 +49,7 @@ export class ThresholdMonitor {
     this.totalSeconds = 15;
     this.activeWindowId = null; // 当前正在倒计时的窗口 ID
     this.deadline = 0;
+    this.actionNonce = '';
     this.alarmName = 'better-browse-threshold-countdown';
 
     this.initListeners();
@@ -97,6 +117,7 @@ export class ThresholdMonitor {
       this.activeWindowId = state.activeWindowId ?? null;
       this.totalSeconds = state.totalSeconds || 15;
       this.lastActionTime = state.lastActionTime || 0;
+      this.actionNonce = typeof state.actionNonce === 'string' ? state.actionNonce : '';
       this.remainingSeconds = Math.max(0, Math.ceil((state.deadline - Date.now()) / 1000));
       this.updateBadge(this.remainingSeconds);
     } catch {}
@@ -107,7 +128,8 @@ export class ThresholdMonitor {
       deadline: this.deadline,
       activeWindowId: this.activeWindowId,
       totalSeconds: this.totalSeconds,
-      lastActionTime: this.lastActionTime
+      lastActionTime: this.lastActionTime,
+      actionNonce: this.actionNonce
     }, 'session');
   }
 
@@ -211,6 +233,7 @@ export class ThresholdMonitor {
     this.activeWindowId = windowId;
     this.totalSeconds = Math.max(3, config.countdownSeconds || 15);
     this.remainingSeconds = this.totalSeconds;
+    this.actionNonce = generateActionNonce();
     const countableTabs = filterCountableTabs(tabs);
     const currentCount = countableTabs.length;
     const threshold = config.tabThreshold || 15;
@@ -222,7 +245,8 @@ export class ThresholdMonitor {
     this.broadcastBannerToTabs(countableTabs, {
       countdownSeconds: this.totalSeconds,
       currentCount,
-      threshold
+      threshold,
+      nonce: this.actionNonce
     }).catch(() => {});
 
     // 3. 弹出系统桌面通知备用
@@ -324,6 +348,7 @@ export class ThresholdMonitor {
     }
     this.remainingSeconds = 0;
     this.deadline = 0;
+    this.actionNonce = '';
     try { chrome.alarms?.clear?.(this.alarmName); } catch {}
     this.persistState().catch(() => {});
 
@@ -353,9 +378,24 @@ export class ThresholdMonitor {
   }
 
   /**
-   * 用户取消自动收纳（清除定时器并进入冷却期）
+   * 校验内容脚本回传的倒计时一次性凭证
+   * @param {unknown} nonce
+   * @returns {boolean}
    */
-  async handleCancelAutoStash() {
+  matchesActionNonce(nonce) {
+    return typeof this.actionNonce === 'string'
+      && this.actionNonce.length >= 16
+      && nonce === this.actionNonce;
+  }
+
+  /**
+   * 用户取消自动收纳（清除定时器并进入冷却期）
+   * @param {{ nonce?: string, requireNonce?: boolean }} [options]
+   */
+  async handleCancelAutoStash(options = {}) {
+    if (options.requireNonce && !this.matchesActionNonce(options.nonce)) {
+      return { success: false, error: '倒计时操作凭证无效' };
+    }
     await this.clearCountdownUI();
     this.lastActionTime = Date.now();
     this.persistState();
@@ -365,10 +405,13 @@ export class ThresholdMonitor {
 
   /**
    * 确认执行自动智能收纳（立即收纳或倒计时结束）
-   * @param {{ force?: boolean }} [options] - force=true 时无视"倒计时已结束"守卫（如通知按钮路径）
+   * @param {{ force?: boolean, nonce?: string, requireNonce?: boolean }} [options] - force=true 时无视"倒计时已结束"守卫（如通知按钮路径）
    * @returns {Promise<any>}
    */
   async handleConfirmAutoStash(options = {}) {
+    if (options.requireNonce && !this.matchesActionNonce(options.nonce)) {
+      return { success: false, error: '倒计时操作凭证无效' };
+    }
     // 守卫：倒计时结束后，网页卡片残留的"立即收纳"按钮不得再次触发完整收纳流程
     // （alarm 归零已执行过一次收纳；通知按钮等可信入口通过 force 绕过本守卫）
     const countdownActive = this.deadline > Date.now() || this.remainingSeconds > 0;

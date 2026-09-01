@@ -15,8 +15,9 @@ export class CountdownBanner {
    * @param {number} [options.countdownSeconds=15] - 倒计时秒数
    * @param {number} [options.currentCount=15] - 当前标签页总数
    * @param {number} [options.threshold=15] - 设定的阈值
+   * @param {string} [options.nonce=''] - 后台签发的一次性操作凭证
    */
-  static show({ countdownSeconds = 15, currentCount = 15, threshold = 15 } = {}) {
+  static show({ countdownSeconds = 15, currentCount = 15, threshold = 15, nonce = '' } = {}) {
     // 若已有实例在展示，先平滑销毁
     if (this.currentInstance) {
       this.currentInstance.destroy();
@@ -25,7 +26,8 @@ export class CountdownBanner {
     const banner = new CountdownBanner({
       countdownSeconds,
       currentCount,
-      threshold
+      threshold,
+      nonce
     });
     banner.render();
     this.currentInstance = banner;
@@ -41,11 +43,12 @@ export class CountdownBanner {
     }
   }
 
-  constructor({ countdownSeconds, currentCount, threshold }) {
+  constructor({ countdownSeconds, currentCount, threshold, nonce }) {
     this.totalSeconds = Math.max(3, countdownSeconds || 15);
     this.remainingSeconds = this.totalSeconds;
     this.currentCount = currentCount;
     this.threshold = threshold;
+    this.nonce = typeof nonce === 'string' ? nonce : '';
     this.timer = null;
     this.hostElement = null;
     this.shadowRoot = null;
@@ -56,9 +59,9 @@ export class CountdownBanner {
    * 渲染 Shadow DOM
    */
   render() {
-    // 1. 创建容器 Host
-    this.hostElement = document.createElement('better-browse-countdown-root');
-    this.shadowRoot = this.hostElement.attachShadow({ mode: 'open' });
+    // 1. 创建容器 Host：普通 div + closed Shadow，避免网页通过自定义标签名拿到内部按钮
+    this.hostElement = document.createElement('div');
+    this.shadowRoot = this.hostElement.attachShadow({ mode: 'closed' });
 
     // 2. 注入独立样式与 HTML
     this.shadowRoot.innerHTML = `
@@ -398,7 +401,10 @@ export class CountdownBanner {
   cancelAutoStash() {
     this.stopTimer();
     try {
-      const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.CANCEL_AUTO_STASH }, () => {
+      const chromeResult = chrome.runtime.sendMessage({
+        action: ActionTypes.CANCEL_AUTO_STASH,
+        payload: { nonce: this.nonce }
+      }, () => {
         // 显式消费 lastError，避免扩展重载后产生未处理的错误噪音
         void chrome.runtime.lastError;
       });
@@ -439,7 +445,10 @@ export class CountdownBanner {
           resolve(null);
         }, 10000);
         try {
-          const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.CONFIRM_AUTO_STASH }, (res) => {
+          const chromeResult = chrome.runtime.sendMessage({
+            action: ActionTypes.CONFIRM_AUTO_STASH,
+            payload: { nonce: this.nonce }
+          }, (res) => {
             clearTimeout(timeoutId);
             if (chrome.runtime.lastError) {
               resolve(null);

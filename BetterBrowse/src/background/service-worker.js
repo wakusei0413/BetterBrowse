@@ -22,6 +22,7 @@ import { AIBridgeManager } from './ai-bridge.js';
 import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
 import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
 import { DeviceEventLog } from '../core/sync/device-events.js';
+import { isTrustedPopupLifecyclePort } from '../core/security/message-authorizer.js';
 
 installRuntimeLogger({
   context: 'background',
@@ -141,12 +142,9 @@ const actionHandlers = createActionHandlers({
 });
 const messageHandlers = {
   ...actionHandlers,
-  [ActionTypes.APPEND_RUNTIME_LOG]: async (payload, sender) => {
-    const senderUrl = sender?.url || sender?.tab?.url || '';
-    const ownOrigin = chrome.runtime.getURL('');
-    if (senderUrl && !senderUrl.startsWith(ownOrigin) && !sender?.tab) {
-      return { success: false };
-    }
+  // 来源授权由 MessageBus.registerListener 统一治理（内容脚本仅限白名单动作，
+  // 未知来源拒绝），此处仅做日志写入
+  [ActionTypes.APPEND_RUNTIME_LOG]: async (payload) => {
     await RuntimeLogRepository.append(payload || {});
     return { success: true };
   }
@@ -155,7 +153,7 @@ MessageBus.registerListener(messageHandlers);
 
 // 弹窗打开后快速关闭视为扩展图标双击，直接执行当前窗口全量收纳
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== 'popup-lifecycle') return;
+  if (!isTrustedPopupLifecyclePort(port)) return;
   const openedAt = Date.now();
   port.onDisconnect.addListener(() => {
     if (Date.now() - openedAt > 800) return;

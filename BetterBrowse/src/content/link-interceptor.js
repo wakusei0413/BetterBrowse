@@ -9,10 +9,6 @@ import { LinkModes, DefaultConfig } from '../constants/config.js';
 import { LinkMatcher } from '../core/link/link-matcher.js';
 
 export class LinkInterceptor {
-  /** 开标签事件速率限制：滑动窗口内最多允许的次数与窗口时长 */
-  static OPEN_EVENT_LIMIT = 10;
-  static OPEN_EVENT_WINDOW_MS = 10000;
-
   constructor() {
     this.currentDomain = window.location.hostname.toLowerCase();
     this.linkRules = {};
@@ -20,23 +16,38 @@ export class LinkInterceptor {
     this.isInitialized = false;
     this.lastHandledUrl = '';
     this.lastHandledTime = 0;
-    this.openEventTimestamps = [];
+    this.gestureOpenBudget = 0;
   }
 
   /**
-   * 滑动窗口速率限制：__BETTER_BROWSE_OPEN_NEW_TAB__ 是页面脚本可伪造的公开事件，
-   * 协议校验之外还需限制频次，防止被恶意页面当作绕过弹窗拦截的广告/钓鱼发射器
+   * 只把真实指针/键盘手势记为一次开标签额度。
+   * HTMLElement.click() 在 Chrome 里 isTrusted 仍为 true，不能当手势；程序化点击没有 pointerdown。
+   */
+  initGestureGate() {
+    const grant = () => {
+      this.gestureOpenBudget = 1;
+    };
+    document.addEventListener('pointerdown', (event) => {
+      if (event.isTrusted) grant();
+    }, true);
+    document.addEventListener('keydown', (event) => {
+      if (event.isTrusted && (event.key === 'Enter' || event.key === ' ')) grant();
+    }, true);
+    document.addEventListener('click', (event) => {
+      if (!event.isTrusted) return;
+      queueMicrotask(() => {
+        this.gestureOpenBudget = 0;
+      });
+    }, true);
+  }
+
+  /**
+   * 每次真实手势最多开 1 个标签。公开自定义事件与隔离世界点击路径共用。
    * @returns {boolean} 是否允许本次开标签
    */
   shouldAllowOpenEvent() {
-    const now = Date.now();
-    this.openEventTimestamps = this.openEventTimestamps.filter(
-      (ts) => now - ts < LinkInterceptor.OPEN_EVENT_WINDOW_MS
-    );
-    if (this.openEventTimestamps.length >= LinkInterceptor.OPEN_EVENT_LIMIT) {
-      return false;
-    }
-    this.openEventTimestamps.push(now);
+    if (this.gestureOpenBudget < 1) return false;
+    this.gestureOpenBudget = 0;
     return true;
   }
 
@@ -73,6 +84,7 @@ export class LinkInterceptor {
       this.initHoverListener();
       this.initDOMObserver();
     }
+    this.initGestureGate();
     this.initMainWorldEvents();
     this.initClickListener();
     this.syncModeToMainWorld();
@@ -87,14 +99,13 @@ export class LinkInterceptor {
       const url = event?.detail?.url;
       if (!this.isSafeHttpUrl(url)) return;
 
-      // 用户激活校验：合法路径（主世界点击拦截 / window.open 劫持）均在真实用户手势的
-      // 同步调用栈内派发事件，navigator.userActivation 为激活态；
-      // 页面脚本凭空伪造事件不产生用户激活，直接忽略（旧浏览器无此 API 时放行）
-      if (navigator.userActivation && !navigator.userActivation.isActive) {
+      // 主世界只在 new 模式派发；隔离世界必须再查一次当前模式，防止 AUTO 下页面伪造开标签
+      if (this.getEffectiveMode() !== LinkModes.NEW) return;
+
+      if (this.lastHandledUrl === url && (Date.now() - this.lastHandledTime < 500)) {
         return;
       }
 
-      // 频次限制兜底：即便页面持有真实用户激活，也不允许高频批量开标签
       if (!this.shouldAllowOpenEvent()) {
         return;
       }
@@ -384,6 +395,11 @@ export class LinkInterceptor {
       // 若 500ms 内主世界或当前拦截器已处理过相同 URL 的打开操作，则阻止默认行为后忽略，
       // 杜绝重复开标签（该锚点已被 patch 为 target="_blank"，直接放行会触发浏览器原生开标签）
       if (this.lastHandledUrl === fullUrl && (Date.now() - this.lastHandledTime < 500)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (!this.shouldAllowOpenEvent()) {
         event.preventDefault();
         event.stopImmediatePropagation();
         return;

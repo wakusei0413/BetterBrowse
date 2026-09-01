@@ -4,6 +4,8 @@
  * @encoding UTF-8
  */
 
+import { isActionAuthorized } from '../security/message-authorizer.js';
+
 export class MessageBus {
   /**
    * 吞掉 Chrome MV3 在传入 callback 时仍可能返回的拒绝 Promise。
@@ -100,6 +102,14 @@ export class MessageBus {
   static registerListener(handlersMap) {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!message || !message.action) return false;
+
+      // 来源授权：内容脚本与未知来源只能调用各自白名单内的 action
+      // （AI 桥接请求由 AIBridgeManager 直接调用 handler，不经过此通道）
+      if (!isActionAuthorized(message.action, sender)) {
+        console.warn(`[MessageBus] 拒绝未授权来源调用 ${message.action}`);
+        sendResponse({ success: false, error: '未授权的消息来源' });
+        return false;
+      }
 
       const handler = handlersMap[message.action];
       if (!handler) {

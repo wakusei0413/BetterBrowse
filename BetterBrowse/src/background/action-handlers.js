@@ -28,8 +28,34 @@ import { DeviceEventLog } from '../core/sync/device-events.js';
 import { filterCountableTabs, isOwnOptionsUrl } from '../core/extension-url.js';
 import { buildCapabilitiesDescriptor } from '../core/ai/ai-capabilities.js';
 import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
+import { classifySender } from '../core/security/message-authorizer.js';
 
 const TAB_CREATE_RETRY_DELAYS_MS = [50, 150, 350];
+const OPEN_TAB_RATE_LIMIT = 8;
+const OPEN_TAB_RATE_WINDOW_MS = 10000;
+const openTabTimestampsByTab = new Map();
+
+/**
+ * 内容脚本开标签的后台速率兜底（按 sender.tab 滑动窗口）。
+ * AI / 扩展页面无 tab 来源时不限流。
+ * @param {chrome.runtime.MessageSender|undefined|null} sender
+ * @returns {boolean}
+ */
+function allowOpenTabFromSender(sender) {
+  const tabId = sender?.tab?.id;
+  if (typeof tabId !== 'number') return true;
+  const now = Date.now();
+  const recent = (openTabTimestampsByTab.get(tabId) || []).filter(
+    (ts) => now - ts < OPEN_TAB_RATE_WINDOW_MS
+  );
+  if (recent.length >= OPEN_TAB_RATE_LIMIT) {
+    openTabTimestampsByTab.set(tabId, recent);
+    return false;
+  }
+  recent.push(now);
+  openTabTimestampsByTab.set(tabId, recent);
+  return true;
+}
 
 /**
  * 判断标签页是否处于 Chrome 暂时禁止编辑的状态（例如用户正在拖拽标签页）。
@@ -161,6 +187,10 @@ export function createActionHandlers(deps) {
         return false;
       }
 
+      if (!allowOpenTabFromSender(sender)) {
+        return false;
+      }
+
       const createProperties = {
         url,
         active: payload?.active !== false
@@ -205,13 +235,21 @@ export function createActionHandlers(deps) {
       return thresholdMonitor.getCountdownStatus();
     },
 
-    [ActionTypes.CANCEL_AUTO_STASH]: async () => {
-      return thresholdMonitor.handleCancelAutoStash();
+    [ActionTypes.CANCEL_AUTO_STASH]: async (payload, sender) => {
+      return thresholdMonitor.handleCancelAutoStash({
+        nonce: payload?.nonce,
+        requireNonce: classifySender(sender) === 'content'
+      });
     },
 
-    [ActionTypes.CONFIRM_AUTO_STASH]: async () => {
-      const res = await thresholdMonitor.handleConfirmAutoStash();
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
+    [ActionTypes.CONFIRM_AUTO_STASH]: async (payload, sender) => {
+      const res = await thresholdMonitor.handleConfirmAutoStash({
+        nonce: payload?.nonce,
+        requireNonce: classifySender(sender) === 'content'
+      });
+      if (res?.success) {
+        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
+      }
       return res;
     },
 
@@ -496,23 +534,6 @@ export function createActionHandlers(deps) {
 
     [ActionTypes.REBUILD_SYNC_FROM_SCRATCH]: async (payload) => {
       return await SyncEngine.rebuildFromScratch({ confirm: payload?.confirm === true });
-    },
-
-    // === 30 天回收站 ===
-    [ActionTypes.LIST_RECYCLE_BIN]: async () => {
-      return await LocalStashRepository.listRecycleBin();
-    },
-
-    [ActionTypes.RESTORE_RECYCLE_BIN_ITEM]: async (payload) => {
-      const res = await LocalStashRepository.restoreFromRecycleBin(payload?.tombstoneId);
-      if (res?.success) {
-        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      }
-      return res;
-    },
-
-    [ActionTypes.PURGE_RECYCLE_BIN_ITEM]: async (payload) => {
-      return await LocalStashRepository.purgeRecycleBinItem(payload?.tombstoneId);
     },
 
     // === AI 桥接自身（选项页与 Agent 共用）===

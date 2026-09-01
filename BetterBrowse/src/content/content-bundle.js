@@ -101,11 +101,6 @@ const ActionTypes = {
   QUERY_RUNTIME_LOGS: 'QUERY_RUNTIME_LOGS',      // 查询本地运行日志
   CLEAR_RUNTIME_LOGS: 'CLEAR_RUNTIME_LOGS',      // 清空本地运行日志（需 confirm）
 
-  // === 30 天回收站 ===
-  LIST_RECYCLE_BIN: 'LIST_RECYCLE_BIN',                 // 列出未过期墓碑（组/条目）
-  RESTORE_RECYCLE_BIN_ITEM: 'RESTORE_RECYCLE_BIN_ITEM', // 从回收站恢复 { tombstoneId }
-  PURGE_RECYCLE_BIN_ITEM: 'PURGE_RECYCLE_BIN_ITEM',     // 永久删除回收站项 { tombstoneId, confirm: true }
-
   // === 云端同步损坏恢复 ===
   GET_SYNC_RECOVERY_INFO: 'GET_SYNC_RECOVERY_INFO',         // 读取损坏状态与本机快照可用性
   FALLBACK_PREVIOUS_SNAPSHOT: 'FALLBACK_PREVIOUS_SNAPSHOT', // 回退上一份远端/本地快照
@@ -530,8 +525,9 @@ class CountdownBanner {
    * @param {number} [options.countdownSeconds=15] - 倒计时秒数
    * @param {number} [options.currentCount=15] - 当前标签页总数
    * @param {number} [options.threshold=15] - 设定的阈值
+   * @param {string} [options.nonce=''] - 后台签发的一次性操作凭证
    */
-  static show({ countdownSeconds = 15, currentCount = 15, threshold = 15 } = {}) {
+  static show({ countdownSeconds = 15, currentCount = 15, threshold = 15, nonce = '' } = {}) {
     // 若已有实例在展示，先平滑销毁
     if (this.currentInstance) {
       this.currentInstance.destroy();
@@ -540,7 +536,8 @@ class CountdownBanner {
     const banner = new CountdownBanner({
       countdownSeconds,
       currentCount,
-      threshold
+      threshold,
+      nonce
     });
     banner.render();
     this.currentInstance = banner;
@@ -556,11 +553,12 @@ class CountdownBanner {
     }
   }
 
-  constructor({ countdownSeconds, currentCount, threshold }) {
+  constructor({ countdownSeconds, currentCount, threshold, nonce }) {
     this.totalSeconds = Math.max(3, countdownSeconds || 15);
     this.remainingSeconds = this.totalSeconds;
     this.currentCount = currentCount;
     this.threshold = threshold;
+    this.nonce = typeof nonce === 'string' ? nonce : '';
     this.timer = null;
     this.hostElement = null;
     this.shadowRoot = null;
@@ -571,9 +569,9 @@ class CountdownBanner {
    * 渲染 Shadow DOM
    */
   render() {
-    // 1. 创建容器 Host
-    this.hostElement = document.createElement('better-browse-countdown-root');
-    this.shadowRoot = this.hostElement.attachShadow({ mode: 'open' });
+    // 1. 创建容器 Host：普通 div + closed Shadow，避免网页通过自定义标签名拿到内部按钮
+    this.hostElement = document.createElement('div');
+    this.shadowRoot = this.hostElement.attachShadow({ mode: 'closed' });
 
     // 2. 注入独立样式与 HTML
     this.shadowRoot.innerHTML = `
@@ -913,7 +911,10 @@ class CountdownBanner {
   cancelAutoStash() {
     this.stopTimer();
     try {
-      const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.CANCEL_AUTO_STASH }, () => {
+      const chromeResult = chrome.runtime.sendMessage({
+        action: ActionTypes.CANCEL_AUTO_STASH,
+        payload: { nonce: this.nonce }
+      }, () => {
         // 显式消费 lastError，避免扩展重载后产生未处理的错误噪音
         void chrome.runtime.lastError;
       });
@@ -954,7 +955,10 @@ class CountdownBanner {
           resolve(null);
         }, 10000);
         try {
-          const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.CONFIRM_AUTO_STASH }, (res) => {
+          const chromeResult = chrome.runtime.sendMessage({
+            action: ActionTypes.CONFIRM_AUTO_STASH,
+            payload: { nonce: this.nonce }
+          }, (res) => {
             clearTimeout(timeoutId);
             if (chrome.runtime.lastError) {
               resolve(null);
@@ -1049,10 +1053,6 @@ class CountdownBanner {
 
 
 class LinkInterceptor {
-  /** 开标签事件速率限制：滑动窗口内最多允许的次数与窗口时长 */
-  static OPEN_EVENT_LIMIT = 10;
-  static OPEN_EVENT_WINDOW_MS = 10000;
-
   constructor() {
     this.currentDomain = window.location.hostname.toLowerCase();
     this.linkRules = {};
@@ -1060,23 +1060,38 @@ class LinkInterceptor {
     this.isInitialized = false;
     this.lastHandledUrl = '';
     this.lastHandledTime = 0;
-    this.openEventTimestamps = [];
+    this.gestureOpenBudget = 0;
   }
 
   /**
-   * 滑动窗口速率限制：__BETTER_BROWSE_OPEN_NEW_TAB__ 是页面脚本可伪造的公开事件，
-   * 协议校验之外还需限制频次，防止被恶意页面当作绕过弹窗拦截的广告/钓鱼发射器
+   * 只把真实指针/键盘手势记为一次开标签额度。
+   * HTMLElement.click() 在 Chrome 里 isTrusted 仍为 true，不能当手势；程序化点击没有 pointerdown。
+   */
+  initGestureGate() {
+    const grant = () => {
+      this.gestureOpenBudget = 1;
+    };
+    document.addEventListener('pointerdown', (event) => {
+      if (event.isTrusted) grant();
+    }, true);
+    document.addEventListener('keydown', (event) => {
+      if (event.isTrusted && (event.key === 'Enter' || event.key === ' ')) grant();
+    }, true);
+    document.addEventListener('click', (event) => {
+      if (!event.isTrusted) return;
+      queueMicrotask(() => {
+        this.gestureOpenBudget = 0;
+      });
+    }, true);
+  }
+
+  /**
+   * 每次真实手势最多开 1 个标签。公开自定义事件与隔离世界点击路径共用。
    * @returns {boolean} 是否允许本次开标签
    */
   shouldAllowOpenEvent() {
-    const now = Date.now();
-    this.openEventTimestamps = this.openEventTimestamps.filter(
-      (ts) => now - ts < LinkInterceptor.OPEN_EVENT_WINDOW_MS
-    );
-    if (this.openEventTimestamps.length >= LinkInterceptor.OPEN_EVENT_LIMIT) {
-      return false;
-    }
-    this.openEventTimestamps.push(now);
+    if (this.gestureOpenBudget < 1) return false;
+    this.gestureOpenBudget = 0;
     return true;
   }
 
@@ -1113,6 +1128,7 @@ class LinkInterceptor {
       this.initHoverListener();
       this.initDOMObserver();
     }
+    this.initGestureGate();
     this.initMainWorldEvents();
     this.initClickListener();
     this.syncModeToMainWorld();
@@ -1127,14 +1143,13 @@ class LinkInterceptor {
       const url = event?.detail?.url;
       if (!this.isSafeHttpUrl(url)) return;
 
-      // 用户激活校验：合法路径（主世界点击拦截 / window.open 劫持）均在真实用户手势的
-      // 同步调用栈内派发事件，navigator.userActivation 为激活态；
-      // 页面脚本凭空伪造事件不产生用户激活，直接忽略（旧浏览器无此 API 时放行）
-      if (navigator.userActivation && !navigator.userActivation.isActive) {
+      // 主世界只在 new 模式派发；隔离世界必须再查一次当前模式，防止 AUTO 下页面伪造开标签
+      if (this.getEffectiveMode() !== LinkModes.NEW) return;
+
+      if (this.lastHandledUrl === url && (Date.now() - this.lastHandledTime < 500)) {
         return;
       }
 
-      // 频次限制兜底：即便页面持有真实用户激活，也不允许高频批量开标签
       if (!this.shouldAllowOpenEvent()) {
         return;
       }
@@ -1428,6 +1443,11 @@ class LinkInterceptor {
         event.stopImmediatePropagation();
         return;
       }
+      if (!this.shouldAllowOpenEvent()) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       this.lastHandledUrl = fullUrl;
       this.lastHandledTime = Date.now();
 
@@ -1511,8 +1531,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // 倒计时卡片仅在顶层框架展示
   if (!IS_IN_IFRAME && message.action === ActionTypes.SHOW_AUTO_STASH_COUNTDOWN) {
-    const { countdownSeconds, currentCount, threshold } = message.payload || {};
-    CountdownBanner.show({ countdownSeconds, currentCount, threshold });
+    const { countdownSeconds, currentCount, threshold, nonce } = message.payload || {};
+    CountdownBanner.show({ countdownSeconds, currentCount, threshold, nonce });
     sendResponse({ success: true });
     return false;
   }

@@ -16,6 +16,7 @@ const allJsFiles = [
   'src/constants/format-revisions.js',
   'src/constants/storage-keys.js',
   'src/core/bus/message-bus.js',
+  'src/core/security/message-authorizer.js',
   'src/core/storage/storage-adapter.js',
   'src/core/storage/indexed-db.js',
   'src/core/storage/migration.js',

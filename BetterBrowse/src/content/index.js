@@ -51,8 +51,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // 倒计时卡片仅在顶层框架展示
   if (!IS_IN_IFRAME && message.action === ActionTypes.SHOW_AUTO_STASH_COUNTDOWN) {
-    const { countdownSeconds, currentCount, threshold } = message.payload || {};
-    CountdownBanner.show({ countdownSeconds, currentCount, threshold });
+    const { countdownSeconds, currentCount, threshold, nonce } = message.payload || {};
+    CountdownBanner.show({ countdownSeconds, currentCount, threshold, nonce });
     sendResponse({ success: true });
     return false;
   }
