@@ -34,7 +34,7 @@
 ```
 BetterBrowse/
 ├── .gitignore                     # Git 忽略配置
-├── deno.json                      # 根工作区 Deno 配置文件 (任务代理)
+├── deno.json                      # 根工作区 Deno 配置文件
 │
 ├── skills/                        # AI Agent 技能库（阶段三：better-browse 技能 + 桥接 CLI 客户端）
 │   └── better-browse/
@@ -44,69 +44,96 @@ BetterBrowse/
 │       └── references/
 │           └── protocol.md        # 线协议与排障参考
 │
-└── BetterBrowse/
-    ├── deno.json                  # Deno 任务与 JSR 标准库依赖配置
+├── tests/                         # 🎯 根目录集成测试套件 (TDD 隔离，不随插件打包)
+│   ├── helpers/
+│   │   └── fake-indexeddb.js      # 测试专用内存版 IndexedDB 模拟器 (宏任务事件派发、事务中止回滚)
+│   ├── critical-flows.test.js     # 核心收纳恢复流程与 URL 容错导入测试
+│   ├── indexed-db-stash.test.js   # IndexedDB 主库仓储、迁移幂等、回退与并发写库测试
+│   ├── webdav-sync.test.js        # WebDAV 同步协议、字段合并、墓碑与凭据隔离测试
+│   ├── account-config-sync.test.js # 浏览器账号偏好镜像、配额跳过与凭据隔离测试
+│   ├── ai-bridge.test.js          # AI 桥接人机能力对等 (parity)、确认位、凭据出口与审计测试
+│   ├── stash-item-ops.test.js     # 收纳条目增强读写 (组内追加/编辑/检索分页/备份管理) 测试
+│   ├── rules-engine.test.js       # P0~P3 智能规则多级优先级测试
+│   ├── stash-settings.test.js     # 收纳箱精细化设置与存储迁移测试
+│   ├── threshold-monitor.test.js  # 阈值监控与冷却防打扰测试
+│   ├── message-authorizer.test.js # 消息来源授权鉴权测试
+│   ├── runtime-log.test.js        # 运行时日志仓储与格式化测试
+│   ├── extension-url.test.js      # 扩展页面 URL 判定测试
+│   ├── api-version.test.js        # 内部 API 版本契约测试
+│   └── webdav-two-device.test.js  # WebDAV 双设备端到端测试
+│
+└── BetterBrowse/                  # 📦 Chrome 扩展根目录 (纯原生扩展产物)
+    ├── deno.json                  # Deno 任务与依赖配置
     ├── manifest.json              # Chrome Manifest V3 清单配置
     │
     ├── native-host/               # AI 桥接本机宿主 (阶段三 M4, 由 Chrome Native Messaging 按需拉起)
-    │   ├── bb_native_host.js     # 宿主主程序 (stdio 帧 ↔ 127.0.0.1 令牌侧信道、SW 保活 ping、串行转发)
+    │   ├── bb_native_host.js      # 宿主主程序 (stdio 帧 ↔ 127.0.0.1 令牌侧信道、SW 保活 ping、串行转发)
     │   ├── run-host.cmd / run-host.sh # 平台启动包装 (Chrome 拉起入口)
-    │   ├── install.js            # 安装器 (Windows 注册表 / macOS、Linux 目录, deno task ai-host-install)
-    │   └── uninstall.js          # 卸载器 (deno task ai-host-uninstall)
+    │   ├── install.js             # 安装器 (Windows 注册表 / macOS、Linux 目录, deno task ai-host-install)
+    │   └── uninstall.js           # 卸载器 (deno task ai-host-uninstall)
     │
     ├── scripts/                   # Deno 原生驱动的辅助与校验工具 (纯 JS)
-    │   ├── build-content.js      # 内容脚本单文件打包器 (生成自包含 content-bundle.js)
-    │   ├── generate-icons.js     # 矢量光栅化治愈系猫耳高清图标生成器 (16~512px)
-    │   └── verify-code.js        # 静态规范、UTF-8 编码与全量文件完整性校验器
+    │   ├── build-content.js       # 内容脚本单文件打包器 (生成自包含 content-bundle.js)
+    │   ├── generate-icons.js      # 矢量光栅化治愈系猫耳高清图标生成器 (16~512px)
+    │   └── verify-code.js         # 静态规范、UTF-8 编码与全量文件完整性校验器
     │
     ├── src/                       # 🎯 纯原生 JavaScript 源码 (Chrome 扩展直接加载)
     │   ├── constants/             # 全局常量契约层
-    │   │   ├── action-types.js   # 跨端通信 ActionTypes 契约
-    │   │   ├── config.js         # 默认配置、优先级定义与业务常量
-    │   │   └── storage-keys.js   # Storage 键名命名空间
+    │   │   ├── action-types.js    # 跨端通信 ActionTypes 契约
+    │   │   ├── config.js          # 默认配置、优先级定义与业务常量
+    │   │   ├── format-revisions.js# 数据格式修订号契约
+    │   │   └── storage-keys.js    # Storage 键名命名空间
     │   │
     │   ├── core/                  # 核心业务领域层 (纯 JS 逻辑，无 DOM 强依赖)
     │   │   ├── bus/
-    │   │   │   └── message-bus.js    # 统一跨端消息通讯总线 (强类型、安全错误处理)
+    │   │   │   └── message-bus.js # 统一跨端消息通讯总线 (强类型、安全错误处理)
     │   │   ├── storage/
     │   │   │   ├── storage-adapter.js# Chrome Storage 统一适配器 (local/sync, 变化监听, 默认值合并)
-    │   │   │   ├── indexed-db.js    # IndexedDB 本地主库连接管理器 (惰性重建、跨上下文写锁、分批事务)
-    │   │   │   └── migration.js      # 数据架构版本迁移器 (幂等、失败降级、30 天保留与一键回退)
+    │   │   │   ├── indexed-db.js  # IndexedDB 本地主库连接管理器 (惰性重建、跨上下文写锁、分批事务)
+    │   │   │   └── migration.js   # 数据架构版本迁移器 (幂等、失败降级、30 天保留与一键回退)
+    │   │   ├── logging/
+    │   │   │   ├── runtime-logger.js # 统一运行时日志捕获与输出
+    │   │   │   └── runtime-log-repository.js # 日志持久化仓储
     │   │   ├── link/
-    │   │   │   ├── link-matcher.js   # 域名匹配算法 (精确域名 > 通配符 > 全局后备)
-    │   │   │   └── link-service.js   # 链接跳转规则增删改查业务服务
-    │   │   ├── rules/                # 智能收纳规则引擎 (责任链 + 策略模式)
-    │   │   │   ├── base-rule.js      # 规则抽象基类
-    │   │   │   ├── audible-rule.js   # P0 媒体播放保护规则
+    │   │   │   ├── link-matcher.js# 域名匹配算法 (精确域名 > 通配符 > 全局后备)
+    │   │   │   └── link-service.js# 链接跳转规则增删改查业务服务
+    │   │   ├── rules/             # 智能收纳规则引擎 (责任链 + 策略模式)
+    │   │   │   ├── base-rule.js   # 规则抽象基类
+    │   │   │   ├── audible-rule.js# P0 媒体播放保护规则
     │   │   │   ├── form-guard-rule.js# P0 表单输入保护规则
     │   │   │   ├── recent-active-rule.js # P1 最近访问保护规则
     │   │   │   ├── frequency-rule.js # P2 高频访问保护规则 (Top 20%)
-    │   │   │   ├── pinned-rule.js    # P3 固定标签保护规则
-    │   │   │   └── rule-engine.js    # 规则编排与全量标签评估器
-    │   │   ├── stash/                # 标签页收纳与持久化仓储
-    │   │   │   ├── stash-service.js  # 收纳与恢复服务主调度
+    │   │   │   ├── pinned-rule.js # P3 固定标签保护规则
+    │   │   │   └── rule-engine.js # 规则编排与全量标签评估器
+    │   │   ├── stash/             # 标签页收纳与持久化仓储
+    │   │   │   ├── stash-service.js # 收纳与恢复服务主调度
     │   │   │   ├── local-stash-repo.js # 收纳仓储门面 (IndexedDB 主库优先, chrome.storage 兜底)
     │   │   │   ├── indexed-stash-repo.js # IndexedDB 仓储实现 (页面实体+收纳记录两层模型、索引去重、分页检索)
     │   │   │   └── onetab-converter.js # OneTab 双向数据转换器 (支持纯文本/内部 JSON 互导)
     │   │   │
-    │   │   ├── ai/                   # AI 桥接能力层 (阶段三 M4, 协议见 docs/03-ai-skill-bridge.md)
+    │   │   ├── ai/                # AI 桥接能力层 (阶段三 M4, 协议见 docs/03-ai-skill-bridge.md)
     │   │   │   └── ai-capabilities.js # 能力自描述常量 (动作文档目录、确认位白名单、清单构建器)
-    │   │
-    │   │   └── sync/                 # WebDAV 云端同步 (阶段二 M3, 协议见 docs/02-webdav-sync.md)
+    │   │   │
+    │   │   ├── security/
+    │   │   │   └── message-authorizer.js # 跨端消息来源授权与鉴权
+    │   │   │
+    │   │   └── sync/              # WebDAV 云端同步 (阶段二 M3, 协议见 docs/02-webdav-sync.md)
     │   │       ├── sync-constants.js # 协议常量 (远端路径、状态机、配额阈值)
-    │   │       ├── webdav-client.js  # HTTPS WebDAV 客户端 (GET/PUT/HEAD/MKCOL, ETag 能力探测)
-    │   │       ├── credentials.js    # 凭据本地仓储 (永不进入同步/快照/导出)
-    │   │       ├── outbox.js         # 本地不可变操作 outbox (与实体写入同事务追加)
-    │   │       ├── merge.js          # 字段级合并、墓碑与冲突记录
-    │   │       ├── snapshot.js       # generation 快照生成/应用 (watermark 重放)
-    │   │       ├── sync-engine.js    # 推/拉/合并/清单条件更新/压缩与设备退役
-    │   │       ├── device-events.js  # 跨设备可见、仅来源设备执行的倒计时/收纳事件
+    │   │       ├── crypto-util.js # 校验和与哈希工具
+    │   │       ├── webdav-client.js # HTTPS WebDAV 客户端 (GET/PUT/HEAD/MKCOL, ETag 能力探测)
+    │   │       ├── credentials.js # 凭据本地仓储 (永不进入同步/快照/导出)
+    │   │       ├── outbox.js      # 本地不可变操作 outbox (与实体写入同事务追加)
+    │   │       ├── merge.js       # 字段级合并、墓碑与冲突记录
+    │   │       ├── snapshot.js    # generation 快照生成/应用 (watermark 重放)
+    │   │       ├── sync-engine.js # 推/拉/合并/清单条件更新/压缩与设备退役
+    │   │       ├── device-events.js # 跨设备可见、仅来源设备执行的倒计时/收纳事件
     │   │       └── account-config-sync.js # 浏览器账号偏好镜像 (chrome.storage.sync，不含收纳列表)
     │   │
     │   ├── background/            # 后台生命周期与调度 (Service Worker 原生 ESM)
     │   │   ├── activity-tracker.js   # 标签页激活时间与滑动窗口频次统计 (本地数据修订 8 起按 pageId 持久化)
     │   │   ├── threshold-monitor.js  # 标签页数量阈值监控与冷却防打扰
     │   │   ├── pinned-tab-guard.js   # 首位常驻收纳箱守护与防误关保护
+    │   │   ├── context-menu-manager.js# 右键菜单管理
     │   │   ├── sync-scheduler.js     # 云端同步调度 (防抖/启动/定时/手动)
     │   │   ├── action-handlers.js    # 共享 action 处理映射 (人类 UI 消息与 AI 桥接指令同一处理路径)
     │   │   ├── ai-bridge.js          # AI 桥接管理器 (Native Messaging 通道、确认位、凭据出口复查、审计)
@@ -131,19 +158,6 @@ BetterBrowse/
     │   │   └── options.js
     │   │
     │   └── icons/                 # 高清图标资源 (16/32/48/128/256/512)
-    │
-    └── tests/                     # Deno.test 原生自动化集成测试套件
-        ├── helpers/
-        │   └── fake-indexeddb.js  # 测试专用内存版 IndexedDB 模拟器 (宏任务事件派发、事务中止回滚)
-        ├── critical-flows.test.js # 核心收纳恢复流程与 URL 容错导入测试
-        ├── indexed-db-stash.test.js # IndexedDB 主库仓储、迁移幂等、回退与并发写库测试
-        ├── webdav-sync.test.js    # WebDAV 同步协议、字段合并、墓碑与凭据隔离测试
-        ├── account-config-sync.test.js # 浏览器账号偏好镜像、配额跳过与凭据隔离测试
-        ├── ai-bridge.test.js      # AI 桥接人机能力对等 (parity)、确认位、凭据出口与审计测试
-        ├── stash-item-ops.test.js # 收纳条目增强读写 (组内追加/编辑/检索分页/备份管理) 测试
-        ├── rules-engine.test.js   # P0~P3 智能规则多级优先级测试
-        ├── stash-settings.test.js # 收纳箱精细化设置与存储迁移测试
-        └── threshold-monitor.test.js # 阈值监控与冷却防打扰测试
 ```
 
 ---
@@ -384,7 +398,7 @@ BetterBrowse/
 
 ---
 
-## 🛠️ 5. Deno 原生指令集
+## 🛠️ 5. Deno 原生指令集与测试
 
 本项目完全由 **Deno 原生驱动**，无需安装 Node.js：
 
@@ -392,13 +406,18 @@ BetterBrowse/
 # 1. 运行全套自动化测试 (Deno 原生测试)
 deno task test
 
+# 定向运行单个测试文件或按关键词过滤测试用例
+deno test -A tests/indexed-db-stash.test.js
+deno test -A tests/ai-bridge.test.js
+deno test -A tests/ --filter "WebDAV"
+
 # 2. 运行静态规范、UTF-8 编码与文件完整性校验 (必须全部 PASS)
 deno task verify
 
 # 3. 仅在跨组件 API 契约发生不兼容变化时递增内部 API 版本
 deno task api-version-bump
 
-# 4. 重新打包内容脚本 (修改 src/content/ 源码后执行)
+# 4. 重新打包内容脚本 (修改 src/content/ 或其常量依赖后执行)
 deno task bundle
 
 # 5. 生成全尺寸抗锯齿高清图标 (16px ~ 512px)
@@ -411,7 +430,20 @@ deno task ai-host-uninstall
 
 ---
 
-## ⚠️ 6. Agent 开发避坑指南（Gotchas）
+## 📚 6. 核心架构与协议参考文档
+
+在改动敏感或高风险领域（存储架构、云端同步、AI 桥接、协议契约）前，请务必先查阅对应设计文档：
+
+- [`docs/00-overview.md`](docs/00-overview.md): 整体重构全景、架构演进路线与全局约束
+- [`docs/01-local-indexeddb.md`](docs/01-local-indexeddb.md): 本地 IndexedDB 存储架构、两层数据模型、事务与迁移规范
+- [`docs/02-webdav-sync.md`](docs/02-webdav-sync.md): WebDAV 云端同步协议、outbox 事务模型、墓碑机制与冲突合并
+- [`docs/03-ai-skill-bridge.md`](docs/03-ai-skill-bridge.md): AI Native Messaging 桥接协议、人机能力对等（Parity）、确认位白名单与审计规范
+- [`docs/04-testing-verification.md`](docs/04-testing-verification.md): 自动化测试策略、覆盖矩阵与质量验收门禁
+- [`skills/better-browse/references/protocol.md`](skills/better-browse/references/protocol.md): AI Agent 桥接客户端与本机宿主线协议详细规范
+
+---
+
+## ⚠️ 7. Agent 开发避坑指南（Gotchas）
 
 1. **零构建所见即所得**：
    - 源码即为运行代码。修改 `src/` 中的 JS、HTML、CSS 后，在 Chrome 扩展管理界面点击刷新即可直接生效。
@@ -426,9 +458,16 @@ deno task ai-host-uninstall
    - 门面写方法的后端决策发生在写锁临界区内，改动门面时**不得把 `_getBackend()` 决策移出锁外**，否则会引入"决策后版本翻转"竞态导致漏写；
    - `IndexedStashRepository` 的写方法自身**不持锁**（调用方持锁），直接调用必须自行包裹 `IndexedDBManager.withWriteLock`，且**严禁嵌套获取写锁**（死锁）；
    - 需要 UI 实时感知 IndexedDB 数据变化时，监听 `bb_stash_revision` 修订号（门面写成功后自动广播），不要依赖 `chrome.storage.onChanged` 的 `bb_stash_groups`。
-5. **编码要求**：
+5. **消息来源授权（MessageBus 来源鉴权，`src/core/security/message-authorizer.js`）**：
+   - **判 internal 只看 `sender.url`，绝不附加 `!sender.tab`**：选项页（options）几乎总是在普通标签页里打开（从 `chrome://extensions` 点「选项」、或从 popup 跳转过去），此时 Chrome 也会给扩展页面设置 `sender.tab`。若判定 `internal` 时额外要求 `!sender.tab`，会把 options 误判成"内容脚本"来源，导致除 5 个白名单动作（`GET_PAGE_LINK_CONTEXT` / `OPEN_TAB_BACKGROUND` / `APPEND_RUNTIME_LOG` / `CANCEL_AUTO_STASH` / `CONFIRM_AUTO_STASH`）外的所有 action（`GET_CONFIG` / `GET_STASH_GROUPS` / `IMPORT_STASH_DATA` / `UPDATE_CONFIG` / 同步相关等）全部被拒，UI 读不到任何数据、写不进配置、导不进备份，表现如同"数据全部消失"。数据实际没丢，刷新扩展即恢复。
+   - **安全前提成立**：内容脚本的 `sender.url` 是网页 URL（非 `chrome-extension://`），不可能匹配本扩展来源，因此单凭 `sender.url.startsWith(ownOrigin)` 即可安全区分扩展页面与内容脚本，不会把网页放进 `internal`。
+   - **新增 action 时同步三处**：人类 UI 与内容脚本若都要调用，在 `action-handlers.js` 挂 handler → 内容脚本路径必须同时加入 `message-authorizer.js` 的 `CONTENT_ALLOWED_ACTIONS`，否则内容脚本来源会被拒；属人类 UI 功能则同步更新 `tests/ai-bridge.test.js` 的 `HUMAN_UI_ACTIONS`（parity 断言）。
+   - **改动鉴权逻辑必须补回归测试**：`tests/message-authorizer.test.js` 需覆盖"扩展页面在标签页里打开（`sender.url` 为扩展页面 + 带 `sender.tab`）仍判为 internal 且敏感 action 放行"这一关键路径，防止回归。
+   - **`popup-lifecycle` 端口必须校验来源**：`onConnect` 只接受本扩展 `popup.html` 且不得带 `sender.tab`（`isTrustedPopupLifecyclePort`）。内容脚本也能 `connect()`，不能把任意短连接当成图标双击全量收纳。
+   - **倒计时确认/取消对内容脚本要求 nonce**：`SHOW_AUTO_STASH_COUNTDOWN` 下发一次性凭证，卡片用 closed Shadow 持有，不写进 DOM；内容脚本调用 `CONFIRM_AUTO_STASH` / `CANCEL_AUTO_STASH` 必须回传。AI / 扩展页面 / 通知按钮不走此约束。
+6. **编码要求**：
    - 任何新增文件必须以 **UTF-8** 格式保存，且代码注释与文本使用**简体中文**。
-6. **WebDAV 云端同步（阶段二 M3，协议见 docs/02-webdav-sync.md）**：
+7. **WebDAV 云端同步（阶段二 M3，协议见 docs/02-webdav-sync.md）**：
    - **outbox 同事务**：实体写入与 outbox / operationLogs / clock 更新必须在**同一个** `runTransaction` 事务内（`SyncOutbox.enqueueInTx`），拆开会出现"实体已写而操作丢失"的分叉；大组仍按 500 条分批，每批实体与操作同事务提交；
    - **严禁嵌套写锁**：`DeviceEventLog.append` 自行获取写锁，**不得**在已持锁的临界区内调用（倒计时回调、消息处理器均在锁外调用）；
    - **凭据排除**：`bb_webdav_credentials` 与 `bb_auto_backups` 被排除在 outbox、快照载荷与全量导出 JSON 之外，新增可同步键时必须维护 `StorageAdapter._shouldEnqueue` 与 `SyncSnapshot.buildPayload` 的排除表；
@@ -436,7 +475,7 @@ deno task ai-host-uninstall
    - **能力探测前置**：探测仅拒绝认证失败与写入失败；缺失 ETag / If-Match 的服务器进入**兼容模式**（如 123 云盘 WebDAV），清单更新必须经 `SyncEngine._updateManifest` 统一通道「读取最新远端清单 → 在最新内容上合并 → 条件写入 → 412 重试」，**严禁**基于运行开始时的缓存清单直接覆盖远端（会吞掉其他设备的并发写入）；
    - **远端不可变**：批次与快照文件唯一命名不可变，清单更新必须携带当前 ETag 的 `If-Match`，412 视为条件写入冲突而非覆盖理由。
    - **浏览器账号偏好镜像**：`chrome.storage.sync` 只允许写入 `bb_account_config`（阈值 / 规则开关 / 收纳箱设置 / WebDAV 地址）。**严禁**把收纳组、页面、条目、`bb_link_rules`、凭据、自动备份或 `fieldRevs` 写入 sync；`chrome.storage.sync` 缺失时直接跳过，**禁止**回退到 `chrome.storage.local`。
-7. **AI 桥接（阶段三 M4，协议见 docs/03-ai-skill-bridge.md）**：
+8. **AI 桥接（阶段三 M4，协议见 docs/03-ai-skill-bridge.md）**：
    - **同一处理路径**：人类 UI 消息与 AI 桥接指令共用 `action-handlers.js` 的同一份映射。**新增动作时**：在该映射挂 handler → 同步在 `src/core/ai/ai-capabilities.js` 的 `AI_ACTION_DOCS` 补参数文档 → 若属人类 UI 功能则更新 `tests/ai-bridge.test.js` 的 `HUMAN_UI_ACTIONS`（parity 断言强制"人类有的 AI 必有"，漏文档会直接挂测试）；
    - **确认位红线**：新增不可逆动作时必须加入 `AI_CONFIRM_REQUIRED_ACTIONS`（AI 调用需 `payload.confirm === true`，不受 UI"删除二次确认"设置影响，恒定要求）；
    - **凭据出口复查**：任何新接口的响应都不得包含 `bb_webdav_credentials` 内容或 `password` 字段（`AIBridgeManager._guardResponse` 序列化后复查，命中即拦截）；凭据类动作的审计摘要不得记录内容（`_buildAuditSummary` 白名单字段机制）；
