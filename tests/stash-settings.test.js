@@ -5,11 +5,11 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { DefaultConfig } from "../src/constants/config.js";
-import { MigrationManager } from "../src/core/storage/migration.js";
-import { StorageKeys } from "../src/constants/storage-keys.js";
-import { LocalStashRepository } from "../src/core/stash/local-stash-repo.js";
-import { StashService } from "../src/core/stash/stash-service.js";
+import { DefaultConfig } from "../BetterBrowse/src/constants/config.js";
+import { MigrationManager } from "../BetterBrowse/src/core/storage/migration.js";
+import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
+import { LocalStashRepository } from "../BetterBrowse/src/core/stash/local-stash-repo.js";
+import { StashService } from "../BetterBrowse/src/core/stash/stash-service.js";
 
 function installMockStorage(initialData = {}) {
   const store = { ...initialData };

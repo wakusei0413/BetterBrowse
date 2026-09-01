@@ -5,13 +5,13 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { StorageKeys } from "../src/constants/storage-keys.js";
-import { LOCAL_DATA_SCHEMA_REVISION } from "../src/constants/config.js";
-import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
-import { MigrationManager } from "../src/core/storage/migration.js";
-import { IndexedDBManager, IDBStores } from "../src/core/storage/indexed-db.js";
-import { LocalStashRepository } from "../src/core/stash/local-stash-repo.js";
-import { IndexedStashRepository } from "../src/core/stash/indexed-stash-repo.js";
+import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
+import { LOCAL_DATA_SCHEMA_REVISION } from "../BetterBrowse/src/constants/config.js";
+import { StorageAdapter } from "../BetterBrowse/src/core/storage/storage-adapter.js";
+import { MigrationManager } from "../BetterBrowse/src/core/storage/migration.js";
+import { IndexedDBManager, IDBStores } from "../BetterBrowse/src/core/storage/indexed-db.js";
+import { LocalStashRepository } from "../BetterBrowse/src/core/stash/local-stash-repo.js";
+import { IndexedStashRepository } from "../BetterBrowse/src/core/stash/indexed-stash-repo.js";
 import { countStoreRecords, installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
 
 /**

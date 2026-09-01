@@ -5,18 +5,18 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { ActionTypes } from "../src/constants/action-types.js";
-import { StorageKeys } from "../src/constants/storage-keys.js";
-import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
+import { ActionTypes } from "../BetterBrowse/src/constants/action-types.js";
+import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
+import { StorageAdapter } from "../BetterBrowse/src/core/storage/storage-adapter.js";
 import {
   AI_ACTION_DOCS,
   AI_CONFIRM_REQUIRED_ACTIONS,
   buildCapabilitiesDescriptor
-} from "../src/core/ai/ai-capabilities.js";
-import { createActionHandlers } from "../src/background/action-handlers.js";
-import { AIBridgeManager } from "../src/background/ai-bridge.js";
-import { RuntimeLogRepository } from "../src/core/logging/runtime-log-repository.js";
-import { IndexedDBManager } from "../src/core/storage/indexed-db.js";
+} from "../BetterBrowse/src/core/ai/ai-capabilities.js";
+import { createActionHandlers } from "../BetterBrowse/src/background/action-handlers.js";
+import { AIBridgeManager } from "../BetterBrowse/src/background/ai-bridge.js";
+import { RuntimeLogRepository } from "../BetterBrowse/src/core/logging/runtime-log-repository.js";
+import { IndexedDBManager } from "../BetterBrowse/src/core/storage/indexed-db.js";
 import { installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
 
 /**
@@ -105,9 +105,6 @@ const HUMAN_UI_ACTIONS = [
   ActionTypes.RESOLVE_SYNC_CONFLICT,
   ActionTypes.LIST_SYNC_DEVICES,
   ActionTypes.RETIRE_SYNC_DEVICE,
-  ActionTypes.LIST_RECYCLE_BIN,
-  ActionTypes.RESTORE_RECYCLE_BIN_ITEM,
-  ActionTypes.PURGE_RECYCLE_BIN_ITEM,
   ActionTypes.LIST_AUTO_BACKUPS,
   ActionTypes.RESTORE_AUTO_BACKUP,
   ActionTypes.DELETE_AUTO_BACKUP,
@@ -201,6 +198,8 @@ Deno.test("AI 治理：确认位强制（镜像人类 UI 确认弹窗）", async
     // confirm: false 同样拒绝
     await manager._processRequest('r3', ActionTypes.CLEAR_ALL_STASH, { confirm: false });
     assertEquals(responses.get('r3').success, false);
+
+    assertEquals(AI_CONFIRM_REQUIRED_ACTIONS.has(ActionTypes.RESTORE_STASH_GROUP_DATA), true);
   } finally {
     await idb.restore();
   }

@@ -1,11 +1,16 @@
 {
   "tasks": {
-    "test": "deno task --cwd BetterBrowse test",
-    "verify": "deno task --cwd BetterBrowse verify",
+    "test": "deno test -A tests/",
+    "verify": "deno run -A BetterBrowse/scripts/verify-code.js && deno task test",
     "bundle": "deno task --cwd BetterBrowse bundle",
     "api-version-bump": "deno task --cwd BetterBrowse api-version-bump",
     "icons": "deno task --cwd BetterBrowse icons",
     "ai-host-install": "deno task --cwd BetterBrowse ai-host-install",
     "ai-host-uninstall": "deno task --cwd BetterBrowse ai-host-uninstall"
+  },
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.11",
+    "@std/fs": "jsr:@std/fs@^1.0.14",
+    "@std/path": "jsr:@std/path@^1.0.8"
   }
 }

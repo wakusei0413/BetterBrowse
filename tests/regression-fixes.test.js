@@ -6,16 +6,16 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { StorageKeys } from "../src/constants/storage-keys.js";
-import { DefaultConfig } from "../src/constants/config.js";
-import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
-import { IndexedDBManager, IDBStores } from "../src/core/storage/indexed-db.js";
-import { MigrationManager } from "../src/core/storage/migration.js";
-import { LocalStashRepository } from "../src/core/stash/local-stash-repo.js";
-import { IndexedStashRepository } from "../src/core/stash/indexed-stash-repo.js";
-import { StashService } from "../src/core/stash/stash-service.js";
-import { RecentActiveRule } from "../src/core/rules/recent-active-rule.js";
-import { FormGuardRule } from "../src/core/rules/form-guard-rule.js";
+import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
+import { DefaultConfig } from "../BetterBrowse/src/constants/config.js";
+import { StorageAdapter } from "../BetterBrowse/src/core/storage/storage-adapter.js";
+import { IndexedDBManager, IDBStores } from "../BetterBrowse/src/core/storage/indexed-db.js";
+import { MigrationManager } from "../BetterBrowse/src/core/storage/migration.js";
+import { LocalStashRepository } from "../BetterBrowse/src/core/stash/local-stash-repo.js";
+import { IndexedStashRepository } from "../BetterBrowse/src/core/stash/indexed-stash-repo.js";
+import { StashService } from "../BetterBrowse/src/core/stash/stash-service.js";
+import { RecentActiveRule } from "../BetterBrowse/src/core/rules/recent-active-rule.js";
+import { FormGuardRule } from "../BetterBrowse/src/core/rules/form-guard-rule.js";
 import { countStoreRecords, installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
 
 /**
@@ -303,7 +303,7 @@ Deno.test("回归: closeTabsSafely 容忍批量关闭时部分标签已被关闭
 });
 
 Deno.test("回归: MessageBus.sendToTab 必须吞掉 MV3 sendMessage 在 callback 模式下仍拒绝的 Promise", async () => {
-  const { MessageBus } = await import("../src/core/bus/message-bus.js");
+  const { MessageBus } = await import("../BetterBrowse/src/core/bus/message-bus.js");
   installMockStorage({});
   globalThis.chrome.runtime = {
     ...(globalThis.chrome.runtime || {}),
@@ -369,7 +369,7 @@ Deno.test("回归: PinnedTabGuard 更新选项页标签时不得因漏导入 isO
     }
   };
   try {
-    const { PinnedTabGuard } = await import("../src/background/pinned-tab-guard.js");
+    const { PinnedTabGuard } = await import("../BetterBrowse/src/background/pinned-tab-guard.js");
     new PinnedTabGuard();
     assertEquals(updatedListeners.length > 0, true);
     updatedListeners[0](1, { pinned: false }, {
@@ -407,7 +407,7 @@ Deno.test("回归: 用户拖拽标签页时后台打开新标签应重试并保�
     }
   };
   try {
-    const { createTabWithRetry } = await import("../src/background/action-handlers.js");
+    const { createTabWithRetry } = await import("../BetterBrowse/src/background/action-handlers.js");
     const tab = await createTabWithRetry({
       url: "https://retry-open.example/article",
       active: true,
@@ -445,7 +445,7 @@ Deno.test("回归: 拖拽持续时创建失败应去掉插入位置而不丢失�
     }
   };
   try {
-    const { createTabWithRetry } = await import("../src/background/action-handlers.js");
+    const { createTabWithRetry } = await import("../BetterBrowse/src/background/action-handlers.js");
     const tab = await createTabWithRetry({
       url: "https://fallback-open.example/article",
       active: true,

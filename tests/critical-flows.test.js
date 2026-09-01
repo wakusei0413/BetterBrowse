@@ -6,13 +6,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LocalStashRepository } from '../src/core/stash/local-stash-repo.js';
-import { StashService } from '../src/core/stash/stash-service.js';
-import { MessageBus } from '../src/core/bus/message-bus.js';
-import { OneTabConverter } from '../src/core/stash/onetab-converter.js';
-import { ContextMenuManager } from '../src/background/context-menu-manager.js';
-import { RuleEngine } from '../src/core/rules/rule-engine.js';
-import { DefaultConfig } from '../src/constants/config.js';
+import { LocalStashRepository } from '../BetterBrowse/src/core/stash/local-stash-repo.js';
+import { StashService } from '../BetterBrowse/src/core/stash/stash-service.js';
+import { MessageBus } from '../BetterBrowse/src/core/bus/message-bus.js';
+import { OneTabConverter } from '../BetterBrowse/src/core/stash/onetab-converter.js';
+import { ContextMenuManager } from '../BetterBrowse/src/background/context-menu-manager.js';
+import { RuleEngine } from '../BetterBrowse/src/core/rules/rule-engine.js';
+import { DefaultConfig } from '../BetterBrowse/src/constants/config.js';
+import { LinkInterceptor } from '../BetterBrowse/src/content/link-interceptor.js';
 
 function installChrome(overrides = {}) {
   globalThis.chrome = {
@@ -157,6 +158,7 @@ test('消息总线正常响应与派发', async () => {
   installChrome({
     runtime: {
       lastError: null,
+      getURL: (path) => `chrome-extension://test/${path}`,
       onMessage: { addListener(fn) { listener = fn; } }
     }
   });
@@ -166,7 +168,9 @@ test('消息总线正常响应与派发', async () => {
   });
 
   const response = await new Promise((resolve) => {
-    listener({ action: 'PING', payload: 'test' }, {}, resolve);
+    // 扩展自身页面来源：sender.url 指向扩展页面，无 sender.tab
+    const internalSender = { url: 'chrome-extension://test/src/options/options.html' };
+    listener({ action: 'PING', payload: 'test' }, internalSender, resolve);
   });
   assert.deepEqual(response, { success: true, data: 'pong:test' });
 });
@@ -241,4 +245,130 @@ test('普通网页伪装扩展选项页路径时不得被系统保护规则放�
     config: DefaultConfig
   });
   assert.equal(result.tabsToStash.length, 1);
+});
+
+test('右键整组收纳 Chrome 原生标签分组（保留组名和颜色）', async () => {
+  let createdGroup = null;
+  let closedTabIds = [];
+
+  installChrome({
+    tabs: {
+      query: async ({ groupId, windowId }) => {
+        if (groupId === 10) {
+          return [
+            { id: 101, windowId: 1, groupId: 10, url: 'https://site1.com', title: 'Site 1', pinned: false },
+            { id: 102, windowId: 1, groupId: 10, url: 'https://site2.com', title: 'Site 2', pinned: false }
+          ];
+        }
+        return [];
+      },
+      remove: async (ids) => {
+        closedTabIds.push(...ids);
+      }
+    },
+    tabGroups: {
+      get: async (groupId) => {
+        if (groupId === 10) {
+          return { id: 10, title: '工作项目', color: 'blue', collapsed: false };
+        }
+        return null;
+      }
+    }
+  });
+
+  const origCreateGroup = LocalStashRepository.createGroup;
+  const origEnsure = StashService.ensurePinnedStashTab;
+
+  try {
+    LocalStashRepository.createGroup = async (items, title, options) => {
+      createdGroup = {
+        title,
+        color: options?.color,
+        tabs: items
+      };
+      return {
+        success: true,
+        group: { id: 'grp_test', ...createdGroup }
+      };
+    };
+    StashService.ensurePinnedStashTab = async () => ({});
+
+    await ContextMenuManager.stashCurrentTabGroup({ id: 101, windowId: 1, groupId: 10 });
+
+    assert.ok(createdGroup);
+    assert.equal(createdGroup.title, '工作项目');
+    assert.equal(createdGroup.color, 'blue');
+    assert.equal(createdGroup.tabs.length, 2);
+    assert.deepEqual(closedTabIds, [101, 102]);
+  } finally {
+    LocalStashRepository.createGroup = origCreateGroup;
+    StashService.ensurePinnedStashTab = origEnsure;
+  }
+});
+
+test('从收纳箱整组恢复时还原为展开的彩色 Chrome Tab Group', async () => {
+  let groupedTabIds = [];
+  let updatedGroupOptions = null;
+
+  installChrome({
+    tabs: {
+      create: async (opts) => {
+        const id = Math.floor(Math.random() * 1000) + 1;
+        return { id, ...opts };
+      },
+      group: async ({ tabIds }) => {
+        groupedTabIds = tabIds;
+        return 999;
+      }
+    },
+    tabGroups: {
+      update: async (groupId, opts) => {
+        if (groupId === 999) {
+          updatedGroupOptions = opts;
+        }
+      }
+    }
+  });
+
+  const origGetAll = LocalStashRepository.getAllGroups;
+  const origDelete = LocalStashRepository.deleteGroup;
+
+  try {
+    LocalStashRepository.getAllGroups = async () => [{
+      id: 'grp_native_test',
+      title: '设计调研',
+      color: 'purple',
+      locked: false,
+      tabs: [
+        { id: 'item-1', url: 'https://design1.com', title: 'Design 1', pinned: false },
+        { id: 'item-2', url: 'https://design2.com', title: 'Design 2', pinned: false }
+      ]
+    }];
+    LocalStashRepository.deleteGroup = async () => true;
+
+    const result = await StashService.restoreGroup('grp_native_test', false);
+    assert.equal(result, true);
+    assert.equal(groupedTabIds.length, 2);
+    assert.ok(updatedGroupOptions);
+    assert.equal(updatedGroupOptions.title, '设计调研');
+    assert.equal(updatedGroupOptions.color, 'purple');
+    assert.equal(updatedGroupOptions.collapsed, false);
+  } finally {
+    LocalStashRepository.getAllGroups = origGetAll;
+    LocalStashRepository.deleteGroup = origDelete;
+  }
+});
+
+test('LinkInterceptor: 每次手势最多允许开一个标签', () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = { location: { hostname: 'example.com', href: 'https://example.com/' } };
+  try {
+    const interceptor = new LinkInterceptor();
+    assert.equal(interceptor.shouldAllowOpenEvent(), false);
+    interceptor.gestureOpenBudget = 1;
+    assert.equal(interceptor.shouldAllowOpenEvent(), true);
+    assert.equal(interceptor.shouldAllowOpenEvent(), false);
+  } finally {
+    globalThis.window = originalWindow;
+  }
 });

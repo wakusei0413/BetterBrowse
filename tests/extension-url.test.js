@@ -11,7 +11,7 @@ import {
   isExcludedFromTabCounting,
   isNewTabUrl,
   isOwnOptionsUrl
-} from '../src/core/extension-url.js';
+} from '../BetterBrowse/src/core/extension-url.js';
 
 function installChrome() {
   globalThis.chrome = {

@@ -6,10 +6,11 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ThresholdMonitor } from '../src/background/threshold-monitor.js';
-import { DefaultConfig } from '../src/constants/config.js';
+import { ThresholdMonitor } from '../BetterBrowse/src/background/threshold-monitor.js';
+import { DefaultConfig } from '../BetterBrowse/src/constants/config.js';
 
 function installMockChrome() {
+  const sessionStore = {};
   globalThis.chrome = {
     runtime: {
       lastError: null,
@@ -18,7 +19,11 @@ function installMockChrome() {
     tabs: {
       onCreated: { addListener() {} },
       onActivated: { addListener() {} },
-      query: async () => []
+      query: (query, cb) => {
+        if (typeof query === 'function') return query([]);
+        cb?.([]);
+        return [];
+      }
     },
     windows: {
       onFocusChanged: { addListener() {} },
@@ -29,10 +34,26 @@ function installMockChrome() {
       onButtonClicked: { addListener() {} },
       clear: () => {}
     },
+    action: {
+      setBadgeText: () => {},
+      setBadgeBackgroundColor: () => {}
+    },
+    alarms: {
+      create: () => {},
+      clear: () => {},
+      onAlarm: { addListener() {} }
+    },
     storage: {
       local: {
         get: (_keys, cb) => cb({ user_config: DefaultConfig }),
         set: (_items, cb) => cb?.()
+      },
+      session: {
+        get: (_keys, cb) => cb({ ...sessionStore }),
+        set: (items, cb) => {
+          Object.assign(sessionStore, items);
+          cb?.();
+        }
       }
     }
   };
@@ -76,4 +97,41 @@ test('ThresholdMonitor: 扩展页与新标签页不参与阈值计数', async ()
   await monitor.checkTabCount();
   assert.equal(monitor.remainingSeconds, 0);
   assert.equal(monitor.countdownInterval, null);
+});
+
+test('ThresholdMonitor: 要求 nonce 时错误凭证不得确认或取消', async () => {
+  installMockChrome();
+  let stashed = false;
+  const monitor = new ThresholdMonitor({
+    onStashRequested: async () => {
+      stashed = true;
+      return { success: true };
+    }
+  });
+  monitor.deadline = Date.now() + 15000;
+  monitor.remainingSeconds = 15;
+  monitor.actionNonce = 'countdown-nonce-token-ok';
+
+  const deniedConfirm = await monitor.handleConfirmAutoStash({
+    requireNonce: true,
+    nonce: 'wrong-token'
+  });
+  assert.equal(deniedConfirm.success, false);
+  assert.equal(stashed, false);
+  assert.equal(monitor.remainingSeconds, 15);
+
+  const deniedCancel = await monitor.handleCancelAutoStash({
+    requireNonce: true,
+    nonce: ''
+  });
+  assert.equal(deniedCancel.success, false);
+  assert.equal(monitor.remainingSeconds, 15);
+
+  const allowed = await monitor.handleConfirmAutoStash({
+    requireNonce: true,
+    nonce: 'countdown-nonce-token-ok'
+  });
+  assert.equal(stashed, true);
+  assert.equal(allowed.success, true);
+  assert.equal(monitor.actionNonce, '');
 });

@@ -5,9 +5,9 @@
  */
 
 import { assertEquals, assertStringIncludes } from '@std/assert';
-import { IndexedDBManager, IDBStores } from '../src/core/storage/indexed-db.js';
-import { RuntimeLogRepository, RUNTIME_LOG_LIMIT } from '../src/core/logging/runtime-log-repository.js';
-import { normalizeConsoleEntry } from '../src/core/logging/runtime-logger.js';
+import { IndexedDBManager, IDBStores } from '../BetterBrowse/src/core/storage/indexed-db.js';
+import { RuntimeLogRepository, RUNTIME_LOG_LIMIT } from '../BetterBrowse/src/core/logging/runtime-log-repository.js';
+import { normalizeConsoleEntry } from '../BetterBrowse/src/core/logging/runtime-logger.js';
 import { installFakeIndexedDB } from './helpers/fake-indexeddb.js';
 
 async function withDatabase(run) {

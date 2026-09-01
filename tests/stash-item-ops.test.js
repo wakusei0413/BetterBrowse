@@ -5,10 +5,10 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { StorageKeys } from "../src/constants/storage-keys.js";
-import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
-import { IndexedDBManager, IDBStores } from "../src/core/storage/indexed-db.js";
-import { LocalStashRepository } from "../src/core/stash/local-stash-repo.js";
+import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
+import { StorageAdapter } from "../BetterBrowse/src/core/storage/storage-adapter.js";
+import { IndexedDBManager, IDBStores } from "../BetterBrowse/src/core/storage/indexed-db.js";
+import { LocalStashRepository } from "../BetterBrowse/src/core/stash/local-stash-repo.js";
 import { installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
 
 /**
@@ -249,55 +249,33 @@ Deno.test("AI 增强：自动备份管理（list / restore 幂等 / delete）", 
   }
 });
 
-Deno.test("回收站：删除组写入墓碑，恢复后组与条目回来且墓碑清除", async () => {
+Deno.test("恢复组快照：危险协议被清洗，合法 URL 写入", async () => {
   const idb = installFakeIndexedDB();
   installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 8 });
   try {
-    const created = await LocalStashRepository.createGroup(
-      [{ url: "https://recycle.example.com/a", title: "回收页" }],
-      "回收组"
-    );
-    assertEquals(created.success, true);
-    const groupId = created.group.id;
-
-    const deleted = await LocalStashRepository.deleteGroup(groupId);
-    assertEquals(deleted, true);
-    assertEquals((await LocalStashRepository.getAllGroups()).length, 0);
-
-    const bin = await LocalStashRepository.listRecycleBin();
-    assertEquals(bin.some((item) => item.entityType === 'stashGroup' && item.entityId === groupId), true);
-    const groupTomb = bin.find((item) => item.entityType === 'stashGroup' && item.entityId === groupId);
-
-    const restored = await LocalStashRepository.restoreFromRecycleBin(groupTomb.tombstoneId);
-    assertEquals(restored.success, true);
+    const snapshot = {
+      id: "stash_grp_restore_sanitize",
+      createdAt: Date.now(),
+      title: "脏快照",
+      tabs: [
+        { id: "t1", url: "javascript:alert(1)", title: "xss" },
+        { id: "t2", url: "https://safe.example/", title: "安全页" },
+        { id: "t3", url: "data:text/html,hi", title: "data" }
+      ]
+    };
+    const res = await LocalStashRepository.restoreGroupSnapshot(snapshot);
+    assertEquals(res.success, true);
     const groups = await LocalStashRepository.getAllGroups();
-    assertEquals(groups.length, 1);
-    assertEquals(groups[0].title, "回收组");
-    assertEquals(groups[0].tabs.length, 1);
-    assertEquals(groups[0].tabs[0].url, "https://recycle.example.com/a");
-    assertEquals((await LocalStashRepository.listRecycleBin()).some((item) => item.entityId === groupId), false);
-  } finally {
-    await idb.restore();
-  }
-});
+    const restored = groups.find((g) => g.id === snapshot.id);
+    assertEquals(Boolean(restored), true);
+    assertEquals(restored.tabs.length, 1);
+    assertEquals(restored.tabs[0].url, "https://safe.example/");
 
-Deno.test("回收站：过期墓碑不可恢复，永久删除后列表为空", async () => {
-  const idb = installFakeIndexedDB();
-  installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 8 });
-  try {
-    const created = await LocalStashRepository.createGroup(
-      [{ url: "https://purge.example.com/b", title: "待清页" }],
-      "待清组"
-    );
-    const groupId = created.group.id;
-    await LocalStashRepository.deleteGroup(groupId);
-    const bin = await LocalStashRepository.listRecycleBin();
-    const tomb = bin.find((item) => item.entityType === 'stashGroup');
-    const purged = await LocalStashRepository.purgeRecycleBinItem(tomb.tombstoneId);
-    assertEquals(purged.success, true);
-    assertEquals((await LocalStashRepository.listRecycleBin()).length, 0);
-    const again = await LocalStashRepository.restoreFromRecycleBin(tomb.tombstoneId);
-    assertEquals(again.success, false);
+    const empty = await LocalStashRepository.restoreGroupSnapshot({
+      id: "stash_grp_evil_only",
+      tabs: [{ url: "javascript:alert(1)" }]
+    });
+    assertEquals(empty.success, false);
   } finally {
     await idb.restore();
   }

@@ -6,8 +6,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RuleEngine } from '../src/core/rules/rule-engine.js';
-import { DefaultConfig } from '../src/constants/config.js';
+import { RuleEngine } from '../BetterBrowse/src/core/rules/rule-engine.js';
+import { DefaultConfig } from '../BetterBrowse/src/constants/config.js';
 
 test('AudibleRule (P0): 正在播放媒体的标签页必须安全保留', async () => {
   const engine = new RuleEngine();

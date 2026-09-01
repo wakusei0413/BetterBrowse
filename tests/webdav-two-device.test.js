@@ -5,13 +5,13 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { StorageKeys } from "../src/constants/storage-keys.js";
-import { MigrationManager } from "../src/core/storage/migration.js";
-import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
-import { IndexedDBManager } from "../src/core/storage/indexed-db.js";
-import { LocalStashRepository } from "../src/core/stash/local-stash-repo.js";
-import { WebdavCredentials } from "../src/core/sync/credentials.js";
-import { SyncEngine } from "../src/core/sync/sync-engine.js";
+import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
+import { MigrationManager } from "../BetterBrowse/src/core/storage/migration.js";
+import { StorageAdapter } from "../BetterBrowse/src/core/storage/storage-adapter.js";
+import { IndexedDBManager } from "../BetterBrowse/src/core/storage/indexed-db.js";
+import { LocalStashRepository } from "../BetterBrowse/src/core/stash/local-stash-repo.js";
+import { WebdavCredentials } from "../BetterBrowse/src/core/sync/credentials.js";
+import { SyncEngine } from "../BetterBrowse/src/core/sync/sync-engine.js";
 import { FakeIDBFactory } from "./helpers/fake-indexeddb.js";
 
 /**

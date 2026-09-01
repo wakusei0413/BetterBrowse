@@ -1,7 +1,7 @@
 {
   "tasks": {
-    "test": "deno test -A tests/",
-    "verify": "deno run -A scripts/verify-code.js && deno task test",
+    "test": "deno test -A ../tests/",
+    "verify": "deno run -A scripts/verify-code.js && deno test -A ../tests/",
     "bundle": "deno run -A scripts/build-content.js",
     "api-version-bump": "deno run -A scripts/bump-api-version.js",
     "icons": "deno run -A scripts/generate-icons.js",

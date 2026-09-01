@@ -5,12 +5,12 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { StorageKeys } from "../src/constants/storage-keys.js";
-import { DefaultConfig } from "../src/constants/config.js";
-import { ACCOUNT_CONFIG_MAX_BYTES, ACCOUNT_CONFIG_FORMAT_REVISION } from "../src/core/sync/sync-constants.js";
-import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
-import { MigrationManager } from "../src/core/storage/migration.js";
-import { AccountConfigSync } from "../src/core/sync/account-config-sync.js";
+import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
+import { DefaultConfig } from "../BetterBrowse/src/constants/config.js";
+import { ACCOUNT_CONFIG_MAX_BYTES, ACCOUNT_CONFIG_FORMAT_REVISION } from "../BetterBrowse/src/core/sync/sync-constants.js";
+import { StorageAdapter } from "../BetterBrowse/src/core/storage/storage-adapter.js";
+import { MigrationManager } from "../BetterBrowse/src/core/storage/migration.js";
+import { AccountConfigSync } from "../BetterBrowse/src/core/sync/account-config-sync.js";
 import { installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
 
 function installMockStorage(initialData = {}, { withSync = true } = {}) {

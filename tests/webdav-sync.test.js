@@ -5,20 +5,20 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { StorageKeys } from "../src/constants/storage-keys.js";
-import { MigrationManager } from "../src/core/storage/migration.js";
-import { StorageAdapter } from "../src/core/storage/storage-adapter.js";
-import { IndexedDBManager, IDBStores } from "../src/core/storage/indexed-db.js";
-import { LocalStashRepository } from "../src/core/stash/local-stash-repo.js";
-import { WebdavCredentials } from "../src/core/sync/credentials.js";
-import { SyncEngine } from "../src/core/sync/sync-engine.js";
-import { SyncOutbox } from "../src/core/sync/outbox.js";
-import { SyncMerge } from "../src/core/sync/merge.js";
-import { SyncSnapshot } from "../src/core/sync/snapshot.js";
-import { DeviceEventLog } from "../src/core/sync/device-events.js";
-import { RuntimeLogRepository } from "../src/core/logging/runtime-log-repository.js";
-import { sha256Hex } from "../src/core/sync/crypto-util.js";
-import { SyncEntityTypes, SyncStatus } from "../src/core/sync/sync-constants.js";
+import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
+import { MigrationManager } from "../BetterBrowse/src/core/storage/migration.js";
+import { StorageAdapter } from "../BetterBrowse/src/core/storage/storage-adapter.js";
+import { IndexedDBManager, IDBStores } from "../BetterBrowse/src/core/storage/indexed-db.js";
+import { LocalStashRepository } from "../BetterBrowse/src/core/stash/local-stash-repo.js";
+import { WebdavCredentials } from "../BetterBrowse/src/core/sync/credentials.js";
+import { SyncEngine } from "../BetterBrowse/src/core/sync/sync-engine.js";
+import { SyncOutbox } from "../BetterBrowse/src/core/sync/outbox.js";
+import { SyncMerge } from "../BetterBrowse/src/core/sync/merge.js";
+import { SyncSnapshot } from "../BetterBrowse/src/core/sync/snapshot.js";
+import { DeviceEventLog } from "../BetterBrowse/src/core/sync/device-events.js";
+import { RuntimeLogRepository } from "../BetterBrowse/src/core/logging/runtime-log-repository.js";
+import { sha256Hex } from "../BetterBrowse/src/core/sync/crypto-util.js";
+import { SyncEntityTypes, SyncStatus } from "../BetterBrowse/src/core/sync/sync-constants.js";
 import { installFakeIndexedDB } from "./helpers/fake-indexeddb.js";
 
 /**
@@ -164,7 +164,7 @@ async function setupDevice(server, { seedSchema = 7 } = {}) {
 Deno.test("WebdavClient: 缺失条件写入能力时进入兼容模式，正常服务器返回 full", async () => {
   const server = new FakeWebdavServer();
   server.noEtag = true;
-  let client = new (await import("../src/core/sync/webdav-client.js")).WebdavClient({
+  let client = new (await import("../BetterBrowse/src/core/sync/webdav-client.js")).WebdavClient({
     serverUrl: 'https://dav.test/dav/',
     username: 'u',
     password: 'p',
@@ -177,7 +177,7 @@ Deno.test("WebdavClient: 缺失条件写入能力时进入兼容模式，正常�
 
   const server2 = new FakeWebdavServer();
   server2.ignoreIfMatch = true;
-  client = new (await import("../src/core/sync/webdav-client.js")).WebdavClient({
+  client = new (await import("../BetterBrowse/src/core/sync/webdav-client.js")).WebdavClient({
     serverUrl: 'https://dav.test/dav/',
     username: 'u',
     password: 'p',
@@ -189,7 +189,7 @@ Deno.test("WebdavClient: 缺失条件写入能力时进入兼容模式，正常�
   assertEquals(weak.reason.includes('412'), true);
 
   const server3 = new FakeWebdavServer();
-  client = new (await import("../src/core/sync/webdav-client.js")).WebdavClient({
+  client = new (await import("../BetterBrowse/src/core/sync/webdav-client.js")).WebdavClient({
     serverUrl: 'https://dav.test/dav/',
     username: 'u',
     password: 'p',

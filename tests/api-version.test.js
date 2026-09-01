@@ -9,13 +9,13 @@ import {
   API_VERSION,
   apiVersionMismatchMessage,
   readApiVersion
-} from '../src/constants/api-version.js';
-import { buildCapabilitiesDescriptor } from '../src/core/ai/ai-capabilities.js';
-import { AIBridgeManager } from '../src/background/ai-bridge.js';
+} from '../BetterBrowse/src/constants/api-version.js';
+import { buildCapabilitiesDescriptor } from '../BetterBrowse/src/core/ai/ai-capabilities.js';
+import { AIBridgeManager } from '../BetterBrowse/src/background/ai-bridge.js';
 
 Deno.test('版本边界：软件发布版本与内部 API 版本各自独立', async () => {
-  const manifest = JSON.parse(await Deno.readTextFile(new URL('../manifest.json', import.meta.url)));
-  const bumpSource = await Deno.readTextFile(new URL('../scripts/bump-api-version.js', import.meta.url));
+  const manifest = JSON.parse(await Deno.readTextFile(new URL('../BetterBrowse/manifest.json', import.meta.url)));
+  const bumpSource = await Deno.readTextFile(new URL('../BetterBrowse/scripts/bump-api-version.js', import.meta.url));
   assertEquals(Number.isSafeInteger(API_VERSION) && API_VERSION > 0, true);
   assertEquals(/^\d+(?:\.\d+){0,3}$/.test(manifest.version), true);
   assertEquals(manifest.version_name, 'Milestone 3');
@@ -107,8 +107,8 @@ Deno.test('API 版本：大响应分块携带统一裸整数', () => {
 });
 
 Deno.test('API 版本：宿主与客户端不定义第二个硬编码版本', async () => {
-  const host = await Deno.readTextFile(new URL('../native-host/bb_native_host.js', import.meta.url));
-  const client = await Deno.readTextFile(new URL('../../skills/better-browse/scripts/bb-bridge-client.js', import.meta.url));
+  const host = await Deno.readTextFile(new URL('../BetterBrowse/native-host/bb_native_host.js', import.meta.url));
+  const client = await Deno.readTextFile(new URL('../skills/better-browse/scripts/bb-bridge-client.js', import.meta.url));
   assertEquals(host.includes("from '../src/constants/api-version.js'"), true);
   assertEquals(/\b(?:AI_BRIDGE_PROTO|PROTOCOL_VERSION)\b/.test(host), false);
   assertEquals(/\b(?:AI_BRIDGE_PROTO|PROTOCOL_VERSION)\b/.test(client), false);
