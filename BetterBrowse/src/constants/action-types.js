@@ -86,11 +86,6 @@ export const ActionTypes = {
   QUERY_RUNTIME_LOGS: 'QUERY_RUNTIME_LOGS',      // 查询本地运行日志
   CLEAR_RUNTIME_LOGS: 'CLEAR_RUNTIME_LOGS',      // 清空本地运行日志（需 confirm）
 
-  // === 30 天回收站 ===
-  LIST_RECYCLE_BIN: 'LIST_RECYCLE_BIN',                 // 列出未过期墓碑（组/条目）
-  RESTORE_RECYCLE_BIN_ITEM: 'RESTORE_RECYCLE_BIN_ITEM', // 从回收站恢复 { tombstoneId }
-  PURGE_RECYCLE_BIN_ITEM: 'PURGE_RECYCLE_BIN_ITEM',     // 永久删除回收站项 { tombstoneId, confirm: true }
-
   // === 云端同步损坏恢复 ===
   GET_SYNC_RECOVERY_INFO: 'GET_SYNC_RECOVERY_INFO',         // 读取损坏状态与本机快照可用性
   FALLBACK_PREVIOUS_SNAPSHOT: 'FALLBACK_PREVIOUS_SNAPSHOT', // 回退上一份远端/本地快照

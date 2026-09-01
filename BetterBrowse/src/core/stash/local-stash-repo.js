@@ -68,6 +68,7 @@ export class LocalStashRepository {
       id: group.id,
       createdAt: group.createdAt,
       title: typeof group.title === 'string' ? group.title.slice(0, 200) : '',
+      color: typeof group.color === 'string' ? group.color : '',
       locked: Boolean(group.locked),
       starred: Boolean(group.starred),
       archived: Boolean(group.archived),
@@ -196,9 +197,10 @@ export class LocalStashRepository {
    * 保存一组待收纳的标签页
    * @param {Array<{ url: string, title: string, favIconUrl?: string, pinned?: boolean }>} tabItems - 待收纳的标签数据
    * @param {string} [customTitle=''] - 自定义组标题
+   * @param {Object} [options={}] - 额外选项（如 color、allowDuplicates 等）
    * @returns {Promise<{ success: boolean, group?: Object }>}
    */
-  static async createGroup(tabItems, customTitle = '') {
+  static async createGroup(tabItems, customTitle = '', options = {}) {
     if (!tabItems || tabItems.length === 0) {
       return { success: false };
     }
@@ -209,7 +211,8 @@ export class LocalStashRepository {
       if (backend) {
         try {
           const config = await StorageAdapter.getUserConfig();
-          const result = await backend.createGroup(tabItems, customTitle, config.stashSettings || {});
+          const stashSettings = { ...(config.stashSettings || {}), ...(typeof options === 'object' ? options : {}) };
+          const result = await backend.createGroup(tabItems, customTitle, stashSettings);
           if (result?.success) {
             await this._runAutoBackupIfEnabled(Date.now());
             await this._notifyStashChanged();
@@ -221,14 +224,14 @@ export class LocalStashRepository {
           return { success: false, error: err.message || '写入 IndexedDB 主库失败' };
         }
       }
-      return await this._legacyCreateGroup(tabItems, customTitle);
+      return await this._legacyCreateGroup(tabItems, customTitle, options);
     });
   }
 
   /**
    * 旧存储实现：整读 → 改 → 整写（调用方已持有跨上下文写锁）
    */
-  static async _legacyCreateGroup(tabItems, customTitle = '') {
+  static async _legacyCreateGroup(tabItems, customTitle = '', options = {}) {
     const config = await StorageAdapter.getUserConfig();
     const settings = config.stashSettings || {};
     const existingGroups = await this._legacyGetAllGroups();
@@ -265,10 +268,13 @@ export class LocalStashRepository {
 
     const defaultTitle = customTitle || `${dateStr} 收纳 (${normalizedItems.length} 个标签页)`;
 
+    const groupColor = typeof options === 'object' && typeof options.color === 'string' ? options.color : '';
+
     const newGroup = {
       id: `stash_grp_${now}_${Math.random().toString(36).substring(2, 7)}`,
       createdAt: now,
       title: defaultTitle,
+      color: groupColor,
       locked: false,
       starred: false,
       tabs: normalizedItems.map((item) => ({
@@ -321,10 +327,10 @@ export class LocalStashRepository {
     const currentGroups = await this._legacyGetAllGroups();
     const target = currentGroups.find((g) => g.id === groupId);
     if (!target || !updates || typeof updates !== 'object') return false;
-    const allowed = ['title', 'locked', 'starred', 'archived'];
+    const allowed = ['title', 'color', 'locked', 'starred', 'archived'];
     for (const key of allowed) {
       if (Object.prototype.hasOwnProperty.call(updates, key)) {
-        target[key] = key === 'title' ? String(updates[key]).slice(0, 200) : Boolean(updates[key]);
+        target[key] = (key === 'title' || key === 'color') ? String(updates[key]).slice(0, 200) : Boolean(updates[key]);
       }
     }
     const ok = await StorageAdapter.set(StorageKeys.STASH_GROUPS, currentGroups);
@@ -760,79 +766,6 @@ export class LocalStashRepository {
   }
 
   /**
-   * 列出 30 天回收站（未过期墓碑；旧存储后端返回空列表）
-   * @returns {Promise<Array<{ tombstoneId: string, entityType: string, entityId: string, deletedAt: number, expiresAt: number, title: string, url: string, groupTitle: string, entryCount: number }>>}
-   */
-  static async listRecycleBin() {
-    const backend = await this._getBackend();
-    if (!backend) return [];
-    try {
-      return await backend.listTombstones();
-    } catch (err) {
-      console.warn('[LocalStashRepository] 读取回收站失败:', err);
-      return [];
-    }
-  }
-
-  /**
-   * 从回收站恢复一条墓碑
-   * @param {string} tombstoneId
-   * @returns {Promise<{ success: boolean, error?: string }>}
-   */
-  static async restoreFromRecycleBin(tombstoneId) {
-    return await IndexedDBManager.withWriteLock(async () => {
-      const backend = await this._getBackend();
-      if (!backend) return { success: false, error: '当前存储后端不支持回收站' };
-      try {
-        await backend.purgeExpiredTombstones();
-        const result = await backend.restoreTombstone(tombstoneId);
-        if (result?.success) await this._notifyStashChanged();
-        return result;
-      } catch (err) {
-        console.error('[LocalStashRepository] 回收站恢复失败:', err);
-        return { success: false, error: err.message || '回收站恢复失败' };
-      }
-    });
-  }
-
-  /**
-   * 永久删除一条回收站记录
-   * @param {string} tombstoneId
-   * @returns {Promise<{ success: boolean, error?: string }>}
-   */
-  static async purgeRecycleBinItem(tombstoneId) {
-    return await IndexedDBManager.withWriteLock(async () => {
-      const backend = await this._getBackend();
-      if (!backend) return { success: false, error: '当前存储后端不支持回收站' };
-      try {
-        await backend.purgeExpiredTombstones();
-        return await backend.purgeTombstone(tombstoneId);
-      } catch (err) {
-        console.error('[LocalStashRepository] 清空回收站条目失败:', err);
-        return { success: false, error: err.message || '清空回收站条目失败' };
-      }
-    });
-  }
-
-  /**
-   * 清理已过期的回收站墓碑
-   * @returns {Promise<{ success: boolean, removed?: number, error?: string }>}
-   */
-  static async purgeExpiredRecycleBin() {
-    return await IndexedDBManager.withWriteLock(async () => {
-      const backend = await this._getBackend();
-      if (!backend) return { success: false, error: '当前存储后端不支持回收站' };
-      try {
-        const removed = await backend.purgeExpiredTombstones();
-        return { success: true, removed };
-      } catch (err) {
-        console.error('[LocalStashRepository] 清理过期回收站失败:', err);
-        return { success: false, error: err.message || '清理过期回收站失败' };
-      }
-    });
-  }
-
-  /**
    * 导出所有收纳数据为 JSON 字符串 (基础版)
    * @returns {Promise<string>}
    */
@@ -1042,14 +975,18 @@ export class LocalStashRepository {
     if (!snapshotGroup || typeof snapshotGroup !== 'object' || !snapshotGroup.id || !Array.isArray(snapshotGroup.tabs)) {
       return { success: false, error: '恢复数据结构无效' };
     }
-    const group = {
+    const { validImportedGroups } = this._normalizeImportedGroups([{
       id: snapshotGroup.id,
       createdAt: typeof snapshotGroup.createdAt === 'number' ? snapshotGroup.createdAt : Date.now(),
       title: typeof snapshotGroup.title === 'string' ? snapshotGroup.title.slice(0, 200) : '',
       locked: Boolean(snapshotGroup.locked),
       starred: Boolean(snapshotGroup.starred),
       tabs: snapshotGroup.tabs
-    };
+    }]);
+    if (validImportedGroups.length === 0) {
+      return { success: false, error: '快照中没有可恢复的安全链接' };
+    }
+    const group = validImportedGroups[0];
 
     return await IndexedDBManager.withWriteLock(async () => {
       const backend = await this._getBackend();
@@ -1122,6 +1059,7 @@ export class LocalStashRepository {
           id: grp.id || `stash_grp_${createdAt}_${Math.random().toString(36).substring(2, 7)}`,
           createdAt: createdAt,
           title: grp.title || `${dateStr} 收纳 (${validTabs.length} 个标签页)`,
+          color: typeof grp.color === 'string' ? grp.color : '',
           locked: Boolean(grp.locked),
           starred: Boolean(grp.starred),
           tabs: validTabs

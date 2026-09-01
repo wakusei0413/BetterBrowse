@@ -461,6 +461,7 @@ export class StashService {
 
     const shouldRemove = removeAfterRestore === undefined ? settings.restoreBehavior === 'remove' : removeAfterRestore;
     let restoredCount = 0;
+    const restoredTabIds = [];
     let targetWindowId = null;
     if (settings.restorePosition === 'newWindow' && chrome.windows?.create) {
       try { targetWindowId = (await chrome.windows.create({ focused: true, type: 'normal' }))?.id || null; } catch {}
@@ -471,23 +472,29 @@ export class StashService {
       if (item.url) {
         try {
           // Chrome MV3 支持在创建非活跃标签时标记 discarded: true，挂起不加载，直到用户点击
-          await chrome.tabs.create({
+          const tab = await chrome.tabs.create({
             url: item.url,
             ...(targetWindowId ? { windowId: targetWindowId } : {}),
             pinned: Boolean(item.pinned),
             active: false,
             discarded: true
           });
+          if (typeof tab?.id === 'number' && !item.pinned) {
+            restoredTabIds.push(tab.id);
+          }
           restoredCount++;
         } catch {
           // 若部分环境不支持 discarded 属性创建，则降级为常规后台标签
           try {
-            await chrome.tabs.create({
+            const tab = await chrome.tabs.create({
               url: item.url,
               ...(targetWindowId ? { windowId: targetWindowId } : {}),
               pinned: Boolean(item.pinned),
               active: false
             });
+            if (typeof tab?.id === 'number' && !item.pinned) {
+              restoredTabIds.push(tab.id);
+            }
             restoredCount++;
           } catch (e) {
             console.warn('[StashService] 恢复标签页异常:', e);
@@ -498,6 +505,29 @@ export class StashService {
 
     if (restoredCount === 0 && targetGroup.tabs.length > 0) {
       return false;
+    }
+
+    // 深度联动 Chrome 原生 Tab Groups：还原为自动展开的彩色标签分组
+    if (restoredTabIds.length > 0 && chrome.tabs?.group) {
+      try {
+        const groupCreationOpts = { tabIds: restoredTabIds };
+        if (targetWindowId) {
+          groupCreationOpts.createProperties = { windowId: targetWindowId };
+        }
+        const newGroupId = await chrome.tabs.group(groupCreationOpts);
+        if (chrome.tabGroups?.update && typeof newGroupId === 'number') {
+          const colors = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
+          const randomColor = colors[Math.floor(Math.random() * colors.length)];
+          const updateOpts = {
+            collapsed: false,
+            color: targetGroup.color || randomColor
+          };
+          if (targetGroup.title) updateOpts.title = targetGroup.title;
+          await chrome.tabGroups.update(newGroupId, updateOpts);
+        }
+      } catch (groupErr) {
+        console.warn('[StashService] 还原为原生标签分组异常:', groupErr);
+      }
     }
 
     // 若非锁定组，恢复后默认删除该组

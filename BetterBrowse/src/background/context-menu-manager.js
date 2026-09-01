@@ -35,10 +35,10 @@ export class ContextMenuManager {
     if (!chrome.contextMenus?.removeAll) return;
 
     chrome.contextMenus.removeAll(() => {
-      // 1. 打开收纳箱
+      // 1. 打开时间线
       chrome.contextMenus.create({
         id: 'better_browse_open_stash',
-        title: '打开 BetterBrowse 收纳箱',
+        title: '打开 BetterBrowse 时间线',
         contexts: ['action', 'page']
       });
 
@@ -68,6 +68,13 @@ export class ContextMenuManager {
         id: 'better_browse_stash_left',
         title: '收纳当前标签页左侧的所有标签页',
         contexts: ['page']
+      });
+
+      // 5. 收纳当前标签分组 (Chrome Tab Group)
+      chrome.contextMenus.create({
+        id: 'better_browse_stash_tab_group',
+        title: '收纳当前标签分组 (Tab Group)',
+        contexts: ['page', 'action']
       });
     });
   }
@@ -101,6 +108,12 @@ export class ContextMenuManager {
         case 'better_browse_stash_left': {
           if (!currentTab || typeof currentTab.index !== 'number') break;
           await this.stashTabsDirectional(currentTab.windowId, currentTab.index, 'left');
+          break;
+        }
+
+        case 'better_browse_stash_tab_group': {
+          if (!currentTab) break;
+          await this.stashCurrentTabGroup(currentTab);
           break;
         }
 
@@ -157,6 +170,60 @@ export class ContextMenuManager {
 
     if (tabIdsToClose.length > 0) {
       // 容忍右键菜单操作期间个别标签页已被用户关闭的竞态
+      await StashService.closeTabsSafely(tabIdsToClose);
+    }
+  }
+
+  /**
+   * 收纳当前标签所在的 Chrome 原生标签分组 (Tab Group)
+   * @param {chrome.tabs.Tab} currentTab
+   */
+  static async stashCurrentTabGroup(currentTab) {
+    const groupId = currentTab?.groupId;
+    if (typeof groupId !== 'number' || groupId === -1) {
+      return;
+    }
+
+    const windowId = currentTab.windowId;
+    const tabs = await chrome.tabs.query({ groupId, windowId });
+    if (!tabs || tabs.length === 0) return;
+
+    let groupInfo = null;
+    if (chrome.tabGroups?.get) {
+      try {
+        groupInfo = await chrome.tabGroups.get(groupId);
+      } catch {}
+    }
+
+    const targetTabs = tabs.filter((tab) => !isExcludedFromTabCounting(tab));
+    if (targetTabs.length === 0) return;
+
+    const itemsToSave = targetTabs.map((tab) => ({
+      url: tab.url,
+      title: tab.title || tab.url,
+      favIconUrl: tab.favIconUrl || '',
+      pinned: tab.pinned
+    }));
+
+    const colors = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
+    const groupTitle = groupInfo?.title || '标签分组';
+    const groupColor = groupInfo?.color || colors[Math.floor(Math.random() * colors.length)];
+
+    const createRes = await LocalStashRepository.createGroup(itemsToSave, groupTitle, { color: groupColor });
+    if (!createRes?.success) return;
+
+    // 仅关闭 URL 确实已持久化的标签页（allowDuplicates=false 时重复项会被仓储跳过）
+    const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
+    const closableTabs = targetTabs.filter((tab) => savedUrls.has(tab.url));
+    if (closableTabs.length === 0) return;
+
+    await StashService.ensurePinnedStashTab(false, windowId);
+
+    const tabIdsToClose = closableTabs
+      .map((tab) => tab.id)
+      .filter((id) => typeof id === 'number');
+
+    if (tabIdsToClose.length > 0) {
       await StashService.closeTabsSafely(tabIdsToClose);
     }
   }

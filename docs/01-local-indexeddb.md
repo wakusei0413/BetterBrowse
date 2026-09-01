@@ -79,7 +79,7 @@
 
 `LOCAL_DATA_SCHEMA_REVISION = 8`、`INDEXED_DB_SCHEMA_REVISION = 10`：为 WebDAV 云端同步与当前本地主库结构准备元数据。两者是独立技术修订，不是统一 API 版本。
 
-- **新增仓储**：`syncMeta`（本机时钟：deviceId / sequence / lamport / datasetId）、`outbox`（未上传不可变操作，与实体写入同事务追加）、`operationLogs`（本地 + 远端操作留档）、`tombstones`（30 天回收站）、`conflicts`（字段级冲突候选）、`snapshots`（快照元数据，兑现 ADR-3 解除）。
+- **新增仓储**：`syncMeta`（本机时钟：deviceId / sequence / lamport / datasetId）、`outbox`（未上传不可变操作，与实体写入同事务追加）、`operationLogs`（本地 + 远端操作留档）、`tombstones`（删除墓碑，30 天回收期内阻止旧副本复活）、`conflicts`（字段级冲突候选）、`snapshots`（快照元数据，兑现 ADR-3 解除）。
 - **实体同步字段**：pages / stashGroups / stashEntries 回填 `updatedAt` / `revision` / `originDeviceId` / `fieldRevs`（仅补缺失，幂等）。
 - **活跃度 pageId 化**：`bb_activity_stats` 由 `{ [tabId]: ... }` 转为 `{ [pageId]: { url, lastActivated, activationTimestamps } }`；无法映射 URL 的旧 tabId 记录直接丢弃（tabId 本就易失且禁止跨设备同步）。运行时仍以 `tabId → pageId` 投影供 `FrequencyRule` 评估，消费方接口不变。
 - **outbox 同事务约束**：收纳/配置/规则/活跃度的写入路径在同一 IndexedDB 事务内追加 outbox 操作与 operationLog，实体与操作要么同时生效要么同时回滚；大组仍按 500 条分批。

@@ -31,9 +31,9 @@ export const AI_CONFIRM_REQUIRED_ACTIONS = new Set([
   ActionTypes.RESET_CONFIG,           // 恢复默认配置
   ActionTypes.RESTORE_AUTO_BACKUP,    // 恢复自动备份
   ActionTypes.DELETE_AUTO_BACKUP,     // 删除自动备份
-  ActionTypes.PURGE_RECYCLE_BIN_ITEM, // 永久删除回收站项
   ActionTypes.CLEAR_RUNTIME_LOGS,      // 清空本地运行日志
-  ActionTypes.REBUILD_SYNC_FROM_SCRATCH // 从本机快照重建同步
+  ActionTypes.REBUILD_SYNC_FROM_SCRATCH, // 从本机快照重建同步
+  ActionTypes.RESTORE_STASH_GROUP_DATA // 恢复组快照（写入任意 URL 载荷）
 ]);
 
 /**
@@ -108,8 +108,9 @@ export const AI_ACTION_DOCS = {
     params: { groupId: 'string', itemId: 'string', removeAfterRestore: 'boolean（可选）' }
   },
   [ActionTypes.RESTORE_STASH_GROUP_DATA]: {
-    summary: '恢复单组数据快照（幂等 upsert，仅写该组，不触碰配置）',
-    params: { group: '快照组对象 { id, tabs[], title?, createdAt?, locked?, starred? }' }
+    summary: '恢复单组数据快照（幂等 upsert，仅写该组，不触碰配置；URL 经清洗）',
+    params: { group: '快照组对象 { id, tabs[], title?, createdAt?, locked?, starred? }' },
+    note: '需 confirm'
   },
   [ActionTypes.DELETE_STASH_GROUP]: {
     summary: '删除指定收纳组（锁定组需 updates.force 或 payload.force）',
@@ -223,18 +224,6 @@ export const AI_ACTION_DOCS = {
   [ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT]: { summary: '回退上一份远端或本机快照' },
   [ActionTypes.REBUILD_SYNC_FROM_SCRATCH]: {
     summary: '用本机已缓存快照整体替换可同步实体（不改远端清单）',
-    note: '需 confirm'
-  },
-
-  // === 30 天回收站 ===
-  [ActionTypes.LIST_RECYCLE_BIN]: { summary: '列出 30 天内可恢复的已删收纳组与条目' },
-  [ActionTypes.RESTORE_RECYCLE_BIN_ITEM]: {
-    summary: '从回收站恢复一条墓碑（组或条目）',
-    params: { tombstoneId: 'string，墓碑标识' }
-  },
-  [ActionTypes.PURGE_RECYCLE_BIN_ITEM]: {
-    summary: '永久删除一条回收站记录',
-    params: { tombstoneId: 'string，墓碑标识' },
     note: '需 confirm'
   },
 

@@ -54,6 +54,7 @@
   ],
   "permissions": [
     "tabs",
+    "tabGroups",
     "storage",
     "alarms",
     "notifications",

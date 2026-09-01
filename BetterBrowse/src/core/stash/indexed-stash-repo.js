@@ -3,8 +3,7 @@
  * @description 基于 IndexedDB 的收纳仓储实现（页面实体 + 收纳记录两层模型，支持索引去重、分页与关键字检索）
  *
  * ⚠️ 并发契约：本类的全部"写方法"（createGroup / updateGroup / deleteGroup / deleteTabItem /
- * clearAll / deduplicateGroups / importGroups / restoreTombstone / purgeTombstone /
- * purgeExpiredTombstones）均不自行获取跨上下文写锁，
+ * clearAll / deduplicateGroups / importGroups）均不自行获取跨上下文写锁，
  * 必须由调用方（LocalStashRepository 门面或 MigrationManager 迁移流程）在持有
  * IndexedDBManager.withWriteLock 的事务临界区内调用；读方法可随时并发调用。
  * @encoding UTF-8
@@ -101,6 +100,7 @@ export class IndexedStashRepository {
         id: record.groupId,
         createdAt: record.createdAt,
         title: typeof record.title === 'string' ? record.title : '',
+        color: typeof record.color === 'string' ? record.color : '',
         locked: Boolean(record.locked),
         starred: Boolean(record.starred),
         archived: Boolean(record.archived),
@@ -285,10 +285,15 @@ export class IndexedStashRepository {
       };
     });
 
+    const groupColor = typeof settings === 'object' && typeof settings.color === 'string'
+      ? settings.color
+      : '';
+
     const groupRecord = {
       groupId,
       createdAt: now,
       title: defaultTitle,
+      color: groupColor,
       locked: false,
       starred: false,
       archived: false,
@@ -393,6 +398,7 @@ export class IndexedStashRepository {
             op: SyncOps.UPSERT,
             fields: {
               title: groupRecord.title,
+              color: groupRecord.color,
               locked: groupRecord.locked,
               starred: groupRecord.starred,
               archived: groupRecord.archived,
@@ -417,6 +423,7 @@ export class IndexedStashRepository {
         id: groupId,
         createdAt: now,
         title: defaultTitle,
+        color: groupColor,
         locked: false,
         starred: false,
         archived: false,
@@ -446,11 +453,11 @@ export class IndexedStashRepository {
       const store = tx.objectStore(IDBStores.STASH_GROUPS);
       const existing = await IndexedDBManager.requestToPromise(store.get(groupId));
       if (!existing || !updates || typeof updates !== 'object') return false;
-      const allowed = ['title', 'locked', 'starred', 'archived'];
+      const allowed = ['title', 'color', 'locked', 'starred', 'archived'];
       const fields = {};
       for (const key of allowed) {
         if (Object.prototype.hasOwnProperty.call(updates, key)) {
-          existing[key] = key === 'title' ? String(updates[key]).slice(0, 200) : Boolean(updates[key]);
+          existing[key] = (key === 'title' || key === 'color') ? String(updates[key]).slice(0, 200) : Boolean(updates[key]);
           fields[key] = existing[key];
         }
       }
@@ -1045,309 +1052,6 @@ export class IndexedStashRepository {
   }
 
   /**
-   * 从墓碑快照推导回收站列表展示字段
-   * @param {any} tomb
-   */
-  static _compactTombstoneView(tomb) {
-    const snapshot = tomb?.snapshot || {};
-    let title = '';
-    let url = '';
-    let groupTitle = '';
-    let entryCount = 0;
-    if (tomb.entityType === SyncEntityTypes.STASH_GROUP) {
-      groupTitle = snapshot.group?.title || '';
-      title = groupTitle;
-      entryCount = Array.isArray(snapshot.entries) ? snapshot.entries.length : 0;
-      const firstPage = Array.isArray(snapshot.pages) ? snapshot.pages[0] : null;
-      url = firstPage?.url || '';
-    } else if (tomb.entityType === SyncEntityTypes.STASH_ENTRY) {
-      title = snapshot.page?.title || snapshot.page?.url || '';
-      url = snapshot.page?.url || '';
-      groupTitle = snapshot.group?.title || '';
-      entryCount = 1;
-    }
-    return {
-      tombstoneId: tomb.tombstoneId,
-      entityType: tomb.entityType,
-      entityId: tomb.entityId,
-      deletedAt: tomb.deletedAt,
-      expiresAt: tomb.expiresAt,
-      title,
-      url,
-      groupTitle,
-      entryCount
-    };
-  }
-
-  /**
-   * 列出未过期墓碑（最新删除在前）
-   * @returns {Promise<Array<{ tombstoneId: string, entityType: string, entityId: string, deletedAt: number, expiresAt: number, title: string, url: string, groupTitle: string, entryCount: number }>>}
-   */
-  static async listTombstones() {
-    const now = Date.now();
-    return await IndexedDBManager.runTransaction([IDBStores.TOMBSTONES], 'readonly', async (tx) => {
-      const all = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.TOMBSTONES).getAll());
-      return (all || [])
-        .filter((tomb) =>
-          Number(tomb.expiresAt) > now &&
-          (tomb.entityType === SyncEntityTypes.STASH_GROUP || tomb.entityType === SyncEntityTypes.STASH_ENTRY)
-        )
-        .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0))
-        .map((tomb) => this._compactTombstoneView(tomb));
-    });
-  }
-
-  /**
-   * 删除已过期墓碑
-   * ⚠️ 调用方必须已持有跨上下文写锁
-   * @returns {Promise<number>} 删除条数
-   */
-  static async purgeExpiredTombstones() {
-    const now = Date.now();
-    return await IndexedDBManager.runTransaction([IDBStores.TOMBSTONES], 'readwrite', async (tx) => {
-      const store = tx.objectStore(IDBStores.TOMBSTONES);
-      const all = await IndexedDBManager.requestToPromise(store.getAll());
-      let removed = 0;
-      for (const tomb of all || []) {
-        if (Number(tomb.expiresAt) <= now) {
-          store.delete(tomb.tombstoneId);
-          removed += 1;
-        }
-      }
-      return removed;
-    });
-  }
-
-  /**
-   * 永久删除一条墓碑（组墓碑同时清掉仍在的子条目墓碑）
-   * ⚠️ 调用方必须已持有跨上下文写锁
-   * @param {string} tombstoneId
-   * @returns {Promise<{ success: boolean, error?: string }>}
-   */
-  static async purgeTombstone(tombstoneId) {
-    if (!tombstoneId) return { success: false, error: '缺少墓碑标识' };
-    return await IndexedDBManager.runTransaction([IDBStores.TOMBSTONES], 'readwrite', async (tx) => {
-      const store = tx.objectStore(IDBStores.TOMBSTONES);
-      const tomb = await IndexedDBManager.requestToPromise(store.get(tombstoneId));
-      if (!tomb) return { success: false, error: '回收站条目不存在' };
-      store.delete(tombstoneId);
-      if (tomb.entityType === SyncEntityTypes.STASH_GROUP) {
-        const entryIds = Array.isArray(tomb.snapshot?.entries)
-          ? tomb.snapshot.entries.map((entry) => entry?.entryId).filter(Boolean)
-          : [];
-        for (const entryId of entryIds) {
-          store.delete(`${SyncEntityTypes.STASH_ENTRY}::${entryId}`);
-        }
-      }
-      return { success: true };
-    });
-  }
-
-  /**
-   * 在事务内按需补齐缺失的页面实体（已有记录仅在缺 title/url 时补写）
-   * @param {IDBTransaction} tx
-   * @param {any[]} pages
-   * @param {boolean} enqueue
-   */
-  static async _restorePagesInTx(tx, pages, enqueue) {
-    const store = tx.objectStore(IDBStores.PAGES);
-    for (const page of pages || []) {
-      if (!page?.pageId) continue;
-      const existing = await IndexedDBManager.requestToPromise(store.get(page.pageId));
-      if (existing) {
-        let changed = false;
-        if (!existing.title && page.title) {
-          existing.title = page.title;
-          changed = true;
-        }
-        if (!existing.url && page.url) {
-          existing.url = page.url;
-          existing.domain = page.domain || this.extractDomain(page.url);
-          changed = true;
-        }
-        if (!changed) continue;
-        existing.updatedAt = Date.now();
-        if (enqueue) {
-          const op = await SyncOutbox.enqueueInTx(tx, {
-            entityType: SyncEntityTypes.PAGE,
-            entityId: existing.pageId,
-            op: SyncOps.UPSERT,
-            fields: {
-              url: existing.url,
-              domain: existing.domain,
-              title: existing.title,
-              favIconUrl: existing.favIconUrl,
-              createdAt: existing.createdAt
-            }
-          });
-          if (op) {
-            existing.fieldRevs = { ...(existing.fieldRevs || {}), ...op.fieldRevs };
-            existing.revision = op.lamport;
-            existing.originDeviceId = op.deviceId;
-          }
-        }
-        store.put(existing);
-        continue;
-      }
-      const record = this._clone(page);
-      if (enqueue) {
-        const op = await SyncOutbox.enqueueInTx(tx, {
-          entityType: SyncEntityTypes.PAGE,
-          entityId: record.pageId,
-          op: SyncOps.UPSERT,
-          fields: {
-            url: record.url,
-            domain: record.domain,
-            title: record.title,
-            favIconUrl: record.favIconUrl,
-            createdAt: record.createdAt
-          }
-        });
-        if (op) {
-          record.fieldRevs = { ...op.fieldRevs };
-          record.revision = op.lamport;
-          record.originDeviceId = op.deviceId;
-        }
-      }
-      store.put(record);
-    }
-  }
-
-  /**
-   * 在事务内恢复组记录
-   * @param {IDBTransaction} tx
-   * @param {any} group
-   * @param {boolean} enqueue
-   */
-  static async _restoreGroupInTx(tx, group, enqueue) {
-    if (!group?.groupId) return;
-    const store = tx.objectStore(IDBStores.STASH_GROUPS);
-    const record = this._clone(group);
-    if (enqueue) {
-      const op = await SyncOutbox.enqueueInTx(tx, {
-        entityType: SyncEntityTypes.STASH_GROUP,
-        entityId: record.groupId,
-        op: SyncOps.UPSERT,
-        fields: {
-          title: record.title,
-          locked: record.locked,
-          starred: record.starred,
-          archived: record.archived,
-          createdAt: record.createdAt
-        }
-      });
-      if (op) {
-        record.fieldRevs = { ...op.fieldRevs };
-        record.revision = op.lamport;
-        record.originDeviceId = op.deviceId;
-      }
-    }
-    store.put(record);
-  }
-
-  /**
-   * 在事务内恢复条目记录
-   * @param {IDBTransaction} tx
-   * @param {any[]} entries
-   * @param {boolean} enqueue
-   */
-  static async _restoreEntriesInTx(tx, entries, enqueue) {
-    const store = tx.objectStore(IDBStores.STASH_ENTRIES);
-    for (const entry of entries || []) {
-      if (!entry?.entryId) continue;
-      const record = this._clone(entry);
-      if (enqueue) {
-        const op = await SyncOutbox.enqueueInTx(tx, {
-          entityType: SyncEntityTypes.STASH_ENTRY,
-          entityId: record.entryId,
-          op: SyncOps.UPSERT,
-          fields: {
-            groupId: record.groupId,
-            pageId: record.pageId,
-            createdAt: record.createdAt,
-            position: record.position,
-            pinned: record.pinned,
-            archived: record.archived
-          }
-        });
-        if (op) {
-          record.fieldRevs = { ...op.fieldRevs };
-          record.revision = op.lamport;
-          record.originDeviceId = op.deviceId;
-        }
-      }
-      store.put(record);
-    }
-  }
-
-  /**
-   * 从墓碑快照恢复实体，并删除对应墓碑（用户主动恢复，需 UPSERT 同步到其他设备）
-   * ⚠️ 调用方必须已持有跨上下文写锁
-   * @param {string} tombstoneId
-   * @returns {Promise<{ success: boolean, error?: string }>}
-   */
-  static async restoreTombstone(tombstoneId) {
-    if (!tombstoneId) return { success: false, error: '缺少墓碑标识' };
-    const enqueue = await SyncOutbox.isActive();
-    const stores = [
-      IDBStores.TOMBSTONES,
-      IDBStores.PAGES,
-      IDBStores.STASH_GROUPS,
-      IDBStores.STASH_ENTRIES
-    ];
-    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
-    const result = await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
-      const tombsStore = tx.objectStore(IDBStores.TOMBSTONES);
-      const tomb = await IndexedDBManager.requestToPromise(tombsStore.get(tombstoneId));
-      if (!tomb) return { success: false, error: '回收站条目不存在' };
-      if (Number(tomb.expiresAt) <= Date.now()) {
-        tombsStore.delete(tomb.tombstoneId);
-        return { success: false, error: '回收站条目已过期' };
-      }
-      if (!tomb.snapshot) return { success: false, error: '回收站条目缺少可恢复快照' };
-
-      if (tomb.entityType === SyncEntityTypes.STASH_GROUP) {
-        const snapshot = tomb.snapshot;
-        await this._restorePagesInTx(tx, snapshot.pages || [], enqueue);
-        await this._restoreGroupInTx(tx, snapshot.group, enqueue);
-        await this._restoreEntriesInTx(tx, snapshot.entries || [], enqueue);
-        tombsStore.delete(tomb.tombstoneId);
-        for (const entry of snapshot.entries || []) {
-          if (entry?.entryId) tombsStore.delete(`${SyncEntityTypes.STASH_ENTRY}::${entry.entryId}`);
-        }
-        return { success: true };
-      }
-
-      if (tomb.entityType === SyncEntityTypes.STASH_ENTRY) {
-        const snapshot = tomb.snapshot;
-        const entry = snapshot.entry;
-        if (!entry?.entryId) return { success: false, error: '回收站条目缺少可恢复快照' };
-        const groupId = snapshot.groupId || entry.groupId;
-        const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
-        let group = groupId ? await IndexedDBManager.requestToPromise(groupsStore.get(groupId)) : null;
-        if (!group && groupId) {
-          const groupTombId = `${SyncEntityTypes.STASH_GROUP}::${groupId}`;
-          const groupTomb = await IndexedDBManager.requestToPromise(tombsStore.get(groupTombId));
-          group = groupTomb?.snapshot?.group || null;
-          if (group) {
-            await this._restoreGroupInTx(tx, group, enqueue);
-            tombsStore.delete(groupTombId);
-          }
-        }
-        if (!group) return { success: false, error: '所属收纳组已不可恢复' };
-        await this._restorePagesInTx(tx, snapshot.page ? [snapshot.page] : [], enqueue);
-        await this._restoreEntriesInTx(tx, [entry], enqueue);
-        tombsStore.delete(tomb.tombstoneId);
-        return { success: true };
-      }
-
-      return { success: false, error: '不支持的回收站条目类型' };
-    });
-    if (result?.success && enqueue) SyncOutbox.flushDirty();
-    return result;
-  }
-
-  /**
    * 清理标签 URL 完全相同的重复收纳组（锁定组不参与删除，语义与旧版一致）
    * ⚠️ 调用方必须已持有跨上下文写锁
    * @returns {Promise<{ success: boolean, removedCount: number, groupCountAfter: number, error?: string }>}
@@ -1524,6 +1228,7 @@ export class IndexedStashRepository {
         groupId: group.id,
         createdAt,
         title: typeof group.title === 'string' ? group.title.slice(0, 200) : '',
+        color: typeof group.color === 'string' ? group.color : '',
         locked: Boolean(group.locked),
         starred: Boolean(group.starred),
         archived: Boolean(group.archived)
