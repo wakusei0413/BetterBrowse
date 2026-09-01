@@ -18,7 +18,7 @@ Deno.test('版本边界：软件发布版本与内部 API 版本各自独立', a
   const bumpSource = await Deno.readTextFile(new URL('../scripts/bump-api-version.js', import.meta.url));
   assertEquals(Number.isSafeInteger(API_VERSION) && API_VERSION > 0, true);
   assertEquals(/^\d+(?:\.\d+){0,3}$/.test(manifest.version), true);
-  assertEquals(manifest.version_name, 'Milestone 2');
+  assertEquals(manifest.version_name, 'Milestone 3');
   assertEquals(/manifest(?:Path|\.json)|manifest\.version|version_name/.test(bumpSource), false);
 });
 
