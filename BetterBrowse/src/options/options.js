@@ -54,6 +54,11 @@ class Toast {
  * 收纳时间线构建器与聚合算法（年 > 月 > 周 > 日）
  */
 class TimeTreeBuilder {
+  static getGroupTimestamp(group) {
+    const timestamp = Number(group?.createdAt ?? group?.startTime);
+    return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now();
+  }
+
   /**
    * 根据自然周规则计算时间所属的周次与起止日期（周一为起始日）
    * @param {Date} date
@@ -125,7 +130,8 @@ class TimeTreeBuilder {
     const yearMap = new Map();
 
     for (const group of groups) {
-      const timestamp = group.createdAt || Date.now();
+      if (!group || typeof group !== 'object') continue;
+      const timestamp = this.getGroupTimestamp(group);
       const date = new Date(timestamp);
       const year = date.getFullYear();
       const month = date.getMonth() + 1;
@@ -293,7 +299,6 @@ class TimeTreeBuilder {
             yearKey: yearNode.key,
             monthKey: monthNode.key,
             title: `${yearNode.key}年 ${monthNum}月 · 第${weekNum}周`,
-            shortTitle: `${monthNum}月 W${weekNum}`,
             tag: weekNode.tag,
             groupCount: weekNode.groupCount,
             tabCount: weekNode.tabCount,
@@ -319,14 +324,12 @@ class SingleLineTimelineScrollbar {
    * @param {HTMLElement} options.container - 轴线节点容器 DOM
    * @param {HTMLElement} options.track - 滚动条轨道 DOM
    * @param {HTMLElement} options.thumb - 时间游标滑块 DOM
-   * @param {HTMLElement} options.thumbText - 游标时间文本 DOM
    * @param {Function} options.onSelectChunk - 选择分块加载回调 (chunkNode | null) => void
    */
   constructor(options) {
     this.container = options.container;
     this.track = options.track;
     this.thumb = options.thumb;
-    this.thumbText = options.thumbText;
     this.onSelectChunk = options.onSelectChunk;
 
     this.expandedYears = new Set();
@@ -336,7 +339,6 @@ class SingleLineTimelineScrollbar {
     this.chunks = [];
     this.activeChunkIndex = 0; // 默认最新一周
     this.isDragging = false;
-    this.bubbleHideTimer = null;
     this.wheelThrottleTimer = 0;
 
     this.init();
@@ -580,21 +582,15 @@ class SingleLineTimelineScrollbar {
 
     if (this.chunks.length === 0) {
       this.thumb.style.transform = 'translateY(6px)';
-      if (this.thumbText) this.thumbText.textContent = '--';
       return;
     }
 
     if (this.activeChunkIndex === -1) {
       this.thumb.style.transform = 'translateY(6px)';
-      if (this.thumbText) this.thumbText.textContent = '全部';
       return;
     }
 
     const curChunk = this.chunks[this.activeChunkIndex];
-    if (this.thumbText) {
-      this.thumbText.textContent = curChunk.shortTitle || curChunk.title;
-    }
-
     const activeItem = this.container?.querySelector(`.timeline-axis-item[data-key="${CSS.escape(curChunk.key)}"]`);
     if (activeItem && this.container) {
       // 用 getBoundingClientRect 换算到轨道内容坐标系（叠加 scrollTop），
@@ -609,15 +605,6 @@ class SingleLineTimelineScrollbar {
       const topPos = Math.max(0, Math.min(ratio * (trackHeight - 16), trackHeight - 16));
       this.thumb.style.transform = `translateY(${topPos}px)`;
     }
-
-    // 自动展示气泡 1.5s 后渐隐
-    this.thumb.classList.add('show-bubble');
-    clearTimeout(this.bubbleHideTimer);
-    this.bubbleHideTimer = setTimeout(() => {
-      if (!this.isDragging) {
-        this.thumb.classList.remove('show-bubble');
-      }
-    }, 1500);
   }
 
   /**
@@ -625,14 +612,12 @@ class SingleLineTimelineScrollbar {
    * 仅做视觉同步，不触发 onSelectChunk 重载主列表，避免滚动↔加载循环。
    * @param {number} ratio - 主列表滚动比例 (0~1)
    * @param {string|null} groupId - 当前视口顶部组 ID（null 时仅按比例移动游标）
-   * @param {string} timeLabel - 组时间文本（用于游标气泡展示）
    */
-  syncScrollProgress(ratio, groupId, timeLabel) {
+  syncScrollProgress(ratio, groupId) {
     if (!this.track || !this.thumb) return;
 
     if (this.chunks.length === 0) {
       this.thumb.style.transform = 'translateY(6px)';
-      if (this.thumbText) this.thumbText.textContent = '--';
       return;
     }
 
@@ -649,9 +634,6 @@ class SingleLineTimelineScrollbar {
     }
 
     this.syncThumbPosition();
-    if (timeLabel && this.thumbText) {
-      this.thumbText.textContent = timeLabel;
-    }
   }
 
   render() {
@@ -796,7 +778,6 @@ class StashTabComponent {
     this.timelineScrollbarTrack = document.getElementById('timelineScrollbar');
     this.timelineNodesContainer = document.getElementById('timelineNodesContainer');
     this.timelineScrubberThumb = document.getElementById('timelineScrubberThumb');
-    this.timelineThumbText = document.getElementById('timelineThumbText');
     this.recycleBinList = document.getElementById('recycleBinList');
     this.btnRecycleBinRefresh = document.getElementById('btnRecycleBinRefresh');
 
@@ -805,7 +786,6 @@ class StashTabComponent {
       container: this.timelineNodesContainer,
       track: this.timelineScrollbarTrack,
       thumb: this.timelineScrubberThumb,
-      thumbText: this.timelineThumbText,
       onSelectChunk: (node) => {
         if (node) {
           this.setTimeRangeFilter(node);
@@ -858,7 +838,7 @@ class StashTabComponent {
     const containerRect = this.mainColumn.getBoundingClientRect();
     const cards = this.container.querySelectorAll('.stash-group-card');
     if (cards.length === 0) {
-      this.timelineScrollbar.syncScrollProgress(ratio, null, '');
+      this.timelineScrollbar.syncScrollProgress(ratio, null);
       return;
     }
 
@@ -876,14 +856,7 @@ class StashTabComponent {
     }
     if (topCard) {
       const groupId = topCard.dataset.groupId;
-      const group = this.groups.find((g) => g.id === groupId);
-      let timeLabel = '';
-      if (group && group.createdAt) {
-        const d = new Date(group.createdAt);
-        const pad = (n) => String(n).padStart(2, '0');
-        timeLabel = `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      }
-      this.timelineScrollbar.syncScrollProgress(ratio, groupId, timeLabel);
+      this.timelineScrollbar.syncScrollProgress(ratio, groupId);
     }
   }
 
@@ -903,7 +876,9 @@ class StashTabComponent {
       // 旧存储回退模式：直接使用变更数组即时呈现
       if (changes[StorageKeys.STASH_GROUPS]) {
         const newGroups = changes[StorageKeys.STASH_GROUPS].newValue || [];
-        this.groups = Array.isArray(newGroups) ? newGroups : [];
+        this.groups = Array.isArray(newGroups)
+          ? newGroups.filter((group) => group && typeof group === 'object')
+          : [];
         this.timelineScrollbar.update(this.groups);
         this.syncTimeFilterSnapshot();
         this.updateBadge();
@@ -1151,7 +1126,7 @@ class StashTabComponent {
   async loadData() {
     const res = await MessageBus.sendToBackground(ActionTypes.GET_STASH_GROUPS);
     if (res.success && Array.isArray(res.data)) {
-      this.groups = res.data;
+      this.groups = res.data.filter((group) => group && typeof group === 'object');
       this.timelineScrollbar.update(this.groups);
       this.syncTimeFilterSnapshot();
 
@@ -1385,7 +1360,7 @@ class StashTabComponent {
     card.className = `stash-group-card ${group.starred ? 'is-starred' : ''} ${group.locked ? 'is-locked' : ''}`;
     card.dataset.groupId = group.id;
 
-    const createdAt = group.createdAt || Date.now();
+    const createdAt = TimeTreeBuilder.getGroupTimestamp(group);
     const dateObj = new Date(createdAt);
     const dateStr = new Intl.DateTimeFormat('zh-CN', {
       year: 'numeric',
@@ -2956,7 +2931,6 @@ class AIBridgeComponent {
     this.$statusMessage = document.getElementById('aiBridgeStatusMessage');
     this.$extensionId = document.getElementById('aiBridgeExtensionId');
     this.$proto = document.getElementById('aiBridgeApiVersion');
-    this.$lastAt = document.getElementById('aiBridgeLastAt');
     this.$btnCopyId = document.getElementById('btnAiBridgeCopyId');
     this.$btnRefresh = document.getElementById('btnAiBridgeRefresh');
     this.init();
@@ -2987,11 +2961,11 @@ class AIBridgeComponent {
 
     const stateLabelMap = {
       disabled: '未启用',
-      connecting: '正在连接宿主…',
-      connected: '宿主已连接',
+      connecting: '暂无连接',
+      connected: 'AI Agent 已连接',
       incompatible: 'API 版本不兼容',
-      reconnecting: '宿主连接中断，重连中…',
-      host_missing: '宿主未安装',
+      reconnecting: 'AI Agent 连接中断，重连中…',
+      host_missing: '暂无 AI Agent 连接',
       error: '连接异常',
       unsupported: '当前环境不支持'
     };
@@ -3009,16 +2983,11 @@ class AIBridgeComponent {
     if (this.$statusDot) this.$statusDot.dataset.status = dotStatusMap[status.state] || 'idle';
     if (this.$statusMessage) {
       this.$statusMessage.textContent = status.state === 'host_missing'
-        ? '请先执行 deno task ai-host-install 安装本机宿主（扩展 ID 见下方）'
+        ? '请先执行 deno task ai-host-install 安装本机 AI Agent（扩展 ID 见下方）'
         : (status.lastError || '');
     }
     if (this.$extensionId) this.$extensionId.textContent = status.extensionId || chrome.runtime.id || '-';
     if (this.$proto) this.$proto.textContent = String(status.apiVersion ?? '-');
-    if (this.$lastAt) {
-      this.$lastAt.textContent = status.lastConnectedAt
-        ? new Date(status.lastConnectedAt).toLocaleString('zh-CN')
-        : '-';
-    }
   }
 
   async saveEnabled() {
@@ -3027,7 +2996,7 @@ class AIBridgeComponent {
       aiBridge: { enabled }
     });
     Toast.show(res?.success
-      ? (enabled ? 'AI 桥接已开启，本机宿主将按需拉起' : 'AI 桥接已关闭，本机通道已断开')
+      ? (enabled ? 'AI 桥接已开启，本机 AI Agent 将按需连接' : 'AI 桥接已关闭，本机通道已断开')
       : (res?.error || '保存失败'));
     await this.loadStatus();
   }
@@ -3041,7 +3010,7 @@ class AIBridgeComponent {
     }
     try {
       await navigator.clipboard.writeText(extensionId);
-      Toast.show('扩展 ID 已复制，安装宿主时使用 --ext-id 参数传入');
+      Toast.show('扩展 ID 已复制，安装 AI Agent 时使用 --ext-id 参数传入');
     } catch {
       Toast.show('复制失败，请手动选择并复制');
     }

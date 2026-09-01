@@ -1133,37 +1133,6 @@ a:focus-visible,
   box-shadow: 0 0 0 4px var(--accent-glow), var(--shadow-md);
 }
 
-.thumb-bubble {
-  position: absolute;
-  /* 必须挂在圆点右侧（left）而非左侧（right）：轨道有 overflow-x: hidden，
-     向左延伸会被轨道左边界裁切到只剩细条 */
-  left: 18px;
-  background-color: var(--text-primary);
-  color: var(--bg-card);
-  font-size: 11px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-  white-space: nowrap;
-  box-shadow: var(--shadow-dropdown);
-  pointer-events: none;
-  display: inline-flex;
-  align-items: center;
-  line-height: 1.3;
-  opacity: 0;
-  transform: translateX(-4px);
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-
-/* 气泡仅在三种时机显示：切换分块后的短暂确认、拖拽游标中、直接悬停圆点。
-   不随"悬停整条轨道"常驻显示，避免黑色气泡长时间压住节点行文字 */
-.timeline-scrubber-thumb.show-bubble .thumb-bubble,
-.timeline-scrubber-thumb:hover .thumb-bubble,
-.timeline-scrubber-thumb.is-dragging .thumb-bubble {
-  opacity: 1;
-  transform: translateX(0);
-}
-
 /* 卡片平滑聚焦呼吸高亮脉冲动效 */
 @keyframes cardFocusGlow {
   0% {
