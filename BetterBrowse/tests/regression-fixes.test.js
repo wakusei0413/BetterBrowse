@@ -384,3 +384,81 @@ Deno.test("回归: PinnedTabGuard 更新选项页标签时不得因漏导入 isO
     globalThis.clearTimeout = originalClearTimeout;
   }
 });
+
+Deno.test("回归: 用户拖拽标签页时后台打开新标签应重试并保留链接", async () => {
+  const originalChrome = globalThis.chrome;
+  const originalSetTimeout = globalThis.setTimeout;
+  let attempts = 0;
+  const createCalls = [];
+  globalThis.setTimeout = (fn) => {
+    queueMicrotask(fn);
+    return 0;
+  };
+  globalThis.chrome = {
+    tabs: {
+      create: async (properties) => {
+        attempts += 1;
+        createCalls.push({ ...properties });
+        if (attempts < 3) {
+          throw new Error("Tabs cannot be edited right now (user may be dragging a tab).");
+        }
+        return { id: 42, ...properties };
+      }
+    }
+  };
+  try {
+    const { createTabWithRetry } = await import("../src/background/action-handlers.js");
+    const tab = await createTabWithRetry({
+      url: "https://retry-open.example/article",
+      active: true,
+      index: 4,
+      openerTabId: 7,
+      windowId: 1
+    });
+    assertEquals(tab.id, 42);
+    assertEquals(attempts, 3);
+    assertEquals(createCalls[0].index, 4);
+    assertEquals(createCalls[2].index, 4);
+  } finally {
+    globalThis.chrome = originalChrome;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+Deno.test("回归: 拖拽持续时创建失败应去掉插入位置而不丢失标签页", async () => {
+  const originalChrome = globalThis.chrome;
+  const originalSetTimeout = globalThis.setTimeout;
+  const createCalls = [];
+  globalThis.setTimeout = (fn) => {
+    queueMicrotask(fn);
+    return 0;
+  };
+  globalThis.chrome = {
+    tabs: {
+      create: async (properties) => {
+        createCalls.push({ ...properties });
+        if (Object.hasOwn(properties, "index")) {
+          throw new Error("Tabs cannot be edited right now");
+        }
+        return { id: 43, ...properties };
+      }
+    }
+  };
+  try {
+    const { createTabWithRetry } = await import("../src/background/action-handlers.js");
+    const tab = await createTabWithRetry({
+      url: "https://fallback-open.example/article",
+      active: true,
+      index: 2,
+      openerTabId: 8,
+      windowId: 1
+    });
+    assertEquals(tab.id, 43);
+    assertEquals(createCalls.length, 5);
+    assertEquals(Object.hasOwn(createCalls.at(-1), "index"), false);
+    assertEquals(createCalls.at(-1).url, "https://fallback-open.example/article");
+  } finally {
+    globalThis.chrome = originalChrome;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});

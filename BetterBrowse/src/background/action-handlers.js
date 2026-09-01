@@ -29,6 +29,55 @@ import { filterCountableTabs, isOwnOptionsUrl } from '../core/extension-url.js';
 import { buildCapabilitiesDescriptor } from '../core/ai/ai-capabilities.js';
 import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
 
+const TAB_CREATE_RETRY_DELAYS_MS = [50, 150, 350];
+
+/**
+ * 判断标签页是否处于 Chrome 暂时禁止编辑的状态（例如用户正在拖拽标签页）。
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isTransientTabEditError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('tabs cannot be edited right now')
+    || message.includes('user may be dragging a tab')
+    || message.includes('tabs cannot be edited');
+}
+
+/**
+ * 创建标签页并处理拖拽期间 Chrome 暂时拒绝编辑的竞态。
+ * 优先保留原标签页右侧插入位置；若拖拽状态持续，则去掉 index 退化为普通创建，
+ * 避免用户点击链接后因一次瞬时 API 错误完全丢失新标签页。
+ * @param {chrome.tabs.CreateProperties} createProperties
+ * @returns {Promise<chrome.tabs.Tab>}
+ */
+export async function createTabWithRetry(createProperties) {
+  let lastError;
+  for (let attempt = 0; attempt <= TAB_CREATE_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, TAB_CREATE_RETRY_DELAYS_MS[attempt - 1]));
+    }
+    try {
+      return await chrome.tabs.create(createProperties);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientTabEditError(error)) throw error;
+    }
+  }
+
+  // index 需要编辑现有标签页顺序，拖拽持续时普通创建仍可成功。
+  if (Object.hasOwn(createProperties, 'index')) {
+    const fallbackProperties = { ...createProperties };
+    delete fallbackProperties.index;
+    try {
+      return await chrome.tabs.create(fallbackProperties);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError;
+}
+
 /**
  * 构建统一 action 处理映射
  * @param {object} deps - 依赖注入（实例型服务与宿主环境回调）
@@ -130,7 +179,7 @@ export function createActionHandlers(deps) {
         }
       }
 
-      const tab = await chrome.tabs.create(createProperties);
+      const tab = await createTabWithRetry(createProperties);
       return { tabId: tab.id };
     },
 
