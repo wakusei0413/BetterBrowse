@@ -6,7 +6,8 @@
 
 import { ActionTypes } from '../constants/action-types.js';
 import { StorageKeys } from '../constants/storage-keys.js';
-import { LinkModes } from '../constants/config.js';
+import { LinkModes, LOCAL_DATA_SCHEMA_REVISION } from '../constants/config.js';
+import { API_VERSION } from '../constants/api-version.js';
 import { LinkMatcher } from '../core/link/link-matcher.js';
 import { MessageBus } from '../core/bus/message-bus.js';
 import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
@@ -47,6 +48,238 @@ class Toast {
     this.timer = setTimeout(() => {
       el.classList.add('hidden');
     }, duration);
+  }
+}
+
+/**
+ * 现代扁平化自定义下拉菜单增强器 (CustomSelectEnhancer)
+ * - 零侵入替换原生简陋直角 select 弹层为现代扁平卡片浮层
+ * - 支持深浅色自适应、Checkmark 勾选标识、微动画过渡、上下键导航与无障碍
+ * - 双向同步底层原生 select 的 value 与 change 事件
+ */
+class CustomSelectEnhancer {
+  static _initialized = false;
+
+  static init() {
+    if (this._initialized) return;
+    this._initialized = true;
+
+    // 点击页面外部区域自动收起所有已打开的自定义下拉框
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.custom-select-wrapper')) {
+        document.querySelectorAll('.custom-select-wrapper.is-open').forEach((el) => {
+          el.classList.remove('is-open', 'drop-up');
+          el.querySelector('.custom-select-trigger')?.setAttribute('aria-expanded', 'false');
+        });
+      }
+    });
+
+    // 按 Escape 键收起所有已打开的下拉框
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        document.querySelectorAll('.custom-select-wrapper.is-open').forEach((el) => {
+          el.classList.remove('is-open', 'drop-up');
+          el.querySelector('.custom-select-trigger')?.setAttribute('aria-expanded', 'false');
+        });
+      }
+    });
+  }
+
+  /**
+   * 增强指定容器下的所有 select.form-select 元素
+   * @param {HTMLElement|Document} [root=document]
+   */
+  static enhanceAll(root = document) {
+    this.init();
+    if (!root) return;
+    const selects = root.querySelectorAll ? root.querySelectorAll('select.form-select') : [];
+    selects.forEach((select) => this.enhance(select));
+  }
+
+  /**
+   * 增强单个 select 元素
+   * @param {HTMLSelectElement} select
+   */
+  static enhance(select) {
+    if (!select || select.tagName !== 'SELECT') return;
+    this.init();
+
+    let wrapper = select.closest('.custom-select-wrapper');
+    if (wrapper) {
+      this.sync(select);
+      return;
+    }
+
+    wrapper = document.createElement('div');
+    wrapper.className = 'custom-select-wrapper';
+    if (select.classList.contains('btn-sm')) wrapper.classList.add('btn-sm');
+    if (select.classList.contains('w-full')) wrapper.classList.add('w-full');
+
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+
+    const trigger = document.createElement('button');
+    trigger.className = 'custom-select-trigger';
+    trigger.type = 'button';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'select-trigger-label';
+
+    const arrowSpan = document.createElement('span');
+    arrowSpan.className = 'select-trigger-arrow';
+    arrowSpan.innerHTML = `
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m6 9 6 6 6-6"></path>
+      </svg>
+    `;
+
+    trigger.appendChild(labelSpan);
+    trigger.appendChild(arrowSpan);
+    wrapper.appendChild(trigger);
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'custom-select-dropdown';
+    dropdown.setAttribute('role', 'listbox');
+    wrapper.appendChild(dropdown);
+
+    // 绑定触发器点击事件
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = wrapper.classList.contains('is-open');
+
+      // 先关闭其他已打开的下拉框
+      document.querySelectorAll('.custom-select-wrapper.is-open').forEach((el) => {
+        if (el !== wrapper) {
+          el.classList.remove('is-open', 'drop-up');
+          el.querySelector('.custom-select-trigger')?.setAttribute('aria-expanded', 'false');
+        }
+      });
+
+      if (!isOpen) {
+        // 计算视口空间，智能决定是否向上展开
+        const rect = wrapper.getBoundingClientRect();
+        const dropdownHeight = 220;
+        const spaceBelow = window.innerHeight - rect.bottom;
+        const shouldDropUp = spaceBelow < dropdownHeight && rect.top > dropdownHeight;
+        wrapper.classList.toggle('drop-up', shouldDropUp);
+        wrapper.classList.add('is-open');
+        trigger.setAttribute('aria-expanded', 'true');
+
+        // 聚焦到当前已选中的选项
+        const selectedOpt = dropdown.querySelector('.custom-select-option.is-selected');
+        if (selectedOpt) {
+          dropdown.querySelectorAll('.custom-select-option').forEach((opt) => opt.classList.remove('is-highlighted'));
+          selectedOpt.classList.add('is-highlighted');
+          selectedOpt.scrollIntoView({ block: 'nearest' });
+        }
+      } else {
+        wrapper.classList.remove('is-open', 'drop-up');
+        trigger.setAttribute('aria-expanded', 'false');
+      }
+    });
+
+    // 键盘无障碍支持
+    trigger.addEventListener('keydown', (e) => {
+      const isOpen = wrapper.classList.contains('is-open');
+      const options = Array.from(dropdown.querySelectorAll('.custom-select-option'));
+      const highlightedIdx = options.findIndex((opt) => opt.classList.contains('is-highlighted'));
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!isOpen) {
+          trigger.click();
+          return;
+        }
+        let nextIdx = 0;
+        if (highlightedIdx === -1) {
+          nextIdx = e.key === 'ArrowDown' ? 0 : options.length - 1;
+        } else {
+          nextIdx = e.key === 'ArrowDown' ? (highlightedIdx + 1) % options.length : (highlightedIdx - 1 + options.length) % options.length;
+        }
+        options.forEach((opt, idx) => {
+          opt.classList.toggle('is-highlighted', idx === nextIdx);
+          if (idx === nextIdx) opt.scrollIntoView({ block: 'nearest' });
+        });
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        if (isOpen) {
+          const current = options[highlightedIdx] || dropdown.querySelector('.custom-select-option.is-selected');
+          if (current) current.click();
+        } else {
+          trigger.click();
+        }
+      }
+    });
+
+    // 监听原生 select 变化，保持同步
+    select.addEventListener('change', () => {
+      CustomSelectEnhancer.sync(select);
+    });
+
+    this.sync(select);
+  }
+
+  /**
+   * 同步选项列表与当前选中态
+   * @param {HTMLSelectElement} select
+   */
+  static sync(select) {
+    if (!select) return;
+    const wrapper = select.closest('.custom-select-wrapper');
+    if (!wrapper) {
+      this.enhance(select);
+      return;
+    }
+
+    const labelSpan = wrapper.querySelector('.select-trigger-label');
+    const dropdown = wrapper.querySelector('.custom-select-dropdown');
+    if (!dropdown) return;
+
+    const selectedOption = select.options[select.selectedIndex] || select.options[0];
+    if (labelSpan && selectedOption) {
+      labelSpan.textContent = selectedOption.textContent;
+    }
+
+    // 重建下拉选项列表
+    dropdown.innerHTML = '';
+    Array.from(select.options).forEach((opt) => {
+      const item = document.createElement('div');
+      item.className = 'custom-select-option';
+      item.dataset.value = opt.value;
+      item.setAttribute('role', 'option');
+
+      const isSelected = opt.value === select.value || (opt.selected && !select.value);
+      if (isSelected) {
+        item.classList.add('is-selected');
+        item.setAttribute('aria-selected', 'true');
+      }
+
+      item.innerHTML = `
+        <span>${opt.textContent}</span>
+        <svg class="option-check-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      `;
+
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const value = item.dataset.value;
+        if (select.value !== value) {
+          select.value = value;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          select.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        CustomSelectEnhancer.sync(select);
+        wrapper.classList.remove('is-open', 'drop-up');
+        const trigger = wrapper.querySelector('.custom-select-trigger');
+        trigger?.setAttribute('aria-expanded', 'false');
+        trigger?.focus();
+      });
+
+      dropdown.appendChild(item);
+    });
   }
 }
 
@@ -442,11 +675,19 @@ class SingleLineTimelineScrollbar {
         const onMouseMove = (moveEvt) => {
           if (!this.isDragging || this.chunks.length === 0) return;
           moveEvt.preventDefault();
-          // 按内容坐标系换算（叠加 scrollTop），轨道滚动后拖拽定位依然精准
+          const items = this.container ? Array.from(this.container.querySelectorAll('.timeline-axis-item')) : [];
+          if (items.length === 0) return;
+
           const trackRect = this.track.getBoundingClientRect();
-          const contentHeight = this.track.scrollHeight || 1;
-          const relativeY = Math.max(0, Math.min(moveEvt.clientY - trackRect.top + this.track.scrollTop, contentHeight));
-          const ratio = relativeY / contentHeight;
+          const firstRect = items[0].getBoundingClientRect();
+          const lastRect = items[items.length - 1].getBoundingClientRect();
+          const minCenterY = firstRect.top - trackRect.top + this.track.scrollTop + items[0].offsetHeight / 2;
+          const maxCenterY = lastRect.top - trackRect.top + this.track.scrollTop + items[items.length - 1].offsetHeight / 2;
+
+          const currentY = moveEvt.clientY - trackRect.top + this.track.scrollTop;
+          const clampedY = Math.max(minCenterY, Math.min(maxCenterY, currentY));
+          const effectiveSpan = maxCenterY - minCenterY || 1;
+          const ratio = Math.max(0, Math.min(1, (clampedY - minCenterY) / effectiveSpan));
           const targetIndex = Math.min(
             this.chunks.length - 1,
             Math.max(0, Math.round(ratio * (this.chunks.length - 1)))
@@ -469,16 +710,25 @@ class SingleLineTimelineScrollbar {
         document.addEventListener('mouseup', onMouseUp);
       });
 
-      // 点击轨道空白处跳到对应比例分块（与拖拽一致采用内容坐标系）
+      // 点击轨道空白处跳到对应比例分块（严格限制在首尾节点有效范围）
       this.track.addEventListener('click', (e) => {
         if (e.target.closest('.timeline-axis-item') || e.target.closest('.timeline-scrubber-thumb')) {
           return;
         }
         if (this.chunks.length === 0) return;
+        const items = this.container ? Array.from(this.container.querySelectorAll('.timeline-axis-item')) : [];
+        if (items.length === 0) return;
+
         const trackRect = this.track.getBoundingClientRect();
-        const contentHeight = this.track.scrollHeight || 1;
-        const relativeY = Math.max(0, Math.min(e.clientY - trackRect.top + this.track.scrollTop, contentHeight));
-        const ratio = relativeY / contentHeight;
+        const firstRect = items[0].getBoundingClientRect();
+        const lastRect = items[items.length - 1].getBoundingClientRect();
+        const minCenterY = firstRect.top - trackRect.top + this.track.scrollTop + items[0].offsetHeight / 2;
+        const maxCenterY = lastRect.top - trackRect.top + this.track.scrollTop + items[items.length - 1].offsetHeight / 2;
+
+        const currentY = e.clientY - trackRect.top + this.track.scrollTop;
+        const clampedY = Math.max(minCenterY, Math.min(maxCenterY, currentY));
+        const effectiveSpan = maxCenterY - minCenterY || 1;
+        const ratio = Math.max(0, Math.min(1, (clampedY - minCenterY) / effectiveSpan));
         const targetIndex = Math.min(
           this.chunks.length - 1,
           Math.max(0, Math.round(ratio * (this.chunks.length - 1)))
@@ -510,6 +760,9 @@ class SingleLineTimelineScrollbar {
 
     if (this.activeChunkIndex >= 0 && this.chunks[this.activeChunkIndex]) {
       const cur = this.chunks[this.activeChunkIndex];
+      // 自动回收机制：仅展开当前活动分块所在的年份与月份，自动收起其他非活跃分支，保持导航精简
+      this.expandedYears.clear();
+      this.expandedMonths.clear();
       this.expandedYears.add(cur.yearKey);
       this.expandedMonths.add(cur.monthKey);
     }
@@ -531,6 +784,9 @@ class SingleLineTimelineScrollbar {
 
     if (index >= 0 && this.chunks[index]) {
       const cur = this.chunks[index];
+      // 自动回收机制：仅展开当前活动分块所在的年份与月份，自动收起其他非活跃分支，保持导航精简
+      this.expandedYears.clear();
+      this.expandedMonths.clear();
       this.expandedYears.add(cur.yearKey);
       this.expandedMonths.add(cur.monthKey);
     }
@@ -580,31 +836,53 @@ class SingleLineTimelineScrollbar {
   syncThumbPosition() {
     if (!this.track || !this.thumb) return;
 
-    if (this.chunks.length === 0) {
-      this.thumb.style.transform = 'translateY(6px)';
+    const items = this.container ? Array.from(this.container.querySelectorAll('.timeline-axis-item')) : [];
+    if (items.length === 0 || this.activeChunkIndex === -1 || this.chunks.length === 0) {
+      this.thumb.style.opacity = '0';
+      this.thumb.style.pointerEvents = 'none';
       return;
     }
 
-    if (this.activeChunkIndex === -1) {
-      this.thumb.style.transform = 'translateY(6px)';
-      return;
-    }
+    const trackRect = this.track.getBoundingClientRect();
+    const firstItem = items[0];
+    const lastItem = items[items.length - 1];
+    const firstRect = firstItem.getBoundingClientRect();
+    const lastRect = lastItem.getBoundingClientRect();
+
+    // 首末节点的中心纵坐标（在轨道内容坐标系中）
+    const minCenterY = firstRect.top - trackRect.top + this.track.scrollTop + firstItem.offsetHeight / 2;
+    const maxCenterY = lastRect.top - trackRect.top + this.track.scrollTop + lastItem.offsetHeight / 2;
 
     const curChunk = this.chunks[this.activeChunkIndex];
-    const activeItem = this.container?.querySelector(`.timeline-axis-item[data-key="${CSS.escape(curChunk.key)}"]`);
-    if (activeItem && this.container) {
-      // 用 getBoundingClientRect 换算到轨道内容坐标系（叠加 scrollTop），
-      // 避免依赖 offsetParent 链（节点容器自身为定位元素，直接用 offsetTop 会漏加容器偏移）
-      const trackRect = this.track.getBoundingClientRect();
-      const itemRect = activeItem.getBoundingClientRect();
-      const itemTop = itemRect.top - trackRect.top + this.track.scrollTop + activeItem.offsetHeight / 2 - 6;
-      this.thumb.style.transform = `translateY(${Math.max(0, itemTop)}px)`;
-    } else {
-      const trackHeight = this.track.scrollHeight || this.track.clientHeight || 1;
-      const ratio = this.chunks.length > 1 ? this.activeChunkIndex / (this.chunks.length - 1) : 0;
-      const topPos = Math.max(0, Math.min(ratio * (trackHeight - 16), trackHeight - 16));
-      this.thumb.style.transform = `translateY(${topPos}px)`;
+    let targetItem = null;
+
+    if (curChunk) {
+      // 1. 优先匹配当前活动周节点
+      targetItem = this.container.querySelector(`.timeline-axis-item[data-key="${CSS.escape(curChunk.key)}"]`);
+      // 2. 若周节点被折叠隐藏，退回匹配对应月份节点
+      if (!targetItem && curChunk.monthKey) {
+        targetItem = this.container.querySelector(`.timeline-axis-item[data-key="${CSS.escape(curChunk.monthKey)}"]`);
+      }
+      // 3. 若月份节点也被折叠隐藏，退回匹配对应年份节点
+      if (!targetItem && curChunk.yearKey) {
+        targetItem = this.container.querySelector(`.timeline-axis-item[data-key="${CSS.escape(curChunk.yearKey)}"]`);
+      }
     }
+
+    let targetY = minCenterY;
+    if (targetItem) {
+      const itemRect = targetItem.getBoundingClientRect();
+      targetY = itemRect.top - trackRect.top + this.track.scrollTop + targetItem.offsetHeight / 2;
+    } else {
+      const ratio = this.chunks.length > 1 ? this.activeChunkIndex / (this.chunks.length - 1) : 0;
+      targetY = minCenterY + ratio * (maxCenterY - minCenterY);
+    }
+
+    // 严密夹逼限制在首尾节点圆心之间，彻底杜绝越界溢出到首项上方或末项下方
+    const clampedY = Math.max(minCenterY, Math.min(maxCenterY, targetY));
+    this.thumb.style.transform = `translateY(${clampedY}px)`;
+    this.thumb.style.opacity = '1';
+    this.thumb.style.pointerEvents = 'auto';
   }
 
   /**
@@ -616,8 +894,8 @@ class SingleLineTimelineScrollbar {
   syncScrollProgress(ratio, groupId) {
     if (!this.track || !this.thumb) return;
 
-    if (this.chunks.length === 0) {
-      this.thumb.style.transform = 'translateY(6px)';
+    if (this.chunks.length === 0 || this.activeChunkIndex === -1) {
+      this.thumb.style.opacity = '0';
       return;
     }
 
@@ -627,6 +905,9 @@ class SingleLineTimelineScrollbar {
         // 静默切换活动分块：同步展开层级并重绘高亮，但不触发回调重载
         this.activeChunkIndex = targetIndex;
         const cur = this.chunks[targetIndex];
+        // 自动回收机制：滚动切换到新分块时自动逐级收起旧分支
+        this.expandedYears.clear();
+        this.expandedMonths.clear();
         this.expandedYears.add(cur.yearKey);
         this.expandedMonths.add(cur.monthKey);
         this.render();
@@ -778,8 +1059,6 @@ class StashTabComponent {
     this.timelineScrollbarTrack = document.getElementById('timelineScrollbar');
     this.timelineNodesContainer = document.getElementById('timelineNodesContainer');
     this.timelineScrubberThumb = document.getElementById('timelineScrubberThumb');
-    this.recycleBinList = document.getElementById('recycleBinList');
-    this.btnRecycleBinRefresh = document.getElementById('btnRecycleBinRefresh');
 
     // 实例化单一直线时间轴分块滚动条组件
     this.timelineScrollbar = new SingleLineTimelineScrollbar({
@@ -933,11 +1212,7 @@ class StashTabComponent {
       this.searchInput.focus();
     });
 
-    // 2. 立即全量收纳全部窗口
-    this.btnRecycleBinRefresh?.addEventListener('click', () => this.loadRecycleBin());
-
-    this.recycleBinList?.addEventListener('click', (e) => this.handleRecycleBinClick(e));
-
+    // 立即全量收纳全部窗口
     this.btnStashNow?.addEventListener('click', async () => {
       this.btnStashNow.disabled = true;
       Toast.show('正在收纳全部窗口标签页...');
@@ -997,12 +1272,29 @@ class StashTabComponent {
       }
     });
 
-    // 6. 图片加载失败静默隐藏回退
+    // 6. 图标加载失败自动回退为默认网页 SVG 图标，保持对齐排版
     this.container?.addEventListener(
       'error',
       (e) => {
-        if (e.target && e.target.classList?.contains('tab-favicon')) {
-          e.target.style.display = 'none';
+        const target = e.target;
+        if (target && target.tagName === 'IMG' && target.classList?.contains('tab-favicon')) {
+          const fallbackSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          fallbackSvg.setAttribute('class', 'tab-favicon tab-favicon-fallback');
+          fallbackSvg.setAttribute('viewBox', '0 0 24 24');
+          fallbackSvg.setAttribute('width', '16');
+          fallbackSvg.setAttribute('height', '16');
+          fallbackSvg.setAttribute('fill', 'none');
+          fallbackSvg.setAttribute('stroke', 'currentColor');
+          fallbackSvg.setAttribute('stroke-width', '1.75');
+          fallbackSvg.setAttribute('stroke-linecap', 'round');
+          fallbackSvg.setAttribute('stroke-linejoin', 'round');
+          fallbackSvg.setAttribute('aria-hidden', 'true');
+          fallbackSvg.innerHTML = `
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+          `;
+          target.replaceWith(fallbackSvg);
         }
       },
       true
@@ -1145,102 +1437,6 @@ class StashTabComponent {
       this.updateBadge();
       this.filterAndRender();
     }
-    this.loadRecycleBin();
-  }
-
-  /**
-   * 刷新 30 天回收站。后台动作尚未落地时静默展示空列表，不拖垮整页。
-   */
-  async loadRecycleBin() {
-    if (!this.recycleBinList) return;
-    try {
-      const res = await MessageBus.sendToBackground(ActionTypes.LIST_RECYCLE_BIN);
-      const items = Array.isArray(res?.data)
-        ? res.data
-        : (Array.isArray(res?.data?.items) ? res.data.items : []);
-      this.renderRecycleBin(res?.success ? items : []);
-    } catch {
-      this.renderRecycleBin([]);
-    }
-  }
-
-  renderRecycleBin(items) {
-    if (!this.recycleBinList) return;
-    this.recycleBinList.innerHTML = '';
-    if (!items.length) {
-      const empty = document.createElement('p');
-      empty.className = 'sync-empty';
-      empty.id = 'recycleBinEmpty';
-      empty.textContent = '回收站是空的';
-      this.recycleBinList.appendChild(empty);
-      return;
-    }
-    for (const item of items) {
-      const tombstoneId = item.tombstoneId || item.id || '';
-      const row = document.createElement('div');
-      row.className = 'conflict-item';
-      row.dataset.tombstoneId = tombstoneId;
-
-      const head = document.createElement('div');
-      head.className = 'conflict-head';
-      head.textContent = item.title || item.entityId || tombstoneId || '未命名';
-
-      const meta = document.createElement('div');
-      meta.className = 'device-meta';
-      const typeLabel = this._recycleTypeLabel(item);
-      const deletedAt = item.deletedAt || item.createdAt;
-      const timeLabel = deletedAt ? new Date(deletedAt).toLocaleString('zh-CN') : '-';
-      meta.textContent = `${typeLabel} · ${timeLabel}`;
-
-      const actions = document.createElement('div');
-      actions.className = 'btn-group';
-      const btnRestore = document.createElement('button');
-      btnRestore.className = 'btn btn-secondary btn-sm btn-recycle-restore';
-      btnRestore.type = 'button';
-      btnRestore.dataset.tombstoneId = tombstoneId;
-      btnRestore.textContent = '恢复';
-      const btnPurge = document.createElement('button');
-      btnPurge.className = 'btn btn-danger btn-sm btn-recycle-purge';
-      btnPurge.type = 'button';
-      btnPurge.dataset.tombstoneId = tombstoneId;
-      btnPurge.textContent = '永久删除';
-      actions.append(btnRestore, btnPurge);
-      row.append(head, meta, actions);
-      this.recycleBinList.appendChild(row);
-    }
-  }
-
-  _recycleTypeLabel(item) {
-    const raw = String(item.type || item.entityType || '').toLowerCase();
-    if (raw.includes('group')) return '组';
-    if (raw.includes('entry') || raw.includes('item') || raw.includes('tab')) return '条目';
-    return raw ? raw : '条目';
-  }
-
-  async handleRecycleBinClick(e) {
-    const restoreBtn = e.target.closest('.btn-recycle-restore');
-    const purgeBtn = e.target.closest('.btn-recycle-purge');
-    const tombstoneId = restoreBtn?.dataset.tombstoneId || purgeBtn?.dataset.tombstoneId;
-    if (!tombstoneId) return;
-
-    if (restoreBtn) {
-      const res = await MessageBus.sendToBackground(ActionTypes.RESTORE_RECYCLE_BIN_ITEM, { tombstoneId });
-      const data = res?.data || {};
-      const ok = res?.success && data.success !== false;
-      Toast.show(ok ? '已从回收站恢复' : (data.error || res?.error || '恢复失败'));
-      await this.loadData();
-      return;
-    }
-
-    if (!window.confirm('确定永久删除该项？此操作不可撤销。')) return;
-    const res = await MessageBus.sendToBackground(ActionTypes.PURGE_RECYCLE_BIN_ITEM, {
-      tombstoneId,
-      confirm: true
-    });
-    const data = res?.data || {};
-    const ok = res?.success && data.success !== false;
-    Toast.show(ok ? '已永久删除' : (data.error || res?.error || '删除失败'));
-    await this.loadRecycleBin();
   }
 
   updateBadge() {
@@ -1280,7 +1476,7 @@ class StashTabComponent {
       const hasSearchQuery = Boolean(query);
       const titleEl = this.emptyState?.querySelector('.empty-title');
       const descEl = this.emptyState?.querySelector('.empty-desc');
-      if (titleEl) titleEl.textContent = hasSearchQuery ? '未找到匹配的标签页' : '收纳箱目前是空的';
+      if (titleEl) titleEl.textContent = hasSearchQuery ? '未找到匹配的标签页' : '时间线目前是空的';
       if (descEl) {
         descEl.textContent = hasSearchQuery
           ? '请尝试更换搜索关键词。'
@@ -1424,7 +1620,7 @@ class StashTabComponent {
       <div class="stash-group-header">
         <div class="stash-header-left">
           <div class="stash-title-block" title="双击重命名标签组">
-            <svg class="group-bullet-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg class="group-bullet-icon" ${group.color ? `data-color="${this.escapeHTML(group.color)}"` : ''} viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="5"></circle>
             </svg>
             ${group.starred ? `
@@ -1928,6 +2124,7 @@ class StashSettingsComponent {
     if (this.dom.selectBackupRetentionDays) {
       this.dom.selectBackupRetentionDays.value = String(settings.backupRetentionDays || 30);
     }
+    CustomSelectEnhancer.enhanceAll(document.getElementById('tab-settings'));
   }
 
   bindEvents() {
@@ -2340,6 +2537,9 @@ class DomainRulesComponent {
       `;
     }
     this.tbody.innerHTML = rowsHtml;
+    if (this.tbody) CustomSelectEnhancer.enhanceAll(this.tbody);
+    if (this.selectGlobalMode) CustomSelectEnhancer.sync(this.selectGlobalMode);
+    if (this.selectMode) CustomSelectEnhancer.sync(this.selectMode);
   }
 
   escapeHTML(str) {
@@ -3039,6 +3239,7 @@ class RuntimeLogComponent {
     });
     this.$refresh?.addEventListener('click', () => this.load());
     this.$clear?.addEventListener('click', () => this.clear());
+    CustomSelectEnhancer.enhanceAll(document.getElementById('tab-logs'));
   }
 
   async load() {
@@ -3064,6 +3265,7 @@ class RuntimeLogComponent {
     this.$source.replaceChildren(new Option('全部来源', ''));
     for (const source of sources) this.$source.add(new Option(source, source));
     this.$source.value = sources.includes(selected) ? selected : '';
+    CustomSelectEnhancer.sync(this.$source);
   }
 
   render(entries) {
@@ -3109,12 +3311,107 @@ class RuntimeLogComponent {
 }
 
 /**
+ * 关于面板组件 (AboutComponent)
+ */
+class AboutComponent {
+  constructor() {
+    this.$softwareVersion = document.getElementById('aboutSoftwareVersion');
+    this.$releaseMilestone = document.getElementById('aboutReleaseMilestone');
+    this.$apiVersion = document.getElementById('aboutApiVersion');
+    this.$dataRevision = document.getElementById('aboutDataRevision');
+    this.$extensionId = document.getElementById('aboutExtensionId');
+    this.$btnCopyVersion = document.getElementById('btnCopyVersionInfo');
+
+    this.init();
+  }
+
+  init() {
+    this.render();
+    this.bindEvents();
+  }
+
+  render() {
+    const manifest = chrome.runtime.getManifest?.() || {};
+    const softwareVersion = manifest.version || '1.0.0';
+    const versionName = manifest.version_name || softwareVersion;
+    const extensionId = chrome.runtime?.id || '-';
+
+    if (this.$softwareVersion) {
+      this.$softwareVersion.textContent = versionName ? `${softwareVersion} (${versionName})` : softwareVersion;
+    }
+    if (this.$releaseMilestone) {
+      this.$releaseMilestone.textContent = versionName || `v${softwareVersion}`;
+    }
+    if (this.$apiVersion) {
+      this.$apiVersion.textContent = String(API_VERSION);
+    }
+    if (this.$dataRevision) {
+      this.$dataRevision.textContent = String(LOCAL_DATA_SCHEMA_REVISION ?? 8);
+    }
+    if (this.$extensionId) {
+      this.$extensionId.textContent = extensionId;
+    }
+  }
+
+  bindEvents() {
+    this.$btnCopyVersion?.addEventListener('click', async () => {
+      const manifest = chrome.runtime.getManifest?.() || {};
+      const softwareVersion = manifest.version || '1.0.0';
+      const versionName = manifest.version_name || softwareVersion;
+      const extensionId = chrome.runtime?.id || '-';
+      const userAgent = navigator.userAgent || '';
+
+      const diagnosticText = [
+        `BetterBrowse 诊断信息`,
+        `--------------------`,
+        `软件版本: ${softwareVersion} (${versionName})`,
+        `API 版本: ${API_VERSION}`,
+        `数据修订: ${LOCAL_DATA_SCHEMA_REVISION ?? 8}`,
+        `扩展 ID: ${extensionId}`,
+        `User Agent: ${userAgent}`,
+        `当前时间: ${new Date().toISOString()}`
+      ].join('\n');
+
+      try {
+        await navigator.clipboard.writeText(diagnosticText);
+        Toast.show('版本诊断信息已复制到剪贴板');
+      } catch {
+        Toast.show('复制失败，请手动选择并复制');
+      }
+    });
+  }
+}
+
+/**
+ * 设置子分类标题对照表
+ */
+const SETTINGS_SUBTAB_TITLES = {
+  'stash-settings': '收纳箱设置',
+  'rules': '智能收纳规则',
+  'links': '域名跳转规则',
+  'backup': '数据备份与迁移',
+  'sync': '云端同步',
+  'ai-bridge': 'AI 桥接',
+  'logs': '运行日志',
+  'about': '关于'
+};
+const SETTINGS_SUBTABS = Object.keys(SETTINGS_SUBTAB_TITLES);
+
+/**
  * 仪表盘总协调应用 (OptionsApp)
  */
 class OptionsApp {
   constructor() {
-    this.navItems = document.querySelectorAll('.nav-item');
+    this.tabStash = document.getElementById('tab-stash');
+    this.viewSettingsHub = document.getElementById('view-settings-hub');
+    this.btnSidebarSettings = document.getElementById('btnSidebarSettings');
+    this.btnBackToStash = document.getElementById('btnBackToStash');
+    this.navItemStash = document.getElementById('navTabStash');
+    this.subnavItems = document.querySelectorAll('.settings-subnav-item');
+    this.breadcrumbCurrent = document.getElementById('settingsCurrentSubtabBreadcrumb');
     this.panels = document.querySelectorAll('.tab-panel');
+
+    this.currentSettingsSubtab = 'stash-settings';
 
     this.init();
   }
@@ -3127,6 +3424,7 @@ class OptionsApp {
     const syncComponent = new WebdavSyncComponent();
     this.runtimeLogComponent = new RuntimeLogComponent();
     const aiBridgeComponent = new AIBridgeComponent();
+    const aboutComponent = new AboutComponent();
     this.bindNavigation();
     new BackupComponent(() => {
       stashComponent.loadData();
@@ -3157,48 +3455,155 @@ class OptionsApp {
       return false;
     });
 
-    // 读取 URL Hash 路由 (如 #stash-settings, #rules, #links)
+    // 监听 URL Hash 变化以支持浏览器前进/后退
+    window.addEventListener('hashchange', () => {
+      const rawHash = window.location.hash.replace(/^#/, '');
+      if (rawHash) this.switchTab(rawHash, false);
+    });
+
+    // 读取初始 URL Hash 路由 (如 #stash, #stash-settings, #rules, #links 等)
     const rawHash = window.location.hash.replace(/^#/, '');
-    if (rawHash && document.getElementById(`tab-${rawHash}`)) {
-      this.switchTab(rawHash);
+    if (rawHash) {
+      this.switchTab(rawHash, false);
+    } else {
+      this.switchTab('stash', false);
     }
   }
 
   bindNavigation() {
-    this.navItems.forEach((btn) => {
+    // 侧边栏时间线按钮点击
+    this.navItemStash?.addEventListener('click', () => {
+      this.switchTab('stash');
+    });
+
+    // 侧边栏左下角系统设置按钮点击（进入统一设置中心）
+    this.btnSidebarSettings?.addEventListener('click', () => {
+      this.switchTab(this.currentSettingsSubtab || 'stash-settings');
+    });
+
+    // 设置中心顶部「返回时间线」按钮点击
+    this.btnBackToStash?.addEventListener('click', () => {
+      this.switchTab('stash');
+    });
+
+    // 设置中心二级子分类导航 Tab 点击
+    this.subnavItems.forEach((btn) => {
       btn.addEventListener('click', () => {
-        const targetTab = btn.getAttribute('data-tab');
-        if (targetTab) {
-          this.switchTab(targetTab);
+        const targetSubtab = btn.getAttribute('data-subtab');
+        if (targetSubtab) {
+          this.switchTab(targetSubtab);
         }
       });
     });
-  }
 
-  switchTab(tabName) {
-    this.navItems.forEach((item) => {
-      const isTarget = item.getAttribute('data-tab') === tabName;
-      item.classList.toggle('active', isTarget);
-      item.setAttribute('aria-selected', isTarget ? 'true' : 'false');
-      item.tabIndex = isTarget ? 0 : -1;
-    });
-
-    this.panels.forEach((panel) => {
-      if (panel.id === `tab-${tabName}`) {
-        panel.classList.add('active');
-        panel.hidden = false;
-      } else {
-        panel.classList.remove('active');
-        panel.hidden = true;
+    // 键盘 Esc 快捷键：当处于设置页面时快速退回时间线
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.viewSettingsHub && !this.viewSettingsHub.hidden) {
+        const isEditingInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+        if (!isEditingInput) {
+          this.switchTab('stash');
+        }
       }
     });
+  }
 
-    if (tabName === 'logs') this.runtimeLogComponent?.load();
+  /**
+   * 统一切换视图与设置选项
+   * @param {string} tabName 目标标签名 ('stash' | 'settings' | 'stash-settings' | 'rules' | 'links' | 'backup' | 'sync' | 'ai-bridge' | 'logs')
+   * @param {boolean} [updateHash=true] 是否同步更新 URL Hash
+   */
+  switchTab(tabName, updateHash = true) {
+    if (!tabName) tabName = 'stash';
 
-    try {
-      history.replaceState(null, '', `#${tabName}`);
-    } catch {
-      // 忽略历史状态异常
+    const isStashView = tabName === 'stash';
+    const isSettingsSubtab = SETTINGS_SUBTABS.includes(tabName);
+    const targetSubtab = isSettingsSubtab ? tabName : (tabName === 'settings' ? this.currentSettingsSubtab : null);
+
+    if (isStashView) {
+      // 1. 激活时间线主视图
+      if (this.tabStash) {
+        this.tabStash.classList.add('active');
+        this.tabStash.hidden = false;
+      }
+      if (this.viewSettingsHub) {
+        this.viewSettingsHub.classList.remove('active');
+        this.viewSettingsHub.hidden = true;
+      }
+
+      // 2. 侧边栏按钮状态同步
+      this.navItemStash?.classList.add('active');
+      this.navItemStash?.setAttribute('aria-selected', 'true');
+      this.navItemStash?.setAttribute('tabindex', '0');
+
+      this.btnSidebarSettings?.classList.remove('active');
+      this.btnSidebarSettings?.setAttribute('aria-selected', 'false');
+
+      if (updateHash) {
+        try {
+          history.replaceState(null, '', '#stash');
+        } catch {
+          // 忽略历史记录异常
+        }
+      }
+      return;
+    }
+
+    if (targetSubtab) {
+      // 1. 激活统一系统设置中心视图
+      this.currentSettingsSubtab = targetSubtab;
+
+      if (this.tabStash) {
+        this.tabStash.classList.remove('active');
+        this.tabStash.hidden = true;
+      }
+      if (this.viewSettingsHub) {
+        this.viewSettingsHub.classList.add('active');
+        this.viewSettingsHub.hidden = false;
+      }
+
+      // 2. 侧边栏按钮状态同步
+      this.navItemStash?.classList.remove('active');
+      this.navItemStash?.setAttribute('aria-selected', 'false');
+      this.navItemStash?.setAttribute('tabindex', '-1');
+
+      this.btnSidebarSettings?.classList.add('active');
+      this.btnSidebarSettings?.setAttribute('aria-selected', 'true');
+
+      // 3. 二级导航 Tab 与面包屑同步
+      this.subnavItems.forEach((item) => {
+        const isCurrent = item.getAttribute('data-subtab') === targetSubtab;
+        item.classList.toggle('active', isCurrent);
+        item.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
+        item.tabIndex = isCurrent ? 0 : -1;
+      });
+
+      if (this.breadcrumbCurrent) {
+        this.breadcrumbCurrent.textContent = SETTINGS_SUBTAB_TITLES[targetSubtab] || '设置';
+      }
+
+      // 4. 激活对应设置子面板
+      this.panels.forEach((panel) => {
+        if (panel.id === `tab-${targetSubtab}`) {
+          panel.classList.add('active');
+          panel.hidden = false;
+        } else if (panel.id !== 'tab-stash') {
+          panel.classList.remove('active');
+          panel.hidden = true;
+        }
+      });
+
+      // 5. 触发对应组件懒加载
+      if (targetSubtab === 'logs') {
+        this.runtimeLogComponent?.load();
+      }
+
+      if (updateHash) {
+        try {
+          history.replaceState(null, '', `#${targetSubtab}`);
+        } catch {
+          // 忽略历史记录异常
+        }
+      }
     }
   }
 }
@@ -3210,4 +3615,5 @@ document.addEventListener('DOMContentLoaded', () => {
   const softwareVersion = manifest.version_name || manifest.version || '-';
   if (versionTag) versionTag.textContent = `BetterBrowse · ${softwareVersion}`;
   new OptionsApp();
+  CustomSelectEnhancer.enhanceAll();
 });

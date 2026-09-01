@@ -312,7 +312,7 @@ class PopupController {
       if (res.success && res.data) {
         const { stashedCount } = res.data;
         if (stashedCount > 0) {
-          this.showStatus(`已收纳 ${stashedCount} 个标签页至收纳箱`, 'success');
+          this.showStatus(`已收纳 ${stashedCount} 个标签页至时间线`, 'success');
         } else {
           this.showStatus('当前窗口没有可收纳的网页', 'info');
         }

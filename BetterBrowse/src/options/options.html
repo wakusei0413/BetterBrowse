@@ -11,10 +11,9 @@
     <!-- 侧边导航栏 -->
     <aside class="sidebar">
       <div class="sidebar-header">
-        <img src="../icons/icon32.png" alt="BetterBrowse 图标" class="sidebar-logo">
-        <div class="sidebar-brand">
+        <div class="brand-lockup">
+          <img src="../icons/icon48.png" alt="BetterBrowse Logo" class="brand-logo">
           <h1 class="brand-title">BetterBrowse</h1>
-          <span class="brand-subtitle">智能浏览增强</span>
         </div>
       </div>
 
@@ -25,95 +24,30 @@
             <path d="m3.3 7 8.7 5 8.7-5"></path>
             <path d="M12 22V12"></path>
           </svg>
-          <span class="nav-label">标签收纳箱</span>
+          <span class="nav-label">时间线</span>
           <span class="nav-badge" id="stashCountBadge">0</span>
-        </button>
-
-        <button class="nav-item" data-tab="stash-settings" type="button" id="navTabStashSettings" role="tab" aria-selected="false" aria-controls="tab-stash-settings" tabindex="-1">
-          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
-            <circle cx="12" cy="12" r="3"></circle>
-          </svg>
-          <span class="nav-label">收纳箱设置</span>
-        </button>
-
-        <button class="nav-item" data-tab="rules" type="button" id="navTabRules" role="tab" aria-selected="false" aria-controls="tab-rules" tabindex="-1">
-          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <line x1="4" y1="21" x2="4" y2="14"></line>
-            <line x1="4" y1="10" x2="4" y2="3"></line>
-            <line x1="12" y1="21" x2="12" y2="12"></line>
-            <line x1="12" y1="8" x2="12" y2="3"></line>
-            <line x1="20" y1="21" x2="20" y2="16"></line>
-            <line x1="20" y1="12" x2="20" y2="3"></line>
-            <line x1="1" y1="14" x2="7" y2="14"></line>
-            <line x1="9" y1="8" x2="15" y2="8"></line>
-            <line x1="17" y1="16" x2="23" y2="16"></line>
-          </svg>
-          <span class="nav-label">智能收纳规则</span>
-        </button>
-
-        <button class="nav-item" data-tab="links" type="button" id="navTabLinks" role="tab" aria-selected="false" aria-controls="tab-links" tabindex="-1">
-          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="2" y1="12" x2="22" y2="12"></line>
-            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-          </svg>
-          <span class="nav-label">域名跳转规则</span>
-        </button>
-
-        <button class="nav-item" data-tab="backup" type="button" id="navTabBackup" role="tab" aria-selected="false" aria-controls="tab-backup" tabindex="-1">
-          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-            <polyline points="17 21 17 13 7 13 7 21"></polyline>
-            <polyline points="7 3 7 8 15 8"></polyline>
-          </svg>
-          <span class="nav-label">数据备份与迁移</span>
-        </button>
-
-        <button class="nav-item" data-tab="sync" type="button" id="navTabSync" role="tab" aria-selected="false" aria-controls="tab-sync" tabindex="-1">
-          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M20 7h-9"></path>
-            <path d="M14 17H5"></path>
-            <circle cx="17" cy="17" r="3"></circle>
-            <circle cx="7" cy="7" r="3"></circle>
-          </svg>
-          <span class="nav-label">云端同步</span>
-        </button>
-
-        <button class="nav-item" data-tab="logs" type="button" id="navTabLogs" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1">
-          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 19h16"></path>
-            <path d="M4 15h16"></path>
-            <path d="M4 11h10"></path>
-            <path d="M4 7h12"></path>
-          </svg>
-          <span class="nav-label">运行日志</span>
-        </button>
-
-        <button class="nav-item" data-tab="ai-bridge" type="button" id="navTabAiBridge" role="tab" aria-selected="false" aria-controls="tab-ai-bridge" tabindex="-1">
-          <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="4" y="7" width="16" height="10" rx="2"></rect>
-            <path d="M12 3v4"></path>
-            <circle cx="9" cy="12" r="1"></circle>
-            <circle cx="15" cy="12" r="1"></circle>
-            <path d="M9 21h6"></path>
-          </svg>
-          <span class="nav-label">AI 桥接</span>
         </button>
       </nav>
 
       <div class="sidebar-footer">
         <span class="version-tag" id="softwareVersionTag">BetterBrowse · -</span>
+        <button id="btnSidebarSettings" class="sidebar-settings-btn" type="button" title="偏好与系统设置" aria-label="打开偏好与系统设置">
+          <svg class="sidebar-settings-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+          <span class="sidebar-settings-label">设置</span>
+        </button>
       </div>
     </aside>
 
     <!-- 主工作区 -->
     <main class="main-content">
-      <!-- Tab 1: 标签收纳箱 (OneTab 增强版中枢) -->
+      <!-- Tab 1: 时间线 (OneTab 增强版中枢) -->
       <section id="tab-stash" class="tab-panel active" role="tabpanel" aria-labelledby="navTabStash">
         <div class="panel-header">
           <div>
-            <h2 class="panel-title">标签收纳箱</h2>
+            <h2 class="panel-title">时间线</h2>
             <p class="panel-desc">管理已收纳的网页与标签组</p>
           </div>
           <div class="panel-actions">
@@ -151,7 +85,7 @@
                 <svg class="empty-icon-svg" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
                 </svg>
-                <span class="empty-title">收纳箱目前是空的</span>
+                <span class="empty-title">时间线目前是空的</span>
                 <span class="empty-desc">点击「立即收纳」或标签页数量超过阈值时，未活跃标签将自动保存于此处。</span>
               </div>
             </div>
@@ -163,14 +97,6 @@
               <span>正在加载更多标签组...</span>
             </div>
 
-            <details id="recycleBinCard" class="card recycle-bin-card">
-              <summary class="card-title">30 天回收站</summary>
-              <p class="card-desc">删除的收纳组与条目会在此保留 30 天，可恢复或永久删除。</p>
-              <div class="btn-group">
-                <button id="btnRecycleBinRefresh" class="btn btn-secondary btn-sm" type="button">刷新</button>
-              </div>
-              <div id="recycleBinList" class="sync-list"></div>
-            </details>
           </div>
 
           <!-- 右侧：高颜值单线时间轴滚动条 (分级收纳、直观日期、可拖拽游标) -->
@@ -186,7 +112,113 @@
         </div>
       </section>
 
-      <!-- Tab 2: 收纳箱设置 -->
+      <!-- 统一系统设置中心 (Settings Hub) -->
+      <div id="view-settings-hub" class="settings-hub-view" hidden>
+        <!-- 统一设置头部与面包屑 -->
+        <header class="settings-hub-header">
+          <div class="settings-header-left">
+            <button id="btnBackToStash" class="btn-back-stash" type="button" title="返回 (Esc)" aria-label="返回">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="19" y1="12" x2="5" y2="12"></line>
+                <polyline points="12 19 5 12 12 5"></polyline>
+              </svg>
+              <span>返回</span>
+            </button>
+            <div class="settings-breadcrumb" aria-label="当前路径">
+              <span class="breadcrumb-root">系统设置</span>
+              <span class="breadcrumb-separator">/</span>
+              <span class="breadcrumb-current" id="settingsCurrentSubtabBreadcrumb">收纳箱设置</span>
+            </div>
+          </div>
+        </header>
+
+        <!-- 统一设置二级分类导航栏 (Subnav Tabs) -->
+        <nav class="settings-subnav-bar" role="tablist" aria-label="系统设置子导航">
+          <button class="settings-subnav-item active" data-subtab="stash-settings" type="button" id="subtabBtnStashSettings" role="tab" aria-selected="true" aria-controls="tab-stash-settings">
+            <svg class="subnav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            <span>收纳箱设置</span>
+          </button>
+
+          <button class="settings-subnav-item" data-subtab="rules" type="button" id="subtabBtnRules" role="tab" aria-selected="false" aria-controls="tab-rules" tabindex="-1">
+            <svg class="subnav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="4" y1="21" x2="4" y2="14"></line>
+              <line x1="4" y1="10" x2="4" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12" y2="3"></line>
+              <line x1="20" y1="21" x2="20" y2="16"></line>
+              <line x1="20" y1="12" x2="20" y2="3"></line>
+              <line x1="1" y1="14" x2="7" y2="14"></line>
+              <line x1="9" y1="8" x2="15" y2="8"></line>
+              <line x1="17" y1="16" x2="23" y2="16"></line>
+            </svg>
+            <span>智能规则</span>
+          </button>
+
+          <button class="settings-subnav-item" data-subtab="links" type="button" id="subtabBtnLinks" role="tab" aria-selected="false" aria-controls="tab-links" tabindex="-1">
+            <svg class="subnav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+            <span>域名跳转</span>
+          </button>
+
+          <button class="settings-subnav-item" data-subtab="backup" type="button" id="subtabBtnBackup" role="tab" aria-selected="false" aria-controls="tab-backup" tabindex="-1">
+            <svg class="subnav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+              <polyline points="17 21 17 13 7 13 7 21"></polyline>
+              <polyline points="7 3 7 8 15 8"></polyline>
+            </svg>
+            <span>备份与迁移</span>
+          </button>
+
+          <button class="settings-subnav-item" data-subtab="sync" type="button" id="subtabBtnSync" role="tab" aria-selected="false" aria-controls="tab-sync" tabindex="-1">
+            <svg class="subnav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 7h-9"></path>
+              <path d="M14 17H5"></path>
+              <circle cx="17" cy="17" r="3"></circle>
+              <circle cx="7" cy="7" r="3"></circle>
+            </svg>
+            <span>云端同步</span>
+          </button>
+
+          <button class="settings-subnav-item" data-subtab="ai-bridge" type="button" id="subtabBtnAiBridge" role="tab" aria-selected="false" aria-controls="tab-ai-bridge" tabindex="-1">
+            <svg class="subnav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="4" y="7" width="16" height="10" rx="2"></rect>
+              <path d="M12 3v4"></path>
+              <circle cx="9" cy="12" r="1"></circle>
+              <circle cx="15" cy="12" r="1"></circle>
+              <path d="M9 21h6"></path>
+            </svg>
+            <span>AI 桥接</span>
+          </button>
+
+          <button class="settings-subnav-item" data-subtab="logs" type="button" id="subtabBtnLogs" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1">
+            <svg class="subnav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 19h16"></path>
+              <path d="M4 15h16"></path>
+              <path d="M4 11h10"></path>
+              <path d="M4 7h12"></path>
+            </svg>
+            <span>运行日志</span>
+          </button>
+
+          <button class="settings-subnav-item" data-subtab="about" type="button" id="subtabBtnAbout" role="tab" aria-selected="false" aria-controls="tab-about" tabindex="-1">
+            <svg class="subnav-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+            <span>关于</span>
+          </button>
+        </nav>
+
+        <!-- 设置子面板内容视口 -->
+        <div class="settings-panels-container">
+          <!-- Tab 2: 收纳箱设置 -->
       <section id="tab-stash-settings" class="tab-panel" role="tabpanel" aria-labelledby="navTabStashSettings" hidden>
         <div class="panel-header">
           <div>
@@ -1019,6 +1051,86 @@
           </div>
         </div>
       </section>
+
+      <!-- Tab 9: 关于 BetterBrowse -->
+      <section id="tab-about" class="tab-panel" role="tabpanel" aria-labelledby="subtabBtnAbout" hidden>
+        <div class="about-view-wrapper">
+          <div class="card about-simple-card">
+            <!-- 品牌与 Logo 居中头部 -->
+            <div class="about-brand-section">
+              <div class="about-logo-container">
+                <img src="../icons/icon128.png" alt="BetterBrowse Logo" class="about-logo-img">
+              </div>
+              <h2 class="about-brand-title">BetterBrowse</h2>
+              <div class="about-version-badge" id="aboutReleaseMilestone">Milestone 3</div>
+              <p class="about-brand-subtitle">智能链接跳转控制与标签页智能收纳</p>
+            </div>
+
+            <!-- 核心版本参数清单 -->
+            <div class="about-spec-group">
+              <div class="about-spec-row">
+                <span class="about-spec-name">软件版本</span>
+                <span class="about-spec-val" id="aboutSoftwareVersion">-</span>
+              </div>
+              <div class="about-spec-row">
+                <span class="about-spec-name">API 版本</span>
+                <span class="about-spec-val"><code class="code-pill" id="aboutApiVersion">-</code></span>
+              </div>
+              <div class="about-spec-row">
+                <span class="about-spec-name">数据修订号</span>
+                <span class="about-spec-val"><code class="code-pill" id="aboutDataRevision">-</code></span>
+              </div>
+              <div class="about-spec-row">
+                <span class="about-spec-name">扩展 ID</span>
+                <span class="about-spec-val"><code class="code-pill" id="aboutExtensionId">-</code></span>
+              </div>
+            </div>
+
+            <!-- 外部链接与项目地址 -->
+            <div class="about-links-group">
+              <a href="https://github.com/wakusei0413/BetterBrowse" target="_blank" rel="noopener noreferrer" class="about-link-pill" title="访问 GitHub 开源仓库">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"></path>
+                  <path d="M9 18c-4.51 2-5-2-7-2"></path>
+                </svg>
+                <span>GitHub 仓库</span>
+              </a>
+
+              <a href="https://github.com/wakusei0413/BetterBrowse/issues" target="_blank" rel="noopener noreferrer" class="about-link-pill" title="提交 Bug 反馈或功能建议">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                <span>反馈与建议</span>
+              </a>
+
+              <button class="about-link-pill is-disabled" type="button" disabled title="官方网站筹备中，敬请期待">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="2" y1="12" x2="22" y2="12"></line>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                </svg>
+                <span>官网（筹备中）</span>
+              </button>
+            </div>
+
+            <!-- 操作与版权页脚 -->
+            <div class="about-footer-section">
+              <button id="btnCopyVersionInfo" class="btn btn-secondary btn-sm" type="button">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+                  <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+                </svg>
+                <span>复制版本诊断信息</span>
+              </button>
+              <span class="about-copyright-text">MIT Licensed · Manifest V3 · Pure Native ESM</span>
+            </div>
+          </div>
+        </div>
+      </section>
+        </div><!-- /.settings-panels-container -->
+      </div><!-- /#view-settings-hub -->
     </main>
   </div>
 

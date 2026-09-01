@@ -111,24 +111,26 @@ body {
   border-bottom: 1px solid var(--border-color);
 }
 
-.brand {
+.brand-lockup {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.logo {
-  width: 22px;
-  height: 22px;
+.brand-logo {
+  width: 26px;
+  height: 26px;
   object-fit: contain;
-  filter: drop-shadow(0 1px 3px rgba(37, 99, 235, 0.25));
+  flex-shrink: 0;
 }
 
-.title {
-  font-size: 15px;
+.brand-title {
+  font-size: 16px;
   font-weight: 700;
   color: var(--text-primary);
-  letter-spacing: -0.2px;
+  letter-spacing: -0.3px;
+  line-height: 1.2;
+  margin: 0;
 }
 
 .icon-btn {
@@ -142,18 +144,13 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .icon-btn:hover {
   background-color: var(--bg-hover);
   color: var(--text-primary);
   border-color: var(--border-color);
-  transform: rotate(30deg);
-}
-
-.icon-btn:active {
-  transform: scale(0.92);
 }
 
 .icon-btn:focus-visible,
@@ -268,7 +265,7 @@ button:focus-visible {
   font-weight: 500;
   cursor: pointer;
   user-select: none;
-  transition: color 0.18s ease, transform 0.12s ease;
+  transition: color 0.18s ease;
 }
 
 .segmented-item:hover {
@@ -280,17 +277,8 @@ button:focus-visible {
   font-weight: 600;
 }
 
-.segmented-item:active {
-  transform: scale(0.95);
-}
-
 .segmented-icon {
   flex-shrink: 0;
-  transition: transform 0.18s cubic-bezier(0.34, 1.45, 0.7, 1);
-}
-
-.segmented-item.active .segmented-icon {
-  transform: scale(1.1);
 }
 
 .segmented-text {
@@ -340,24 +328,18 @@ button:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background-color 0.15s ease;
   white-space: nowrap;
   box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
 }
 
 .primary-btn:hover {
   background-color: var(--accent-hover);
-  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
-}
-
-.primary-btn:active {
-  transform: scale(0.97);
 }
 
 .primary-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-  transform: none;
 }
 
 .secondary-btn {
