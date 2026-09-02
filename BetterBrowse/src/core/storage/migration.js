@@ -162,6 +162,24 @@ export class MigrationManager {
       }
     }
 
+    if (targetVersion >= 8 && currentVersion < 9) {
+      const optedOut = (await StorageAdapter.getChrome(StorageKeys.IDB_OPTOUT, false)) === true;
+      if (optedOut || await this.backfillGroupDerivedFields()) {
+        targetVersion = 9;
+      } else {
+        targetVersion = 8;
+      }
+    }
+
+    if (targetVersion >= 9 && currentVersion < 10) {
+      const optedOut = (await StorageAdapter.getChrome(StorageKeys.IDB_OPTOUT, false)) === true;
+      if (optedOut || await this.splitActivityStatsByPageId()) {
+        targetVersion = 10;
+      } else {
+        targetVersion = 9;
+      }
+    }
+
     await StorageAdapter.setChrome(StorageKeys.SCHEMA_VERSION, targetVersion);
     console.info(`[MigrationManager] 数据架构迁移完成，当前本地数据修订: ${targetVersion}`);
     await this.cleanupLegacyStashData(targetVersion);
@@ -522,6 +540,90 @@ export class MigrationManager {
         await StorageAdapter.setChrome(StorageKeys.ACTIVITY_STATS, {});
         console.info('[MigrationManager] 旧版 chrome.storage.local 配置/规则/备份/活跃度已超过保留期，完成清理');
       }
+    }
+  }
+
+  /**
+   * 本地数据修订 10：把活跃度聚合键拆成 pageId 分记录。
+   * @returns {Promise<boolean>}
+   */
+  static async splitActivityStatsByPageId() {
+    if (!IndexedDBManager.isSupported()) return false;
+    try {
+      await IndexedDBManager.withWriteLock(async () => {
+        await IndexedDBManager.runTransaction([IDBStores.ACTIVITY_STATS], 'readwrite', async (tx) => {
+          const store = tx.objectStore(IDBStores.ACTIVITY_STATS);
+          const all = await IndexedDBManager.requestToPromise(store.getAll());
+          const pages = {};
+          for (const record of all || []) {
+            if (!record?.key) continue;
+            if (record.key === StorageKeys.ACTIVITY_STATS && record.value && typeof record.value === 'object') {
+              Object.assign(pages, record.value);
+              continue;
+            }
+            if (/^page_/.test(record.key) && record.value && typeof record.value === 'object') {
+              pages[record.key] = record.value;
+            }
+          }
+          for (const record of all || []) {
+            if (record?.key) store.delete(record.key);
+          }
+          for (const [pageId, value] of Object.entries(pages)) {
+            if (!/^page_/.test(pageId) || !value || typeof value !== 'object') continue;
+            store.put({
+              key: pageId,
+              value: {
+                url: typeof value.url === 'string' ? value.url : '',
+                lastActivated: Number(value.lastActivated) || 0,
+                activationTimestamps: Array.isArray(value.activationTimestamps)
+                  ? value.activationTimestamps.filter((ts) => Number.isFinite(ts))
+                  : []
+              },
+              updatedAt: Date.now()
+            });
+          }
+        });
+      });
+      return true;
+    } catch (err) {
+      console.warn('[MigrationManager] 拆分活跃度 pageId 记录失败:', err);
+      return false;
+    }
+  }
+
+  /**
+   * 本地数据修订 9：为已有收纳组回填 itemCount / starRank / nextPosition，供摘要真分页使用。
+   * @returns {Promise<boolean>}
+   */
+  static async backfillGroupDerivedFields() {
+    if (!IndexedDBManager.isSupported()) return false;
+    try {
+      await IndexedDBManager.withWriteLock(async () => {
+        await IndexedDBManager.runTransaction(
+          [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES],
+          'readwrite',
+          async (tx) => {
+            const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
+            const entryIndex = tx.objectStore(IDBStores.STASH_ENTRIES).index('groupId');
+            const groups = await IndexedDBManager.requestToPromise(groupsStore.getAll());
+            for (const group of groups) {
+              const entries = await IndexedDBManager.requestToPromise(entryIndex.getAll(group.groupId));
+              let maxPosition = -1;
+              for (const entry of entries) {
+                maxPosition = Math.max(maxPosition, Number(entry.position) || 0);
+              }
+              group.itemCount = entries.length;
+              group.starRank = group.starred ? 1 : 0;
+              group.nextPosition = maxPosition + 1;
+              groupsStore.put(group);
+            }
+          }
+        );
+      });
+      return true;
+    } catch (err) {
+      console.warn('[MigrationManager] 回填收纳组派生字段失败:', err);
+      return false;
     }
   }
 

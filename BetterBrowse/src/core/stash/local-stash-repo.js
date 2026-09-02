@@ -163,6 +163,320 @@ export class LocalStashRepository {
   }
 
   /**
+   * 读取收纳组摘要（含 itemCount；previewLimit>0 时附带每组前 N 条，避免选项页逐组二次请求）
+   * @param {{ previewLimit?: number }} [options]
+   * @returns {Promise<Array<{ id: string, createdAt: number, title: string, color: string, locked: boolean, starred: boolean, archived: boolean, itemCount: number, tabs?: any[] }>>}
+   */
+  static async listGroupSummaries({ previewLimit = 0 } = {}) {
+    const safePreview = Math.max(0, Math.min(25, Math.floor(Number(previewLimit) || 0)));
+    const backend = await this._getBackend();
+    if (backend) {
+      try {
+        return await backend.listGroupSummaries({ previewLimit: safePreview });
+      } catch (err) {
+        console.warn('[LocalStashRepository] IndexedDB 摘要读取失败，降级至 chrome.storage.local:', err);
+      }
+    }
+    const groups = await this._legacyGetAllGroups();
+    return groups.map((group) => {
+      const summary = this._toGroupSummary(group);
+      if (safePreview > 0) {
+        summary.tabs = Array.isArray(group.tabs) ? group.tabs.slice(0, safePreview) : [];
+      }
+      return summary;
+    });
+  }
+
+  static async getStashStats() {
+    const backend = await this._getBackend();
+    if (backend) {
+      try {
+        return await backend.getStashStats();
+      } catch (err) {
+        console.warn('[LocalStashRepository] IndexedDB 统计读取失败，降级至 chrome.storage.local:', err);
+      }
+    }
+    const groups = await this._legacyGetAllGroups();
+    return groups.reduce((stats, group) => {
+      stats.groupCount += 1;
+      stats.itemCount += Array.isArray(group.tabs) ? group.tabs.length : 0;
+      if (group.starred) stats.starredCount += 1;
+      if (group.locked) stats.lockedCount += 1;
+      if (group.archived) stats.archivedCount += 1;
+      return stats;
+    }, { groupCount: 0, itemCount: 0, starredCount: 0, lockedCount: 0, archivedCount: 0 });
+  }
+
+  static async listTimelineBuckets() {
+    const backend = await this._getBackend();
+    if (backend) {
+      try {
+        return await backend.listTimelineBuckets();
+      } catch (err) {
+        console.warn('[LocalStashRepository] IndexedDB 时间线分桶读取失败，降级至 chrome.storage.local:', err);
+      }
+    }
+    const groups = await this._legacyGetAllGroups();
+    const buckets = new Map();
+    for (const group of groups) {
+      const date = new Date(Number(group.createdAt) || 0);
+      const day = date.getDay() || 7;
+      const start = new Date(date.getFullYear(), date.getMonth(), date.getDate() - day + 1);
+      const startAt = start.getTime();
+      const key = new Date(startAt).toISOString().slice(0, 10);
+      const bucket = buckets.get(key) || { key, startAt, endAt: startAt + 7 * 86400000 - 1, groupCount: 0, itemCount: 0 };
+      bucket.groupCount += 1;
+      bucket.itemCount += Array.isArray(group.tabs) ? group.tabs.length : Number(group.itemCount) || 0;
+      buckets.set(key, bucket);
+    }
+    return [...buckets.values()].sort((a, b) => b.startAt - a.startAt);
+  }
+
+  static async listGroupSummariesPage(options = {}) {
+    const backend = await this._getBackend();
+    if (backend) {
+      try {
+        return await backend.listGroupSummariesPage(options);
+      } catch (err) {
+        console.warn('[LocalStashRepository] IndexedDB 摘要分页失败，降级至 chrome.storage.local:', err);
+      }
+    }
+    const groups = (await this._legacyGetAllGroups()).map((group) => this._toGroupSummary(group));
+    const safeLimit = Math.min(500, Math.max(1, Math.floor(Number(options.limit) || 100)));
+    return { items: groups.slice(0, safeLimit), nextCursor: null, hasMore: groups.length > safeLimit };
+  }
+
+  static async readExportChunk(options = {}) {
+    const type = options.type === 'onetab' || options.type === 'stash_json' ? options.type : 'full_backup';
+    const revision = await StorageAdapter.get(StorageKeys.STASH_REV, 0);
+    if (options.expectedStashRevision != null
+      && String(options.expectedStashRevision) !== String(revision)) {
+      return { success: false, error: '收纳数据已变化，请重新开始导出', stashRevision: revision };
+    }
+
+    const maxChars = Math.min(500000, Math.max(8000, Math.floor(Number(options.maxChars) || 120000)));
+    const state = this._decodeExportCursor(options.cursor) || {
+      type,
+      phase: type === 'onetab' ? 'onetab' : 'header',
+      groupCursor: null,
+      groupId: null,
+      entryCursor: null,
+      firstGroup: true,
+      firstEntry: true,
+      groupOpened: false
+    };
+    if (state.type && state.type !== type) {
+      return { success: false, error: '导出类型与游标不匹配', stashRevision: revision };
+    }
+    state.type = type;
+
+    if (type === 'onetab') {
+      return await this._readOneTabExportChunk(state, maxChars, revision);
+    }
+    return await this._readJsonExportChunk(state, maxChars, revision);
+  }
+
+  static _encodeExportCursor(state) {
+    return encodeURIComponent(JSON.stringify(state));
+  }
+
+  static _decodeExportCursor(cursor) {
+    if (!cursor || typeof cursor !== 'string') return null;
+    try {
+      return JSON.parse(decodeURIComponent(cursor));
+    } catch {
+      return null;
+    }
+  }
+
+  static async _readJsonExportChunk(state, maxChars, revision) {
+    let chunk = '';
+    const push = (text) => {
+      chunk += text;
+    };
+    const indentJson = (value, spaces) => JSON.stringify(value, null, 2)
+      .split('\n')
+      .map((line, index) => (index === 0 ? `${' '.repeat(spaces)}${line}` : `${' '.repeat(spaces)}${line}`))
+      .join('\n');
+
+    if (state.phase === 'header') {
+      const [config, linkRules] = await Promise.all([
+        StorageAdapter.getUserConfig(),
+        StorageAdapter.get(StorageKeys.LINK_RULES, {})
+      ]);
+      push('{\n');
+      push(`  "version": ${JSON.stringify(FULL_BACKUP_FORMAT_REVISION)},\n`);
+      push(`  "exportedAt": ${Date.now()},\n`);
+      push('  "plugin": "BetterBrowse",\n');
+      push('  "type": "full_backup",\n');
+      push(`  "config": ${JSON.stringify(config, null, 2).split('\n').map((line, i) => (i === 0 ? line : `  ${line}`)).join('\n')},\n`);
+      push(`  "linkRules": ${JSON.stringify(linkRules || {}, null, 2).split('\n').map((line, i) => (i === 0 ? line : `  ${line}`)).join('\n')},\n`);
+      push(`  "globalLinkRule": ${JSON.stringify(config.globalLinkRule || { enabled: false, mode: 'auto' })},\n`);
+      push('  "stashGroups": [');
+      state.phase = 'groups';
+      state.firstGroup = true;
+      if (chunk.length >= maxChars) {
+        return {
+          chunk,
+          nextCursor: this._encodeExportCursor(state),
+          done: false,
+          stashRevision: revision
+        };
+      }
+    }
+
+    let guard = 0;
+    while (state.phase === 'groups' || state.phase === 'group-tabs') {
+      if (++guard > 1000) {
+        return { success: false, error: '导出分块循环超过上限', stashRevision: revision };
+      }
+      if (state.phase === 'groups') {
+        const page = await this.listGroupSummariesPage({
+          cursor: state.groupCursor,
+          limit: 1
+        });
+        if (!page.items?.length) {
+          state.phase = 'footer';
+          break;
+        }
+        const summary = page.items[0];
+        state.groupCursor = page.nextCursor;
+        state.noMoreGroups = !page.hasMore || !page.nextCursor;
+        state.groupId = summary.id;
+        state.entryOffset = 0;
+        state.firstEntry = true;
+        state.phase = 'group-tabs';
+        push(state.firstGroup ? '\n' : ',\n');
+        state.firstGroup = false;
+        push('    {\n');
+        push(`      "id": ${JSON.stringify(summary.id)},\n`);
+        push(`      "createdAt": ${Number(summary.createdAt) || 0},\n`);
+        push(`      "title": ${JSON.stringify(summary.title || '')},\n`);
+        push(`      "color": ${JSON.stringify(summary.color || '')},\n`);
+        push(`      "locked": ${Boolean(summary.locked)},\n`);
+        push(`      "starred": ${Boolean(summary.starred)},\n`);
+        push(`      "archived": ${Boolean(summary.archived)},\n`);
+        push('      "tabs": [');
+      }
+
+      while (state.phase === 'group-tabs') {
+        const page = await this.getGroupPage(state.groupId, {
+          offset: Number(state.entryOffset) || 0,
+          limit: 20
+        });
+        const items = page.items || [];
+        for (const item of items) {
+          push(state.firstEntry ? '\n' : ',\n');
+          state.firstEntry = false;
+          push(indentJson({
+            id: item.id,
+            url: item.url || '',
+            title: item.title || item.url || '',
+            favIconUrl: item.favIconUrl || '',
+            pinned: Boolean(item.pinned)
+          }, 8));
+        }
+        state.entryOffset = (Number(state.entryOffset) || 0) + items.length;
+        if (items.length < 20 || state.entryOffset >= (Number(page.total) || 0)) {
+          push('\n      ]\n    }');
+          state.phase = state.noMoreGroups ? 'footer' : 'groups';
+          state.groupId = null;
+          state.entryOffset = 0;
+        }
+        if (chunk.length >= maxChars) {
+          return {
+            chunk,
+            nextCursor: this._encodeExportCursor(state),
+            done: false,
+            stashRevision: revision
+          };
+        }
+        if (state.phase !== 'group-tabs') break;
+      }
+      if (chunk.length >= maxChars) {
+        return {
+          chunk,
+          nextCursor: this._encodeExportCursor(state),
+          done: false,
+          stashRevision: revision
+        };
+      }
+    }
+
+    if (state.phase === 'footer') {
+      push('\n  ]\n}\n');
+      return { chunk, nextCursor: null, done: true, stashRevision: revision };
+    }
+    return {
+      chunk,
+      nextCursor: this._encodeExportCursor(state),
+      done: false,
+      stashRevision: revision
+    };
+  }
+
+  static async _readOneTabExportChunk(state, maxChars, revision) {
+    let chunk = '';
+    while (true) {
+      const page = await this.listGroupSummariesPage({
+        cursor: state.groupCursor,
+        limit: 1
+      });
+      if (!page.items?.length) {
+        return { chunk, nextCursor: null, done: true, stashRevision: revision };
+      }
+      const summary = page.items[0];
+      state.groupCursor = page.nextCursor;
+      const lines = [];
+      let entryOffset = 0;
+      while (true) {
+        const entries = await this.getGroupPage(summary.id, { offset: entryOffset, limit: 100 });
+        const items = entries.items || [];
+        for (const item of items) {
+          const url = String(item.url || '').trim();
+          if (!url) continue;
+          const title = String(item.title || '').trim();
+          lines.push(title ? `${url} | ${title}` : url);
+        }
+        entryOffset += items.length;
+        if (items.length < 100 || entryOffset >= (Number(entries.total) || 0)) break;
+      }
+      if (!state.firstGroup && lines.length > 0) chunk += '\n';
+      state.firstGroup = false;
+      chunk += `${lines.join('\n')}\n`;
+      if (chunk.length >= maxChars) {
+        return {
+          chunk,
+          nextCursor: this._encodeExportCursor(state),
+          done: false,
+          stashRevision: revision
+        };
+      }
+      if (!state.groupCursor) {
+        return { chunk, nextCursor: null, done: true, stashRevision: revision };
+      }
+    }
+  }
+
+  /**
+   * 将旧版整组结构压成摘要（不保留 tabs）
+   * @param {any} group
+   * @returns {{ id: string, createdAt: number, title: string, color: string, locked: boolean, starred: boolean, archived: boolean, itemCount: number }}
+   */
+  static _toGroupSummary(group) {
+    return {
+      id: group?.id,
+      createdAt: group?.createdAt,
+      title: typeof group?.title === 'string' ? group.title : '',
+      color: typeof group?.color === 'string' ? group.color : '',
+      locked: Boolean(group?.locked),
+      starred: Boolean(group?.starred),
+      archived: Boolean(group?.archived),
+      itemCount: Array.isArray(group?.tabs) ? group.tabs.length : Number(group?.itemCount) || 0
+    };
+  }
+
+  /**
    * 获取所有已保存的收纳标签组列表（默认按时间倒序）
    * @returns {Promise<Array<{ id: string, createdAt: number, title: string, locked?: boolean, starred?: boolean, tabs: Array<{ id: string, url: string, title: string, favIconUrl?: string, pinned?: boolean }> }>>}
    */
@@ -632,16 +946,21 @@ export class LocalStashRepository {
    * @param {number} [limit=100]
    * @returns {Promise<Array<{ groupId: string, itemId: string, url: string, title: string }>>}
    */
-  static async searchStash(keyword, limit = 100) {
+  static async searchStash(keyword, limit = 100, options = {}) {
     const backend = await this._getBackend();
     if (backend) {
       try {
-        return await backend.searchEntries(keyword, { limit });
+        return await backend.searchEntries(keyword, {
+          limit,
+          cursor: options.cursor,
+          paginated: options.paginated === true
+        });
       } catch (err) {
         console.warn('[LocalStashRepository] IndexedDB 检索失败，降级至内存检索:', err);
       }
     }
-    return await this._legacySearchStash(keyword, limit);
+    const items = await this._legacySearchStash(keyword, limit);
+    return options.paginated === true ? { items, nextCursor: null, hasMore: false } : items;
   }
 
   /**
@@ -672,13 +991,13 @@ export class LocalStashRepository {
    * @param {{ offset?: number, limit?: number }} [options]
    * @returns {Promise<{ items: any[], total: number, offset: number, limit: number }>}
    */
-  static async getGroupPage(groupId, { offset = 0, limit = 50 } = {}) {
+  static async getGroupPage(groupId, { offset = 0, limit = 50, cursor = null } = {}) {
     const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
     const safeLimit = Math.min(500, Math.max(1, Math.floor(Number(limit) || 50)));
     const backend = await this._getBackend();
     if (backend) {
       try {
-        return await backend.getGroupPage(groupId, { offset: safeOffset, limit: safeLimit });
+        return await backend.getGroupPage(groupId, { offset: safeOffset, limit: safeLimit, cursor });
       } catch (err) {
         console.warn('[LocalStashRepository] IndexedDB 分页读取失败，降级至旧存储:', err);
       }

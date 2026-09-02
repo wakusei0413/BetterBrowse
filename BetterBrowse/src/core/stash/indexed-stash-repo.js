@@ -9,12 +9,23 @@
  * @encoding UTF-8
  */
 
-import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
+import {
+  IndexedDBManager,
+  IDBStores,
+  STASH_GROUP_SORT_INDEX,
+  STASH_ENTRY_POSITION_INDEX
+} from '../storage/indexed-db.js';
 import { SyncOutbox } from '../sync/outbox.js';
 import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS } from '../sync/sync-constants.js';
 
 /** 单批次写入的最大记录数（避免单次大事务被 Service Worker 休眠打断） */
 const WRITE_BATCH_SIZE = 500;
+
+/** 单次有界搜索最多扫描的条目数 */
+const DEFAULT_SEARCH_SCAN_LIMIT = 2000;
+
+/** 复合索引范围使用的最大字符串哨兵 */
+const MAX_KEY_TEXT = '\uffff';
 
 export class IndexedStashRepository {
   /**
@@ -56,6 +67,42 @@ export class IndexedStashRepository {
     } catch {
       return '';
     }
+  }
+
+  /** 将游标键编码为可跨消息边界传输的字符串 */
+  static _encodeCursor(value) {
+    if (value === undefined || value === null) return null;
+    return btoa(unescape(encodeURIComponent(JSON.stringify(value))));
+  }
+
+  /** 解析游标字符串；非法游标按未提供处理 */
+  static _decodeCursor(value) {
+    if (!value || typeof value !== 'string') return null;
+    try {
+      return JSON.parse(decodeURIComponent(escape(atob(value))));
+    } catch {
+      return null;
+    }
+  }
+
+  /** 构造指定组在组内位置复合索引上的完整范围 */
+  static _groupEntryRange(groupId, lowerKey = null, lowerOpen = false) {
+    const lower = Array.isArray(lowerKey) ? lowerKey : [groupId, 0, ''];
+    return IDBKeyRange.bound(lower, [groupId, Number.MAX_SAFE_INTEGER, MAX_KEY_TEXT], lowerOpen, false);
+  }
+
+  /** 将组记录压成摘要，派生字段只读组记录，不扫描条目仓储 */
+  static _toGroupSummary(record) {
+    return {
+      id: record.groupId,
+      createdAt: record.createdAt,
+      title: typeof record.title === 'string' ? record.title : '',
+      color: typeof record.color === 'string' ? record.color : '',
+      locked: Boolean(record.locked),
+      starred: Boolean(record.starred),
+      archived: Boolean(record.archived),
+      itemCount: Math.max(0, Number(record.itemCount) || 0)
+    };
   }
 
   /**
@@ -122,6 +169,187 @@ export class IndexedStashRepository {
         if (!a.starred && b.starred) return 1;
         return b.createdAt - a.createdAt;
       });
+  }
+
+  /**
+   * 将条目与页面实体组装为列表行
+   * @param {any} entry
+   * @param {any} [page]
+   * @returns {{ id: string, url: string, title: string, favIconUrl: string, pinned: boolean }}
+   */
+  static _toTabItem(entry, page) {
+    return {
+      id: entry.entryId,
+      url: page?.url || '',
+      title: page?.title || page?.url || '无标题页面',
+      favIconUrl: page?.favIconUrl || '',
+      pinned: Boolean(entry.pinned)
+    };
+  }
+
+  /**
+   * 在同一事务内并行读取指定 pageId 的页面实体
+   * @param {IDBTransaction} tx
+   * @param {Iterable<string>} pageIds
+   * @returns {Promise<Map<string, any>>}
+   */
+  static async _loadPagesById(tx, pageIds) {
+    const pagesStore = tx.objectStore(IDBStores.PAGES);
+    const uniqueIds = [...new Set([...pageIds].filter(Boolean))];
+    const pageById = new Map();
+    await Promise.all(
+      uniqueIds.map(async (pageId) => {
+        const page = await IndexedDBManager.requestToPromise(pagesStore.get(pageId));
+        if (page) pageById.set(pageId, page);
+      })
+    );
+    return pageById;
+  }
+
+  /**
+   * 游标分页读取收纳组摘要；只扫描组记录，previewLimit>0 时仅游标读取每组前 N 条。
+   * @param {{ cursor?: string | null, limit?: number, previewLimit?: number }} [options]
+   * @returns {Promise<{ items: any[], nextCursor: string | null, hasMore: boolean }>} 
+   */
+  static async listGroupSummariesPage({ cursor = null, limit = 100, previewLimit = 0, createdAtFrom = null, createdAtTo = null } = {}) {
+    const safeLimit = Math.min(500, Math.max(1, Math.floor(Number(limit) || 100)));
+    const safePreview = Math.max(0, Math.min(25, Math.floor(Number(previewLimit) || 0)));
+    const minCreated = createdAtFrom == null || createdAtFrom === '' ? null : Number(createdAtFrom);
+    const maxCreated = createdAtTo == null || createdAtTo === '' ? null : Number(createdAtTo);
+    const minBound = Number.isFinite(minCreated) ? minCreated : null;
+    const maxBound = Number.isFinite(maxCreated) ? maxCreated : null;
+    const decodedCursor = this._decodeCursor(cursor);
+
+    const allGroups = await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
+      return await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_GROUPS).getAll());
+    }) || [];
+    if (!Array.isArray(allGroups)) {
+      throw new Error(`收纳组摘要读取结果异常: ${typeof allGroups}`);
+    }
+    const sorted = [...allGroups].sort((a, b) => {
+      const starDiff = (b.starred ? 1 : 0) - (a.starred ? 1 : 0);
+      if (starDiff) return starDiff;
+      const timeDiff = (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0);
+      if (timeDiff) return timeDiff;
+      return String(a.groupId || '').localeCompare(String(b.groupId || ''));
+    }).filter((group) => {
+      const createdAt = Number(group.createdAt) || 0;
+        if (minBound != null && createdAt < minBound) return false;
+        if (maxBound != null && createdAt > maxBound) return false;
+
+      return true;
+    });
+    let start = 0;
+    if (Array.isArray(decodedCursor) && decodedCursor[0]) {
+      const index = sorted.findIndex((group) => group.groupId === decodedCursor[0]);
+      start = index >= 0 ? index + 1 : 0;
+    }
+    const sliced = sorted.slice(start, start + safeLimit);
+    const hasMore = start + sliced.length < sorted.length;
+    const records = sliced.map((record) => ({ record, key: [record.groupId] }));
+    const items = [];
+    for (const { record } of records) {
+      items.push(this._toGroupSummary(record));
+    }
+    if (safePreview > 0) {
+      await IndexedDBManager.runTransaction([IDBStores.STASH_ENTRIES, IDBStores.PAGES], 'readonly', async (tx) => {
+        for (const summary of items) {
+          if (!summary.itemCount) continue;
+          const entries = [];
+          await new Promise((resolve, reject) => {
+            const request = tx.objectStore(IDBStores.STASH_ENTRIES)
+              .index(STASH_ENTRY_POSITION_INDEX)
+              .openCursor(this._groupEntryRange(summary.id));
+            request.onerror = () => reject(request.error || new Error('收纳组预览游标读取失败'));
+            request.onsuccess = () => {
+              const current = request.result;
+              if (!current || entries.length >= safePreview) return resolve();
+              entries.push(current.value);
+              current.continue();
+            };
+          });
+          const pageById = await this._loadPagesById(tx, entries.map((entry) => entry.pageId));
+          summary.tabs = entries.map((entry) => this._toTabItem(entry, pageById.get(entry.pageId)));
+        }
+      });
+    }
+    const lastKey = records.length > 0 ? records[records.length - 1].key : null;
+    return {
+      items,
+      nextCursor: hasMore ? this._encodeCursor(lastKey) : null,
+      hasMore
+    };
+  }
+
+  /**
+   * 兼容旧调用方的一次性摘要读取；内部按游标逐页读取，不扫描条目仓储。
+   * @param {{ previewLimit?: number }} [options]
+   */
+  static async listGroupSummaries({ previewLimit = 0 } = {}) {
+    const safePreview = Math.max(0, Math.min(25, Math.floor(Number(previewLimit) || 0)));
+    const page = await this.listGroupSummariesPage({ limit: 500, previewLimit: safePreview });
+    const items = [...page.items];
+    let cursor = page.nextCursor;
+    while (cursor) {
+      const next = await this.listGroupSummariesPage({ cursor, limit: 500, previewLimit: safePreview });
+      items.push(...next.items);
+      cursor = next.nextCursor;
+    }
+    return items;
+  }
+
+  /** 读取收纳总览统计，只聚合组记录上的派生字段。 */
+  static async getStashStats() {
+    return await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
+      const stats = { groupCount: 0, itemCount: 0, starredCount: 0, lockedCount: 0, archivedCount: 0 };
+      await new Promise((resolve, reject) => {
+        const request = tx.objectStore(IDBStores.STASH_GROUPS).openCursor();
+        request.onerror = () => reject(request.error || new Error('收纳统计游标读取失败'));
+        request.onsuccess = () => {
+          const current = request.result;
+          if (!current) return resolve();
+          const group = current.value;
+          stats.groupCount += 1;
+          stats.itemCount += Math.max(0, Number(group.itemCount) || 0);
+          if (group.starred) stats.starredCount += 1;
+          if (group.locked) stats.lockedCount += 1;
+          if (group.archived) stats.archivedCount += 1;
+          current.continue();
+        };
+      });
+      return stats;
+    });
+  }
+
+  /**
+   * 按自然周生成时间线分桶摘要，只扫描组记录。
+   * @returns {Promise<Array<{ key: string, startAt: number, endAt: number, groupCount: number, itemCount: number }>>}
+   */
+  static async listTimelineBuckets() {
+    const buckets = new Map();
+    await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
+      await new Promise((resolve, reject) => {
+        const request = tx.objectStore(IDBStores.STASH_GROUPS).openCursor();
+        request.onerror = () => reject(request.error || new Error('时间线分桶游标读取失败'));
+        request.onsuccess = () => {
+          const current = request.result;
+          if (!current) return resolve();
+          const group = current.value;
+          const date = new Date(Number(group.createdAt) || 0);
+          const day = date.getDay() || 7;
+          const start = new Date(date.getFullYear(), date.getMonth(), date.getDate() - day + 1);
+          const startAt = start.getTime();
+          const endAt = startAt + 7 * 86400000 - 1;
+          const key = new Date(startAt).toISOString().slice(0, 10);
+          const bucket = buckets.get(key) || { key, startAt, endAt, groupCount: 0, itemCount: 0 };
+          bucket.groupCount += 1;
+          bucket.itemCount += Math.max(0, Number(group.itemCount) || 0);
+          buckets.set(key, bucket);
+          current.continue();
+        };
+      });
+    });
+    return [...buckets.values()].sort((a, b) => b.startAt - a.startAt);
   }
 
   /**
@@ -296,7 +524,10 @@ export class IndexedStashRepository {
       color: groupColor,
       locked: false,
       starred: false,
+      starRank: 0,
       archived: false,
+      itemCount: entryRecords.length,
+      nextPosition: entryRecords.length,
       updatedAt: now
     };
 
@@ -427,6 +658,7 @@ export class IndexedStashRepository {
         locked: false,
         starred: false,
         archived: false,
+        itemCount: entryRecords.length,
         tabs: normalizedItems.map((item, index) => ({
           id: entryRecords[index].entryId,
           url: item.url || '',
@@ -461,6 +693,7 @@ export class IndexedStashRepository {
           fields[key] = existing[key];
         }
       }
+      existing.starRank = existing.starred ? 1 : 0;
       existing.updatedAt = Date.now();
       if (enqueue && Object.keys(fields).length > 0) {
         const op = await SyncOutbox.enqueueInTx(tx, {
@@ -622,6 +855,11 @@ export class IndexedStashRepository {
               fields: { groupId }
             });
           }
+        } else {
+          group.itemCount = remaining.length;
+          group.starRank = group.starred ? 1 : 0;
+          group.updatedAt = now;
+          groupsStore.put(group);
         }
         return true;
       }
@@ -671,10 +909,14 @@ export class IndexedStashRepository {
       const group = await IndexedDBManager.requestToPromise(groupsStore.get(groupId));
       if (!group) return false;
 
-      const entries = await IndexedDBManager.requestToPromise(
-        tx.objectStore(IDBStores.STASH_ENTRIES).index('groupId').getAll(groupId)
-      );
-      const position = entries.reduce((max, entry) => Math.max(max, (entry.position ?? 0) + 1), 0);
+      const position = Number.isFinite(Number(group.nextPosition))
+        ? Number(group.nextPosition)
+        : Math.max(0, Number(group.itemCount) || 0);
+      group.itemCount = Math.max(0, Number(group.itemCount) || 0) + 1;
+      group.nextPosition = position + 1;
+      group.starRank = group.starred ? 1 : 0;
+      group.updatedAt = now;
+      groupsStore.put(group);
 
       const entryRecord = {
         entryId,
@@ -1094,29 +1336,53 @@ export class IndexedStashRepository {
    * @param {{ offset?: number, limit?: number }} [options]
    * @returns {Promise<{ items: any[], total: number, offset: number, limit: number }>}
    */
-  static async getGroupPage(groupId, { offset = 0, limit = 50 } = {}) {
+  static async getGroupPage(groupId, { offset = 0, limit = 50, cursor = null } = {}) {
+    const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
+    const safeLimit = Math.min(500, Math.max(1, Math.floor(Number(limit) || 50)));
+    const decodedCursor = this._decodeCursor(cursor);
     return await IndexedDBManager.runTransaction(
-      [IDBStores.STASH_ENTRIES, IDBStores.PAGES],
+      [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES, IDBStores.PAGES],
       'readonly',
       async (tx) => {
-        const entries = await IndexedDBManager.requestToPromise(
-          tx.objectStore(IDBStores.STASH_ENTRIES).index('groupId').getAll(groupId)
+        const group = await IndexedDBManager.requestToPromise(
+          tx.objectStore(IDBStores.STASH_GROUPS).get(groupId)
         );
-        entries.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
-        const slice = entries.slice(offset, offset + limit);
-        const pagesStore = tx.objectStore(IDBStores.PAGES);
-        const items = [];
-        for (const entry of slice) {
-          const page = await IndexedDBManager.requestToPromise(pagesStore.get(entry.pageId));
-          items.push({
-            id: entry.entryId,
-            url: page?.url || '',
-            title: page?.title || page?.url || '无标题页面',
-            favIconUrl: page?.favIconUrl || '',
-            pinned: Boolean(entry.pinned)
-          });
-        }
-        return { items, total: entries.length, offset, limit };
+        const total = Math.max(0, Number(group?.itemCount) || 0);
+        const collected = [];
+        let hasMore = false;
+        let skipped = 0;
+        await new Promise((resolve, reject) => {
+          const request = tx.objectStore(IDBStores.STASH_ENTRIES)
+            .index(STASH_ENTRY_POSITION_INDEX)
+            .openCursor(this._groupEntryRange(groupId, Array.isArray(decodedCursor) ? decodedCursor : null, Boolean(decodedCursor)));
+          request.onerror = () => reject(request.error || new Error('收纳组分页游标读取失败'));
+          request.onsuccess = () => {
+            const current = request.result;
+            if (!current) return resolve();
+            if (!decodedCursor && skipped < safeOffset) {
+              skipped += 1;
+              current.continue();
+              return;
+            }
+            if (collected.length >= safeLimit) {
+              hasMore = true;
+              return resolve();
+            }
+            collected.push({ entry: current.value, key: current.key });
+            current.continue();
+          };
+        });
+        const pageById = await this._loadPagesById(tx, collected.map((item) => item.entry.pageId));
+        const items = collected.map((item) => this._toTabItem(item.entry, pageById.get(item.entry.pageId)));
+        const lastKey = collected.length > 0 ? collected[collected.length - 1].key : null;
+        return {
+          items,
+          total,
+          offset: safeOffset,
+          limit: safeLimit,
+          nextCursor: hasMore ? this._encodeCursor(lastKey) : null,
+          hasMore
+        };
       }
     );
   }
@@ -1127,39 +1393,66 @@ export class IndexedStashRepository {
    * @param {{ limit?: number }} [options]
    * @returns {Promise<Array<{ groupId: string, itemId: string, url: string, title: string }>>}
    */
-  static async searchEntries(keyword, { limit = 100 } = {}) {
+  static async searchEntries(keyword, { limit = 100, cursor = null, paginated = false, scanLimit = DEFAULT_SEARCH_SCAN_LIMIT } = {}) {
     const kw = String(keyword || '').trim().toLowerCase();
-    if (!kw) return [];
-    return await IndexedDBManager.runTransaction(
+    if (!kw) return paginated ? { items: [], nextCursor: null, hasMore: false } : [];
+    const safeLimit = Math.min(500, Math.max(1, Math.floor(Number(limit) || 100)));
+    const maxScan = Math.max(safeLimit, Math.floor(Number(scanLimit) || DEFAULT_SEARCH_SCAN_LIMIT));
+    const startKey = this._decodeCursor(cursor);
+    const result = await IndexedDBManager.runTransaction(
       [IDBStores.PAGES, IDBStores.STASH_ENTRIES],
       'readonly',
       async (tx) => {
-        const pages = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.PAGES).getAll());
-        const matched = pages
-          .filter(
-            (page) =>
-              String(page.title || '').toLowerCase().includes(kw) ||
-              String(page.url || '').toLowerCase().includes(kw)
-          )
-          .slice(0, limit);
-        if (matched.length === 0) return [];
-
+        const pagesStore = tx.objectStore(IDBStores.PAGES);
         const entryIndex = tx.objectStore(IDBStores.STASH_ENTRIES).index('pageId');
-        const results = [];
-        for (const page of matched) {
+        const scannedPages = [];
+        await new Promise((resolve, reject) => {
+          const range = startKey == null ? null : IDBKeyRange.lowerBound(startKey, true);
+          const request = pagesStore.openCursor(range);
+          request.onerror = () => reject(request.error || new Error('收纳检索游标读取失败'));
+          request.onsuccess = () => {
+            const current = request.result;
+            if (!current) return resolve();
+            scannedPages.push({ key: current.key, page: current.value || {} });
+            if (scannedPages.length >= maxScan) return resolve();
+            current.continue();
+          };
+        });
+
+        const items = [];
+        let lastKey = null;
+        for (const { key, page } of scannedPages) {
+          lastKey = key;
+          const hit = String(page.title || '').toLowerCase().includes(kw)
+            || String(page.url || '').toLowerCase().includes(kw);
+          if (!hit) continue;
           const entries = await IndexedDBManager.requestToPromise(entryIndex.getAll(page.pageId));
           for (const entry of entries) {
-            results.push({
+            items.push({
               groupId: entry.groupId,
               itemId: entry.entryId,
               url: page.url,
               title: page.title
             });
+            if (items.length >= safeLimit) {
+              return {
+                items,
+                nextCursor: this._encodeCursor(lastKey),
+                hasMore: true,
+                scanned: scannedPages.length
+              };
+            }
           }
         }
-        return results.slice(0, limit);
+        return {
+          items,
+          nextCursor: scannedPages.length >= maxScan ? this._encodeCursor(lastKey) : null,
+          hasMore: scannedPages.length >= maxScan,
+          scanned: scannedPages.length
+        };
       }
     );
+    return paginated ? result : result.items;
   }
 
   /**

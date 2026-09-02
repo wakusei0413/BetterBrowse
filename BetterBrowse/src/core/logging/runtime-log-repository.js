@@ -20,6 +20,38 @@ function normalizeText(value, fallback, maxLength) {
   return (text || fallback).slice(0, maxLength);
 }
 
+/**
+ * 使用游标逐条删除，避免为裁剪或分类清理把全部日志加载进内存。
+ * @param {IDBRequest} request
+ * @param {number} [maxDeletes=Infinity]
+ * @returns {Promise<number>}
+ */
+function deleteByCursor(request, maxDeletes = Infinity) {
+  return new Promise((resolve, reject) => {
+    let deleted = 0;
+    request.onerror = () => reject(request.error || new Error('运行日志游标读取失败'));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor || deleted >= maxDeletes) {
+        resolve(deleted);
+        return;
+      }
+      let deletion;
+      try {
+        deletion = cursor.delete();
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      deletion.onerror = () => reject(deletion.error || new Error('运行日志游标删除失败'));
+      deletion.onsuccess = () => {
+        deleted++;
+        cursor.continue();
+      };
+    };
+  });
+}
+
 export class RuntimeLogRepository {
   static _writeQueue = Promise.resolve();
 
@@ -45,11 +77,7 @@ export class RuntimeLogRepository {
           await IndexedDBManager.requestToPromise(store.put(record));
           const count = await IndexedDBManager.requestToPromise(store.count());
           if (count <= RUNTIME_LOG_LIMIT) return;
-          const all = await IndexedDBManager.requestToPromise(store.getAll());
-          all.sort((a, b) => a.ts - b.ts || String(a.id).localeCompare(String(b.id)));
-          for (const stale of all.slice(0, all.length - RUNTIME_LOG_LIMIT)) {
-            await IndexedDBManager.requestToPromise(store.delete(stale.id));
-          }
+          await deleteByCursor(store.index('ts').openCursor(), count - RUNTIME_LOG_LIMIT);
         });
       });
       return record;
@@ -92,12 +120,7 @@ export class RuntimeLogRepository {
           await IndexedDBManager.requestToPromise(store.clear());
           return;
         }
-        const all = await IndexedDBManager.requestToPromise(store.getAll());
-        for (const entry of all) {
-          if (entry.category === category) {
-            await IndexedDBManager.requestToPromise(store.delete(entry.id));
-          }
-        }
+        await deleteByCursor(store.index('category').openCursor(category));
       });
     });
     return { success: true };

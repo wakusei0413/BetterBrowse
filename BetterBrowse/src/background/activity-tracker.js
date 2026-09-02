@@ -1,12 +1,15 @@
 /**
  * @file activity-tracker.js
- * @description 标签页活跃度跟踪器（内存保留 tabId 投影供规则引擎评估；持久层自 本地数据修订 8 起按 pageId 存储，支撑跨设备合并）
+ * @description 标签页活跃度跟踪器（内存保留 tabId 投影；持久层按 pageId 单条写入，避免每次激活整对象重写）
  * @encoding UTF-8
  */
 
 import { StorageKeys } from '../constants/storage-keys.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
+import { IndexedDBManager, IDBStores } from '../core/storage/indexed-db.js';
 import { IndexedStashRepository } from '../core/stash/indexed-stash-repo.js';
+import { SyncOutbox } from '../core/sync/outbox.js';
+import { SyncEntityTypes, SyncOps } from '../core/sync/sync-constants.js';
 
 /** 活跃时间戳的内存保留窗口（超出后裁剪，控制体积） */
 const ACTIVITY_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -15,7 +18,6 @@ export class TabActivityTracker {
   constructor() {
     /**
      * 内存中的 tabId 投影（GET_TAB_ACTIVITY_STATS / FrequencyRule 消费口径保持不变）
-     * 结构: { [tabId]: { lastActivated: number, activationTimestamps: number[] } }
      * @type {Record<number, { lastActivated: number, activationTimestamps: number[] }>}
      */
     this.stats = {};
@@ -27,38 +29,57 @@ export class TabActivityTracker {
     /** tabId → { url, pageId } 映射缓存（仅本机运行时使用，绝不持久化 / 同步 tabId） */
     this.tabMeta = new Map();
     this.storageKey = StorageKeys.ACTIVITY_STATS;
-    this.saveDebounceTimer = null;
+    this.saveDebounceTimers = new Map();
 
-    this.init();
+    // MV3 生命周期事件必须同步注册；事件处理再安全等待持久化数据加载完成。
+    this.initListeners();
+    this.readyPromise = this.init();
   }
 
   /**
-   * 初始化存储恢复与生命周期监听
+   * 恢复持久化数据并建立当前标签页的只读内存快照。
    */
   async init() {
     await this.loadFromStorage();
-    this.initListeners();
+    await this.syncCurrentTabs();
   }
 
   /**
-   * 从主库恢复按 pageId 存储的活跃度（本地数据修订 8 起走 IndexedDB，失败时 StorageAdapter 会回退旧存储）
+   * 从主库恢复按 pageId 存储的活跃度。
+   * 兼容旧聚合键 `bb_activity_stats`：若仍存在，读取后按 pageId 拆开。
    */
   async loadFromStorage() {
     try {
+      if (IndexedDBManager.isSupported() && (await StorageAdapter.get(StorageKeys.IDB_OPTOUT, false)) !== true) {
+        const version = Number(await StorageAdapter.get(StorageKeys.SCHEMA_VERSION, 0)) || 0;
+        if (version >= 5) {
+          const records = await IndexedDBManager.runTransaction([IDBStores.ACTIVITY_STATS], 'readonly', async (tx) => {
+            return await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.ACTIVITY_STATS).getAll());
+          });
+          const now = Date.now();
+          for (const record of records || []) {
+            if (!record?.key) continue;
+            if (record.key === StorageKeys.ACTIVITY_STATS) {
+              const aggregate = record.value && typeof record.value === 'object' ? record.value : {};
+              for (const [key, value] of Object.entries(aggregate)) {
+                this._ingestPageStat(key, value, now);
+              }
+              continue;
+            }
+            if (/^page_/.test(record.key)) {
+              this._ingestPageStat(record.key, record.value, now);
+            }
+          }
+          return;
+        }
+      }
+
       const stored = await StorageAdapter.get(this.storageKey, {});
       if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-        // 防御式过滤：仅保留 pageId 形态的键，旧版 tabId 键已在 本地数据修订 8 迁移清理
+        const now = Date.now();
         for (const [key, value] of Object.entries(stored)) {
           if (key === 'fieldRevs') continue;
-          if (/^page_/.test(key) && value && typeof value === 'object') {
-            this.pageStats[key] = {
-              url: typeof value.url === 'string' ? value.url : '',
-              lastActivated: Number(value.lastActivated) || 0,
-              activationTimestamps: Array.isArray(value.activationTimestamps)
-                ? value.activationTimestamps.filter((ts) => Number.isFinite(ts))
-                : []
-            };
-          }
+          this._ingestPageStat(key, value, now);
         }
       }
     } catch (err) {
@@ -67,31 +88,98 @@ export class TabActivityTracker {
   }
 
   /**
-   * 将按 pageId 的活跃度持久化至主库（StorageAdapter 自动生成 outbox 操作参与同步）
+   * @param {string} key
+   * @param {any} value
+   * @param {number} now
    */
-  saveToStorage() {
-    clearTimeout(this.saveDebounceTimer);
-    this.saveDebounceTimer = setTimeout(() => {
-      StorageAdapter.set(this.storageKey, this.pageStats).then((ok) => {
-        if (!ok) {
-          console.warn('[TabActivityTracker] 持久化活跃度数据失败');
-        }
-      }).catch((err) => {
-        console.warn('[TabActivityTracker] 写入存储异常:', err);
+  _ingestPageStat(key, value, now) {
+    if (!/^page_/.test(key) || !value || typeof value !== 'object') return;
+    const lastActivated = Number(value.lastActivated) || 0;
+    const timestamps = Array.isArray(value.activationTimestamps)
+      ? value.activationTimestamps.filter((ts) => Number.isFinite(ts) && now - ts <= ACTIVITY_WINDOW_MS)
+      : [];
+    if (lastActivated && now - lastActivated > ACTIVITY_WINDOW_MS && timestamps.length === 0) return;
+    this.pageStats[key] = {
+      url: typeof value.url === 'string' ? value.url : '',
+      lastActivated,
+      activationTimestamps: timestamps
+    };
+  }
+
+  /**
+   * 仅持久化指定 pageId，避免整对象重写。
+   * @param {string} pageId
+   */
+  savePageToStorage(pageId) {
+    if (!pageId || !this.pageStats[pageId]) return;
+    clearTimeout(this.saveDebounceTimers.get(pageId));
+    const timer = setTimeout(() => {
+      this.saveDebounceTimers.delete(pageId);
+      this._persistPage(pageId).catch((err) => {
+        console.warn('[TabActivityTracker] 写入 pageId 活跃度异常:', err);
       });
     }, 500);
+    this.saveDebounceTimers.set(pageId, timer);
+  }
+
+  /**
+   * @param {string} pageId
+   */
+  async _persistPage(pageId) {
+    const record = this.pageStats[pageId];
+    if (!record) return;
+    const version = Number(await StorageAdapter.get(StorageKeys.SCHEMA_VERSION, 0)) || 0;
+    const optedOut = (await StorageAdapter.get(StorageKeys.IDB_OPTOUT, false)) === true;
+    if (!IndexedDBManager.isSupported() || optedOut || version < 5) {
+      // 旧存储路径仍整对象写，保持兼容回退行为
+      await StorageAdapter.set(this.storageKey, this.pageStats);
+      return;
+    }
+
+    await IndexedDBManager.withWriteLock(async () => {
+      const enqueue = await SyncOutbox.isActive();
+      const stores = [IDBStores.ACTIVITY_STATS];
+      if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+      await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
+        const store = tx.objectStore(IDBStores.ACTIVITY_STATS);
+        store.put({
+          key: pageId,
+          value: {
+            url: record.url || '',
+            lastActivated: Number(record.lastActivated) || 0,
+            activationTimestamps: Array.isArray(record.activationTimestamps) ? record.activationTimestamps : []
+          },
+          updatedAt: Date.now()
+        });
+        // 清理历史聚合键，避免双形态并存
+        store.delete(StorageKeys.ACTIVITY_STATS);
+        if (enqueue) {
+          await SyncOutbox.enqueueInTx(tx, {
+            entityType: SyncEntityTypes.ACTIVITY,
+            entityId: pageId,
+            op: SyncOps.UPSERT,
+            fields: {
+              url: record.url || '',
+              lastActivated: Number(record.lastActivated) || 0,
+              activationTimestamps: Array.isArray(record.activationTimestamps) ? record.activationTimestamps : []
+            }
+          });
+        }
+      });
+      if (enqueue) SyncOutbox.flushDirty();
+    });
   }
 
   /**
    * 初始化 Chrome 标签页生命周期事件监听
    */
   initListeners() {
-    // 监听标签页切换激活
     chrome.tabs.onActivated.addListener((activeInfo) => {
-      this.recordActivation(activeInfo.tabId);
+      this.readyPromise
+        .then(() => this.recordActivation(activeInfo.tabId))
+        .catch(() => {});
     });
 
-    // 监听标签页 URL 变化，维护 tabId → pageId 映射
     if (chrome.tabs.onUpdated) {
       chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
         if (changeInfo.url) {
@@ -100,14 +188,10 @@ export class TabActivityTracker {
       });
     }
 
-    // 监听标签页关闭，清理内存映射（pageId 维度的历史保留，供跨设备合并）
     chrome.tabs.onRemoved.addListener((tabId) => {
       delete this.stats[tabId];
       this.tabMeta.delete(tabId);
     });
-
-    // 插件启动时，预初始化当前所有已存在的标签页
-    this.syncCurrentTabs();
   }
 
   /**
@@ -124,13 +208,11 @@ export class TabActivityTracker {
   }
 
   /**
-   * 同步当前浏览器已打开的所有标签页
+   * 建立当前标签页元数据与零值投影。冷启动不等同于用户激活，不写入持久层。
    */
   async syncCurrentTabs() {
     try {
       const tabs = await chrome.tabs.query({});
-      const now = Date.now();
-      let changed = false;
       for (const tab of tabs) {
         if (!tab.id) continue;
         if (tab.url) {
@@ -138,17 +220,10 @@ export class TabActivityTracker {
         }
         if (!this.stats[tab.id]) {
           this.stats[tab.id] = {
-            lastActivated: tab.active ? now : 0,
-            activationTimestamps: tab.active ? [now] : []
+            lastActivated: 0,
+            activationTimestamps: []
           };
-          changed = true;
-          if (tab.active) {
-            await this._touchPage(tab.id, now);
-          }
         }
-      }
-      if (changed) {
-        this.saveToStorage();
       }
     } catch (err) {
       console.warn('[TabActivityTracker] 初始化同步标签页失败:', err);
@@ -180,10 +255,11 @@ export class TabActivityTracker {
    * 将一次激活合并进 pageId 维度数据（时间戳并集 + lastActivated 取最大）
    * @param {number} tabId
    * @param {number} now
+   * @returns {Promise<string>}
    */
   async _touchPage(tabId, now) {
     const meta = await this._ensureTabMeta(tabId);
-    if (!meta?.pageId) return;
+    if (!meta?.pageId) return '';
     const existing = this.pageStats[meta.pageId] || {
       url: meta.url || '',
       lastActivated: 0,
@@ -195,6 +271,7 @@ export class TabActivityTracker {
       lastActivated: Math.max(Number(existing.lastActivated) || 0, now),
       activationTimestamps: [...merged].filter((ts) => now - ts <= ACTIVITY_WINDOW_MS).sort((a, b) => a - b)
     };
+    return meta.pageId;
   }
 
   /**
@@ -211,15 +288,15 @@ export class TabActivityTracker {
     } else {
       this.stats[tabId].lastActivated = now;
       this.stats[tabId].activationTimestamps.push(now);
-
-      // 清理超过保留窗口的陈旧时间戳以控制内存开销
       this.stats[tabId].activationTimestamps = this.stats[tabId].activationTimestamps.filter(
         (ts) => ts >= now - ACTIVITY_WINDOW_MS
       );
     }
 
     this._touchPage(tabId, now)
-      .then(() => this.saveToStorage())
+      .then((pageId) => {
+        if (pageId) this.savePageToStorage(pageId);
+      })
       .catch(() => {});
   }
 

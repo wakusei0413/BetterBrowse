@@ -13,7 +13,6 @@ import { DefaultConfig } from '../constants/config.js';
 import { StorageKeys } from '../constants/storage-keys.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
 import { LinkService } from '../core/link/link-service.js';
-import { LinkMatcher } from '../core/link/link-matcher.js';
 import { StashService } from '../core/stash/stash-service.js';
 import { LocalStashRepository } from '../core/stash/local-stash-repo.js';
 import { MessageBus } from '../core/bus/message-bus.js';
@@ -29,6 +28,7 @@ import { filterCountableTabs, isOwnOptionsUrl } from '../core/extension-url.js';
 import { buildCapabilitiesDescriptor } from '../core/ai/ai-capabilities.js';
 import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
 import { classifySender } from '../core/security/message-authorizer.js';
+import { notifyExtensionPages, notifyLinkFrames } from './link-notifier.js';
 
 const TAB_CREATE_RETRY_DELAYS_MS = [50, 150, 350];
 const OPEN_TAB_RATE_LIMIT = 8;
@@ -110,12 +110,12 @@ export async function createTabWithRetry(createProperties) {
  * @param {StashService} deps.stashService - 收纳服务实例
  * @param {TabActivityTracker} deps.activityTracker - 活跃度统计实例
  * @param {ThresholdMonitor} deps.thresholdMonitor - 阈值监控实例
- * @param {(action: string, data?: any) => Promise<void>} deps.broadcastToTabs - 向内容脚本广播
+ * @param {(action: string, data?: any) => Promise<void>} [deps.broadcastToTabs] - 兼容旧注入；链接刷新改走框架定向通知
  * @param {{ getStatusSummary: () => any, onConfigUpdated: (config: any) => void } | null} [deps.aiBridge] - AI 桥接管理器
  * @returns {Record<string, (payload: any, sender?: any) => Promise<any>>}
  */
 export function createActionHandlers(deps) {
-  const { stashService, activityTracker, thresholdMonitor, broadcastToTabs, aiBridge } = deps;
+  const { stashService, activityTracker, thresholdMonitor, aiBridge } = deps;
 
   // 映射对象先落局部变量：GET_AI_CAPABILITIES 运行时据此自枚举可用动作（清单即事实）
   const handlers = {
@@ -128,7 +128,7 @@ export function createActionHandlers(deps) {
     [ActionTypes.SET_LINK_RULE]: async (payload) => {
       const { domain, mode } = payload || {};
       const res = await LinkService.setDomainRule(domain, mode);
-      broadcastToTabs(ActionTypes.NOTIFY_RULE_UPDATED, { domain, mode });
+      await notifyLinkFrames({ domain });
       return res;
     },
 
@@ -139,7 +139,7 @@ export function createActionHandlers(deps) {
     [ActionTypes.SET_GLOBAL_LINK_RULE]: async (payload) => {
       const { enabled, mode } = payload || {};
       const res = await LinkService.setGlobalRule(enabled, mode);
-      broadcastToTabs(ActionTypes.NOTIFY_RULE_UPDATED, { global: true, enabled, mode });
+      await notifyLinkFrames({ global: true });
       return res;
     },
 
@@ -148,29 +148,19 @@ export function createActionHandlers(deps) {
     },
 
     [ActionTypes.GET_PAGE_LINK_CONTEXT]: async (_payload, sender) => {
-      const senderUrl = sender?.tab?.url || sender?.url || '';
-      const domain = LinkMatcher.extractDomain(senderUrl);
-      const [rules, globalRule] = await Promise.all([
-        LinkService.getAllRules(),
-        LinkService.getGlobalRule()
-      ]);
-      return {
-        domain,
-        domainRule: domain ? (rules[domain] || 'auto') : 'auto',
-        linkRules: rules && typeof rules === 'object' ? rules : {},
-        globalLinkRule: globalRule
-      };
+      const senderUrl = sender?.url || sender?.tab?.url || '';
+      return await LinkService.getPageLinkContext(senderUrl);
     },
 
     [ActionTypes.REMOVE_DOMAIN_RULE]: async (payload) => {
       const res = await LinkService.removeDomainRule(payload?.domain);
-      broadcastToTabs(ActionTypes.NOTIFY_RULE_UPDATED, { domain: payload?.domain, mode: 'auto' });
+      await notifyLinkFrames({ domain: payload?.domain });
       return res;
     },
 
     [ActionTypes.CLEAR_DOMAIN_RULES]: async () => {
       const res = await LinkService.clearAllDomainRules();
-      broadcastToTabs(ActionTypes.NOTIFY_RULE_UPDATED, { clearAll: true });
+      await notifyLinkFrames({ clearAll: true });
       return res;
     },
 
@@ -222,7 +212,6 @@ export function createActionHandlers(deps) {
       // 手动点击按钮默认为 forceAll: true 全量收纳
       const forceAll = payload?.forceAll !== false;
       const res = await stashService.executeStash(activityTracker.getStats(), { forceAll });
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
       DeviceEventLog.append('stash_executed', { via: 'manual', success: res?.success !== false }).catch(() => {});
       return res;
     },
@@ -243,14 +232,10 @@ export function createActionHandlers(deps) {
     },
 
     [ActionTypes.CONFIRM_AUTO_STASH]: async (payload, sender) => {
-      const res = await thresholdMonitor.handleConfirmAutoStash({
+      return await thresholdMonitor.handleConfirmAutoStash({
         nonce: payload?.nonce,
         requireNonce: classifySender(sender) === 'content'
       });
-      if (res?.success) {
-        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      }
-      return res;
     },
 
     [ActionTypes.GET_TAB_COUNT_INFO]: async () => {
@@ -269,52 +254,66 @@ export function createActionHandlers(deps) {
       return await LocalStashRepository.getAllGroups();
     },
 
+    [ActionTypes.GET_STASH_GROUP_SUMMARIES]: async (payload) => {
+      return await LocalStashRepository.listGroupSummaries({
+        previewLimit: payload?.previewLimit
+      });
+    },
+
+    [ActionTypes.GET_STASH_STATS]: async () => {
+      return await LocalStashRepository.getStashStats();
+    },
+
+    [ActionTypes.GET_STASH_TIMELINE_BUCKETS]: async () => {
+      return await LocalStashRepository.listTimelineBuckets();
+    },
+
+    [ActionTypes.GET_STASH_GROUP_SUMMARIES_PAGE]: async (payload) => {
+      return await LocalStashRepository.listGroupSummariesPage({
+        cursor: payload?.cursor,
+        limit: payload?.limit,
+        previewLimit: payload?.previewLimit,
+        createdAtFrom: payload?.createdAtFrom,
+        createdAtTo: payload?.createdAtTo
+      });
+    },
+
     [ActionTypes.RESTORE_STASH_GROUP]: async (payload) => {
       const { groupId, removeAfterRestore } = payload || {};
       const res = await StashService.restoreGroup(groupId, removeAfterRestore);
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
       return res;
     },
 
     [ActionTypes.RESTORE_STASH_ITEM]: async (payload) => {
       const { groupId, itemId, removeAfterRestore } = payload || {};
       const res = await StashService.restoreItem(groupId, itemId, removeAfterRestore);
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
       return res;
     },
 
     [ActionTypes.DELETE_STASH_GROUP]: async (payload) => {
       const groupId = payload?.groupId;
       const res = await LocalStashRepository.deleteGroup(groupId, payload?.force === true);
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
       return res;
     },
 
     [ActionTypes.DELETE_STASH_ITEM]: async (payload) => {
       const { groupId, itemId } = payload || {};
       const res = await LocalStashRepository.deleteTabItem(groupId, itemId);
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
       return res;
     },
 
     [ActionTypes.CLEAR_ALL_STASH]: async () => {
       const res = await LocalStashRepository.clearAll();
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
       return res;
     },
 
     [ActionTypes.DEDUPLICATE_STASH_DATA]: async () => {
-      const res = await LocalStashRepository.deduplicateGroups();
-      if (res.success) {
-        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      }
-      return res;
+      return await LocalStashRepository.deduplicateGroups();
     },
 
     [ActionTypes.IMPORT_STASH_DATA]: async (payload) => {
       const jsonString = payload?.jsonString || '';
       const res = await LocalStashRepository.importDataJSON(jsonString);
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
       return res;
     },
 
@@ -329,16 +328,15 @@ export function createActionHandlers(deps) {
     [ActionTypes.RESTORE_FULL_BACKUP]: async (payload) => {
       const jsonString = payload?.jsonString || '';
       const res = await LocalStashRepository.restoreFullBackupJSON(jsonString);
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      broadcastToTabs(ActionTypes.NOTIFY_RULE_UPDATED);
-      broadcastToTabs(ActionTypes.NOTIFY_CONFIG_UPDATED);
+      notifyExtensionPages(ActionTypes.NOTIFY_CONFIG_UPDATED, {});
+      notifyExtensionPages(ActionTypes.NOTIFY_RULE_UPDATED, {});
+      await notifyLinkFrames({ global: true });
       return res;
     },
 
     [ActionTypes.IMPORT_THIRD_PARTY_DATA]: async (payload) => {
       const textString = payload?.textString || '';
       const res = await LocalStashRepository.importThirdPartyData(textString);
-      broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
       return res;
     },
 
@@ -348,30 +346,35 @@ export function createActionHandlers(deps) {
 
     // === 收纳条目与检索（AI 增强，人类 UI 经同一动作亦可调用）===
     [ActionTypes.ADD_STASH_ITEM]: async (payload) => {
-      const res = await LocalStashRepository.addTabItemToGroup(payload?.groupId, payload?.item);
-      if (res?.success && res.added) {
-        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      }
-      return res;
+      return await LocalStashRepository.addTabItemToGroup(payload?.groupId, payload?.item);
     },
 
     [ActionTypes.UPDATE_STASH_ITEM]: async (payload) => {
-      const res = await LocalStashRepository.updateTabItem(payload?.groupId, payload?.itemId, payload?.updates);
-      if (res) {
-        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      }
-      return res;
+      return await LocalStashRepository.updateTabItem(payload?.groupId, payload?.itemId, payload?.updates);
     },
 
     [ActionTypes.SEARCH_STASH]: async (payload) => {
       const limit = Math.min(500, Math.max(1, Math.floor(Number(payload?.limit) || 100)));
-      return await LocalStashRepository.searchStash(payload?.keyword, limit);
+      return await LocalStashRepository.searchStash(payload?.keyword, limit, {
+        cursor: payload?.cursor,
+        paginated: payload?.paginated === true
+      });
     },
 
     [ActionTypes.GET_STASH_GROUP_PAGE]: async (payload) => {
       return await LocalStashRepository.getGroupPage(payload?.groupId, {
         offset: payload?.offset,
-        limit: payload?.limit
+        limit: payload?.limit,
+        cursor: payload?.cursor
+      });
+    },
+
+    [ActionTypes.READ_EXPORT_CHUNK]: async (payload) => {
+      return await LocalStashRepository.readExportChunk({
+        type: payload?.type,
+        cursor: payload?.cursor,
+        maxChars: payload?.maxChars,
+        expectedStashRevision: payload?.expectedStashRevision
       });
     },
 
@@ -381,11 +384,7 @@ export function createActionHandlers(deps) {
     },
 
     [ActionTypes.RESTORE_AUTO_BACKUP]: async (payload) => {
-      const res = await LocalStashRepository.restoreAutoBackup(payload?.createdAt);
-      if (res?.success) {
-        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      }
-      return res;
+      return await LocalStashRepository.restoreAutoBackup(payload?.createdAt);
     },
 
     [ActionTypes.DELETE_AUTO_BACKUP]: async (payload) => {
@@ -398,36 +397,33 @@ export function createActionHandlers(deps) {
     },
 
     [ActionTypes.UPDATE_CONFIG]: async (payload) => {
-      const res = await StorageAdapter.updateUserConfig(payload || {});
-      broadcastToTabs(ActionTypes.NOTIFY_CONFIG_UPDATED, payload);
-      // AI 桥接开关变化需即时生效（连接 / 断开本机通道）
-      aiBridge?.onConfigUpdated(await StorageAdapter.getUserConfig());
+      const partial = payload || {};
+      const res = await StorageAdapter.updateUserConfig(partial);
+      const config = await StorageAdapter.getUserConfig();
+      aiBridge?.onConfigUpdated(config);
+      SyncScheduler.onConfigUpdated(config);
+      notifyExtensionPages(ActionTypes.NOTIFY_CONFIG_UPDATED, partial);
+      if (partial.globalLinkRule) await notifyLinkFrames({ global: true });
       return res;
     },
 
     [ActionTypes.RESET_CONFIG]: async () => {
       const res = await StorageAdapter.replaceUserConfig(DefaultConfig);
-      broadcastToTabs(ActionTypes.NOTIFY_CONFIG_UPDATED, DefaultConfig);
-      aiBridge?.onConfigUpdated(await StorageAdapter.getUserConfig());
+      const config = await StorageAdapter.getUserConfig();
+      aiBridge?.onConfigUpdated(config);
+      SyncScheduler.onConfigUpdated(config);
+      notifyExtensionPages(ActionTypes.NOTIFY_CONFIG_UPDATED, DefaultConfig);
+      await notifyLinkFrames({ global: true });
       return res;
     },
 
     [ActionTypes.UPDATE_STASH_GROUP]: async (payload) => {
       const { groupId, updates } = payload || {};
-      const res = await LocalStashRepository.updateGroup(groupId, updates);
-      // 广播收纳数据变更，保证其他上下文（如已打开的收纳箱页）即时刷新
-      if (res) {
-        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      }
-      return res;
+      return await LocalStashRepository.updateGroup(groupId, updates);
     },
 
     [ActionTypes.RESTORE_STASH_GROUP_DATA]: async (payload) => {
-      const res = await LocalStashRepository.restoreGroupSnapshot(payload?.group);
-      if (res?.success) {
-        broadcastToTabs(ActionTypes.NOTIFY_STASH_UPDATED);
-      }
-      return res;
+      return await LocalStashRepository.restoreGroupSnapshot(payload?.group);
     },
 
     [ActionTypes.OPEN_OPTIONS_PAGE]: async (payload) => {

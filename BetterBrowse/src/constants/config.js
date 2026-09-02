@@ -102,4 +102,6 @@ export const DefaultConfig = {
 // 本地数据修订 6：修复历史恢复操作产生的双前缀重复条目并清理孤儿条目（见 MigrationManager.repairIndexedEntries）
 // 本地数据修订 7：配置、链接规则、活动统计与自动备份迁入 IndexedDB（阶段一 M2 全量）
 // 本地数据修订 8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
-export const LOCAL_DATA_SCHEMA_REVISION = 8;
+// 本地数据修订 9：回填收纳组派生字段 itemCount / starRank / nextPosition，供真分页摘要使用
+// 本地数据修订 10：活跃度按 pageId 分记录持久化，避免每次激活整对象重写
+export const LOCAL_DATA_SCHEMA_REVISION = 10;

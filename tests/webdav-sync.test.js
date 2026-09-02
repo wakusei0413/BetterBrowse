@@ -6,6 +6,7 @@
 
 import { assertEquals } from "@std/assert";
 import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
+import { LOCAL_DATA_SCHEMA_REVISION } from "../BetterBrowse/src/constants/config.js";
 import { MigrationManager } from "../BetterBrowse/src/core/storage/migration.js";
 import { StorageAdapter } from "../BetterBrowse/src/core/storage/storage-adapter.js";
 import { IndexedDBManager, IDBStores } from "../BetterBrowse/src/core/storage/indexed-db.js";
@@ -220,7 +221,8 @@ Deno.test("MigrationManager: 本地数据修订 8 初始化同步时钟并按 pa
     });
 
     await MigrationManager.runMigrations();
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], 8);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], LOCAL_DATA_SCHEMA_REVISION);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION] >= 8, true);
 
     const clock = await readRecord(IDBStores.SYNC_META, 'clock');
     assertEquals(typeof clock?.value?.deviceId, 'string');

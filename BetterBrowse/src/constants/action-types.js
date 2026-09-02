@@ -29,7 +29,11 @@ export const ActionTypes = {
   CONFIRM_AUTO_STASH: 'CONFIRM_AUTO_STASH',   // 确认执行自动收纳（倒计时归零或用户点击立即收纳）
 
   // === 收纳箱数据管理相关 ===
-  GET_STASH_GROUPS: 'GET_STASH_GROUPS',       // 获取所有收纳标签组
+  GET_STASH_GROUPS: 'GET_STASH_GROUPS',       // 获取所有收纳标签组（含完整 tabs，导出/AI 全量通道）
+  GET_STASH_GROUP_SUMMARIES: 'GET_STASH_GROUP_SUMMARIES', // 获取收纳组摘要（兼容旧调用）
+  GET_STASH_STATS: 'GET_STASH_STATS',         // 获取收纳组与条目总数
+  GET_STASH_TIMELINE_BUCKETS: 'GET_STASH_TIMELINE_BUCKETS', // 获取时间线分桶摘要
+  GET_STASH_GROUP_SUMMARIES_PAGE: 'GET_STASH_GROUP_SUMMARIES_PAGE', // 游标分页读取收纳组摘要
   UPDATE_STASH_GROUP: 'UPDATE_STASH_GROUP',   // 更新标签组（重命名、锁定、星标）
   RESTORE_STASH_GROUP: 'RESTORE_STASH_GROUP', // 恢复指定的收纳标签组
   RESTORE_STASH_ITEM: 'RESTORE_STASH_ITEM',   // 恢复单个收纳标签项
@@ -41,6 +45,7 @@ export const ActionTypes = {
   IMPORT_STASH_DATA: 'IMPORT_STASH_DATA',     // 导入收纳数据（智能支持 OneTab 文本与 JSON）
   EXPORT_STASH_DATA: 'EXPORT_STASH_DATA',     // 导出收纳数据 (JSON)
   EXPORT_FULL_BACKUP: 'EXPORT_FULL_BACKUP',   // 导出全量备份 (含标签页 + 插件全局配置 + 域名规则)
+  READ_EXPORT_CHUNK: 'READ_EXPORT_CHUNK',     // 按游标分块生成导出内容，避免构造完整响应
   RESTORE_FULL_BACKUP: 'RESTORE_FULL_BACKUP', // 恢复全量备份 (还原标签页 + 插件全局配置 + 域名规则)
   IMPORT_THIRD_PARTY_DATA: 'IMPORT_THIRD_PARTY_DATA', // 从第三方工具导入标签页 (如 OneTab 文本/JSON)
   EXPORT_ONETAB_TEXT: 'EXPORT_ONETAB_TEXT',   // 导出为 OneTab 兼容纯文本 (URL | Title)

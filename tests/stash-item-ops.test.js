@@ -187,8 +187,64 @@ Deno.test("AI 增强：SEARCH_STASH 检索与 GET_STASH_GROUP_PAGE 分页", asyn
     const firstPage = await LocalStashRepository.getGroupPage(created.group.id, { offset: 0, limit: 2 });
     assertEquals(firstPage.total, 3);
     assertEquals(firstPage.items.length, 2);
+    assertEquals(firstPage.hasMore, true);
     const secondPage = await LocalStashRepository.getGroupPage(created.group.id, { offset: 2, limit: 2 });
     assertEquals(secondPage.items.length, 1);
+    const cursorPage = await LocalStashRepository.getGroupPage(created.group.id, {
+      cursor: firstPage.nextCursor,
+      limit: 2
+    });
+    assertEquals(cursorPage.items.length, 1);
+    const stats = await LocalStashRepository.getStashStats();
+    assertEquals(stats.groupCount, 1);
+    assertEquals(stats.itemCount, 3);
+    const pagedSearch = await LocalStashRepository.searchStash("https://", 2, { paginated: true });
+    assertEquals(pagedSearch.items.length, 2);
+    assertEquals(pagedSearch.hasMore, true);
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("listGroupSummaries：返回 itemCount 且不含 tabs / favicon，计数与 getAllGroups 一致", async () => {
+  const idb = installFakeIndexedDB();
+  installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 8 });
+  try {
+    const created = await LocalStashRepository.createGroup(
+      [
+        { url: "https://summary.example/a", title: "摘要甲", favIconUrl: "https://summary.example/a.ico" },
+        { url: "https://summary.example/b", title: "摘要乙", favIconUrl: "https://summary.example/b.ico" }
+      ],
+      "摘要组"
+    );
+    await LocalStashRepository.createGroup(
+      [{ url: "https://summary.example/c", title: "摘要丙" }],
+      "另一组"
+    );
+
+    const summaries = await LocalStashRepository.listGroupSummaries();
+    const full = await LocalStashRepository.getAllGroups();
+    assertEquals(summaries.length, full.length);
+    assertEquals(summaries.every((group) => !Object.hasOwn(group, "tabs")), true);
+    assertEquals(summaries.every((group) => !Object.hasOwn(group, "favIconUrl")), true);
+
+    const summaryMap = new Map(summaries.map((group) => [group.id, group]));
+    for (const group of full) {
+      const summary = summaryMap.get(group.id);
+      assertEquals(Boolean(summary), true);
+      assertEquals(summary.itemCount, group.tabs.length);
+      assertEquals(summary.title, group.title);
+      assertEquals(summary.starred, Boolean(group.starred));
+    }
+
+    const createdSummary = summaryMap.get(created.group.id);
+    assertEquals(createdSummary.itemCount, 2);
+
+    const withPreview = await LocalStashRepository.listGroupSummaries({ previewLimit: 25 });
+    const previewed = withPreview.find((group) => group.id === created.group.id);
+    assertEquals(previewed.tabs.length, 2);
+    assertEquals(previewed.tabs[0].url, "https://summary.example/a");
+    assertEquals(previewed.tabs[0].title, "摘要甲");
   } finally {
     await idb.restore();
   }

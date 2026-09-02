@@ -23,6 +23,7 @@ import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
 import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
 import { DeviceEventLog } from '../core/sync/device-events.js';
 import { isTrustedPopupLifecyclePort } from '../core/security/message-authorizer.js';
+import { notifyTopFrame } from './link-notifier.js';
 
 installRuntimeLogger({
   context: 'background',
@@ -79,17 +80,14 @@ if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(() => {
     (async () => {
       try {
-        await MigrationManager.runMigrations();
-      } catch (err) {
-        console.warn('[ServiceWorker] 启动迁移重试异常:', err);
-      }
-      try {
         await AccountConfigSync.init();
       } catch (err) {
         console.warn('[ServiceWorker] 浏览器账号偏好同步初始化异常:', err);
       }
       const config = await StorageAdapter.getUserConfig();
       if (config.stashSettings?.pinnedTabGuard !== false) await StashService.ensureAllAllWindowsPinnedTab();
+      await SyncScheduler.onStartup().catch(() => {});
+      await thresholdMonitor.checkOnStartup().catch(() => {});
     })().catch((err) => {
       console.warn('[ServiceWorker] 浏览器启动初始化异常:', err?.message || err);
     });
@@ -109,20 +107,17 @@ MigrationManager.runMigrations()
   });
 
 /**
- * 向所有活跃标签页广播消息（双通道保障实时生效）
+ * 兼容旧注入：仅向 HTTP(S) 顶层框架发送，倒计时等路径应改用 notifyTopFrame。
  * @param {string} action
  * @param {any} [data={}]
  */
 async function broadcastToTabs(action, data = {}) {
   try {
     const tabs = await chrome.tabs.query({});
-    for (const tab of tabs) {
-      if (tab.id && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('edge://') && !tab.url.startsWith('about:') && !tab.url.startsWith('file://') && !tab.url.startsWith('chrome-extension://')) {
-        MessageBus.sendToTab(tab.id, action, data, 400).catch(() => {
-          // 忽略未就绪或未注入内容脚本页面的通信错误
-        });
-      }
-    }
+    await Promise.all(tabs.map((tab) => {
+      if (!tab.id || !tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) return Promise.resolve();
+      return notifyTopFrame(tab.id, action, data);
+    }));
   } catch (err) {
     console.warn('[ServiceWorker] 广播消息异常:', err);
   }

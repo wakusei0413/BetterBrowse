@@ -7,7 +7,7 @@
 
 import { assertEquals } from "@std/assert";
 import { StorageKeys } from "../BetterBrowse/src/constants/storage-keys.js";
-import { DefaultConfig } from "../BetterBrowse/src/constants/config.js";
+import { DefaultConfig, LOCAL_DATA_SCHEMA_REVISION } from "../BetterBrowse/src/constants/config.js";
 import { StorageAdapter } from "../BetterBrowse/src/core/storage/storage-adapter.js";
 import { IndexedDBManager, IDBStores } from "../BetterBrowse/src/core/storage/indexed-db.js";
 import { MigrationManager } from "../BetterBrowse/src/core/storage/migration.js";
@@ -180,7 +180,8 @@ Deno.test("回归: 本地数据修订 6 迁移清理双前缀重复条目与孤�
 
     await MigrationManager.runMigrations();
 
-    assertEquals(store[StorageKeys.SCHEMA_VERSION], 8);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION], LOCAL_DATA_SCHEMA_REVISION);
+    assertEquals(store[StorageKeys.SCHEMA_VERSION] >= 6, true);
     const entries = await IndexedDBManager.runTransaction(
       [IDBStores.STASH_ENTRIES],
       'readonly',

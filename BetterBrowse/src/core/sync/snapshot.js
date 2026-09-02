@@ -34,9 +34,20 @@ export class SyncSnapshot {
         const groups = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_GROUPS).getAll());
         const entries = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_ENTRIES).getAll());
         const settingsAll = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.SETTINGS).getAll());
-        const activity = await IndexedDBManager.requestToPromise(
-          tx.objectStore(IDBStores.ACTIVITY_STATS).get(StorageKeys.ACTIVITY_STATS)
+        const activityRecords = await IndexedDBManager.requestToPromise(
+          tx.objectStore(IDBStores.ACTIVITY_STATS).getAll()
         );
+        const activityStats = {};
+        for (const record of activityRecords || []) {
+          if (!record?.key) continue;
+          if (record.key === StorageKeys.ACTIVITY_STATS && record.value && typeof record.value === 'object') {
+            Object.assign(activityStats, record.value);
+            continue;
+          }
+          if (/^page_/.test(record.key) && record.value && typeof record.value === 'object') {
+            activityStats[record.key] = record.value;
+          }
+        }
         const events = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.DEVICE_EVENTS).getAll());
         const tombs = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.TOMBSTONES).getAll());
         const clock = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.SYNC_META).get(SYNC_CLOCK_KEY));
@@ -62,7 +73,7 @@ export class SyncSnapshot {
           stashGroups: groups || [],
           stashEntries: entries || [],
           settings,
-          activityStats: activity?.value && typeof activity.value === 'object' ? activity.value : {},
+          activityStats,
           deviceEvents: events || [],
           tombstones: liveTombs
         };
@@ -106,6 +117,7 @@ export class SyncSnapshot {
           tx.objectStore(IDBStores.STASH_ENTRIES).clear();
           tx.objectStore(IDBStores.DEVICE_EVENTS).clear();
           tx.objectStore(IDBStores.TOMBSTONES).clear();
+          tx.objectStore(IDBStores.ACTIVITY_STATS).clear();
         }
 
         for (const page of payload.pages || []) {
@@ -142,11 +154,26 @@ export class SyncSnapshot {
           settingsStore.put({ key, value, updatedAt: Date.now() });
         }
 
-        tx.objectStore(IDBStores.ACTIVITY_STATS).put({
-          key: StorageKeys.ACTIVITY_STATS,
-          value: payload.activityStats && typeof payload.activityStats === 'object' ? payload.activityStats : {},
-          updatedAt: Date.now()
-        });
+        const activityStore = tx.objectStore(IDBStores.ACTIVITY_STATS);
+        // 快照应用按 pageId 分记录写入，并清掉历史聚合键
+        activityStore.delete(StorageKeys.ACTIVITY_STATS);
+        const incomingActivity = payload.activityStats && typeof payload.activityStats === 'object'
+          ? payload.activityStats
+          : {};
+        for (const [pageId, pageValue] of Object.entries(incomingActivity)) {
+          if (!/^page_/.test(pageId) || !pageValue || typeof pageValue !== 'object') continue;
+          activityStore.put({
+            key: pageId,
+            value: {
+              url: typeof pageValue.url === 'string' ? pageValue.url : '',
+              lastActivated: Number(pageValue.lastActivated) || 0,
+              activationTimestamps: Array.isArray(pageValue.activationTimestamps)
+                ? pageValue.activationTimestamps.filter((ts) => Number.isFinite(ts))
+                : []
+            },
+            updatedAt: Date.now()
+          });
+        }
       }
     );
     for (const event of payload.deviceEvents || []) {

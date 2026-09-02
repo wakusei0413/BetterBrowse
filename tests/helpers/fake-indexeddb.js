@@ -1,6 +1,6 @@
 /**
  * @file fake-indexeddb.js
- * @description 测试专用的内存版 IndexedDB 模拟实现（覆盖本项目用到的 API 子集；请求事件以宏任务派发、读写事务支持中止回滚，贴近真实语义）
+ * @description 测试专用的内存版 IndexedDB 模拟实现（覆盖本项目用到的 API 子集；支持复合索引、KeyRange 与游标分页）
  * @encoding UTF-8
  */
 
@@ -10,9 +10,85 @@ const dispatchTask = (fn) => setTimeout(fn, 0);
 /** 深克隆存储值，模拟 IndexedDB 的结构化克隆语义 */
 const cloneValue = (value) => structuredClone(value);
 
-/**
- * 模拟 IDBRequest：结果同步计算，事件在宏任务中派发
- */
+/** 按 IndexedDB 键语义比较基础值与数组复合键 */
+function compareKeys(left, right) {
+  const a = Array.isArray(left) ? left : [left];
+  const b = Array.isArray(right) ? right : [right];
+  const length = Math.min(a.length, b.length);
+  for (let i = 0; i < length; i++) {
+    if (a[i] === b[i]) continue;
+    return a[i] < b[i] ? -1 : 1;
+  }
+  if (a.length === b.length) return 0;
+  return a.length < b.length ? -1 : 1;
+}
+
+/** 从记录中提取字符串或数组 keyPath 对应的键 */
+function extractKeyPath(value, keyPath) {
+  if (Array.isArray(keyPath)) return keyPath.map((path) => value?.[path]);
+  return value?.[keyPath];
+}
+
+/** 判断查询条件是否命中键 */
+function matchesQuery(key, query) {
+  if (query === undefined || query === null) return true;
+  if (typeof query.includes === 'function') return query.includes(key);
+  return compareKeys(key, query) === 0;
+}
+
+/** 最小 IDBKeyRange 实现 */
+class FakeIDBKeyRange {
+  constructor(lower, upper, lowerOpen = false, upperOpen = false) {
+    this.lower = lower;
+    this.upper = upper;
+    this.lowerOpen = lowerOpen;
+    this.upperOpen = upperOpen;
+  }
+
+  includes(key) {
+    if (this.lower !== undefined) {
+      const lowerCmp = compareKeys(key, this.lower);
+      if (lowerCmp < 0 || (lowerCmp === 0 && this.lowerOpen)) return false;
+    }
+    if (this.upper !== undefined) {
+      const upperCmp = compareKeys(key, this.upper);
+      if (upperCmp > 0 || (upperCmp === 0 && this.upperOpen)) return false;
+    }
+    return true;
+  }
+
+  static only(value) {
+    return new FakeIDBKeyRange(value, value, false, false);
+  }
+
+  static lowerBound(value, open = false) {
+    return new FakeIDBKeyRange(value, undefined, open, false);
+  }
+
+  static upperBound(value, open = false) {
+    return new FakeIDBKeyRange(undefined, value, false, open);
+  }
+
+  static bound(lower, upper, lowerOpen = false, upperOpen = false) {
+    return new FakeIDBKeyRange(lower, upper, lowerOpen, upperOpen);
+  }
+}
+
+/** 模拟 DOMStringList 的 contains 能力 */
+function createNameList(source) {
+  return {
+    contains: (name) => source.has(name),
+    item: (index) => [...source.keys()][index] || null,
+    get length() {
+      return source.size;
+    },
+    [Symbol.iterator]: function* () {
+      yield* source.keys();
+    }
+  };
+}
+
+/** 模拟 IDBRequest */
 class FakeRequest {
   constructor(transaction = null) {
     this.transaction = transaction;
@@ -31,11 +107,9 @@ class FakeRequest {
     const tx = this.transaction;
     dispatchTask(() => {
       try {
-        if (typeof this.onsuccess === 'function') {
-          this.onsuccess({ target: this, type: 'success' });
-        }
+        if (typeof this.onsuccess === 'function') this.onsuccess({ target: this, type: 'success' });
       } finally {
-        tx?._requestSettled();
+        if (typeof tx?._requestSettled === 'function') tx._requestSettled();
       }
     });
   }
@@ -46,19 +120,107 @@ class FakeRequest {
     const tx = this.transaction;
     dispatchTask(() => {
       try {
-        if (typeof this.onerror === 'function') {
-          this.onerror({ target: this, type: 'error' });
-        }
+        if (typeof this.onerror === 'function') this.onerror({ target: this, type: 'error' });
       } finally {
-        tx?._requestSettled();
+        if (typeof tx?._requestSettled === 'function') tx._requestSettled();
       }
     });
   }
 }
 
-/**
- * 模拟索引：按 keyPath 字段过滤仓储记录（查询时动态派生，无需维护增量）
- */
+/** 模拟 IDBCursorWithValue */
+class FakeCursor {
+  constructor(request, rows, index, store) {
+    this._request = request;
+    this._rows = rows;
+    this._index = index;
+    this._store = store;
+    this._continued = false;
+    this._sync();
+  }
+
+  delete() {
+    this._request._pendingDelete = true;
+    const request = new FakeRequest(this._request.transaction);
+    this._request.transaction?._track?.(request);
+    if (this._store && this.primaryKey !== undefined) {
+      this._store._records.delete(this.primaryKey);
+    }
+    request._succeed(undefined);
+    return request;
+  }
+
+  _sync() {
+    const row = this._rows[this._index];
+    this.key = cloneValue(row.key);
+    this.primaryKey = cloneValue(row.primaryKey);
+    this.value = cloneValue(row.value);
+  }
+
+  continue(key) {
+    this._continued = true;
+    this._request._pendingDelete = false;
+    let next = this._index + 1;
+    if (key !== undefined) {
+      while (next < this._rows.length && compareKeys(this._rows[next].key, key) < 0) next++;
+    }
+    this._request._emit(next);
+  }
+
+  advance(count) {
+    const step = Math.max(1, Math.floor(Number(count) || 1));
+    this._continued = true;
+    this._request._emit(this._index + step);
+  }
+}
+
+/** 游标请求在回调停止 continue 时才结算事务中的待处理请求 */
+class FakeCursorRequest extends FakeRequest {
+  constructor(transaction, rows, store = null) {
+    super(transaction);
+    this._rows = rows;
+    this._store = store;
+    this._settled = false;
+  }
+
+  _start() {
+    this.transaction?._track(this);
+    this._emit(0);
+    return this;
+  }
+
+  _emit(index) {
+    dispatchTask(() => {
+      if (this._settled) return;
+      if (index >= this._rows.length) {
+        this.result = null;
+        this.readyState = 'done';
+        try {
+          if (typeof this.onsuccess === 'function') this.onsuccess({ target: this, type: 'success' });
+        } finally {
+          this._settle();
+        }
+        return;
+      }
+      const cursor = new FakeCursor(this, this._rows, index, this._store);
+      this.result = cursor;
+      this.readyState = 'done';
+      try {
+        if (typeof this.onsuccess === 'function') this.onsuccess({ target: this, type: 'success' });
+      } finally {
+        if (!cursor._continued && !this._pendingDelete) this._settle();
+      }
+    });
+  }
+
+  _settle() {
+    if (this._settled) return;
+    this._settled = true;
+    if (typeof this.transaction?._requestSettled === 'function') this.transaction._requestSettled();
+  }
+}
+
+/** 模拟索引：查询时从仓储记录动态派生 */
 class FakeIndex {
   constructor(store, name, keyPath) {
     this._store = store;
@@ -66,19 +228,23 @@ class FakeIndex {
     this.keyPath = keyPath;
   }
 
-  _getValues(key) {
-    const values = [];
-    for (const value of this._store._records.values()) {
-      const indexKey = value?.[this.keyPath];
-      if (key === undefined || indexKey === key) values.push(cloneValue(value));
+  _rows(query, direction = 'next') {
+    const rows = [];
+    for (const [primaryKey, value] of this._store._records) {
+      const key = extractKeyPath(value, this.keyPath);
+      if (matchesQuery(key, query)) rows.push({ key, primaryKey, value });
     }
-    return values;
+    rows.sort((a, b) => compareKeys(a.key, b.key) || compareKeys(a.primaryKey, b.primaryKey));
+    if (String(direction).startsWith('prev')) rows.reverse();
+    return rows.map((row) => ({
+      key: cloneValue(row.key),
+      primaryKey: cloneValue(row.primaryKey),
+      value: cloneValue(row.value)
+    }));
   }
 }
 
-/**
- * 模拟对象仓储（仅支持 keyPath 主键模式，覆盖项目实际用法）
- */
+/** 模拟对象仓储 */
 class FakeObjectStore {
   constructor(name, keyPath) {
     this.name = name;
@@ -88,8 +254,8 @@ class FakeObjectStore {
   }
 
   _extractKey(value) {
-    const key = value?.[this.keyPath];
-    if (key === undefined || key === null) {
+    const key = extractKeyPath(value, this.keyPath);
+    if (key === undefined || key === null || (Array.isArray(key) && key.some((part) => part === undefined || part === null))) {
       throw new Error(`记录缺少主键字段 ${this.keyPath}`);
     }
     return key;
@@ -110,20 +276,26 @@ class FakeObjectStore {
   }
 }
 
-/**
- * 事务视图：将对象仓储操作与事务生命周期关联（对应真实 API 中事务内的 store 实例）
- */
+/** 事务中的对象仓储视图 */
 class FakeStoreView {
   constructor(store, tx) {
     this._store = store;
     this._tx = tx;
     this.name = store.name;
+    this.keyPath = store.keyPath;
+    this.indexNames = createNameList(store._indexes);
   }
 
   _wrap(request) {
     request.transaction = this._tx;
-    this._tx._track(request);
+    this._tx?._track(request);
     return request;
+  }
+
+  createIndex(name, keyPath) {
+    if (this._store._indexes.has(name)) throw new Error(`索引已存在: ${name}`);
+    this._store.addIndex(name, keyPath);
+    return new FakeIndexView(this._store._indexes.get(name), this._tx);
   }
 
   put(value) {
@@ -145,15 +317,25 @@ class FakeStoreView {
     return this._wrap(request);
   }
 
-  getAll() {
+  getAll(query, count) {
     const request = new FakeRequest(this._tx);
-    request._succeed([...this._store._records.values()].map(cloneValue));
+    let values = [...this._store._records.entries()]
+      .filter(([key]) => matchesQuery(key, query))
+      .sort(([a], [b]) => compareKeys(a, b))
+      .map(([, value]) => cloneValue(value));
+    if (Number.isFinite(count)) values = values.slice(0, count);
+    request._succeed(values);
     return this._wrap(request);
   }
 
-  getAllKeys() {
+  getAllKeys(query, count) {
     const request = new FakeRequest(this._tx);
-    request._succeed([...this._store._records.keys()]);
+    let keys = [...this._store._records.keys()]
+      .filter((key) => matchesQuery(key, query))
+      .sort(compareKeys)
+      .map(cloneValue);
+    if (Number.isFinite(count)) keys = keys.slice(0, count);
+    request._succeed(keys);
     return this._wrap(request);
   }
 
@@ -171,9 +353,10 @@ class FakeStoreView {
     return this._wrap(request);
   }
 
-  count() {
+  count(query) {
     const request = new FakeRequest(this._tx);
-    request._succeed(this._store._records.size);
+    const count = [...this._store._records.keys()].filter((key) => matchesQuery(key, query)).length;
+    request._succeed(count);
     return this._wrap(request);
   }
 
@@ -182,47 +365,59 @@ class FakeStoreView {
     if (!index) throw new Error(`索引不存在: ${name}`);
     return new FakeIndexView(index, this._tx);
   }
+
+  openCursor(query, direction = 'next') {
+    const rows = [...this._store._records.entries()]
+      .filter(([key]) => matchesQuery(key, query))
+      .sort(([a], [b]) => compareKeys(a, b))
+      .map(([key, value]) => ({ key, primaryKey: key, value }));
+    if (String(direction).startsWith('prev')) rows.reverse();
+    return new FakeCursorRequest(this._tx, rows, this._store)._start();
+  }
 }
 
-/**
- * 索引视图：将索引查询与事务生命周期关联
- */
+/** 事务中的索引视图 */
 class FakeIndexView {
   constructor(index, tx) {
     this._index = index;
     this._tx = tx;
     this.name = index.name;
+    this.keyPath = index.keyPath;
   }
 
   _wrap(request) {
     request.transaction = this._tx;
-    this._tx._track(request);
+    this._tx?._track(request);
     return request;
   }
 
-  getAll(key) {
+  getAll(query, count) {
     const request = new FakeRequest(this._tx);
-    request._succeed(this._index._getValues(key));
+    let values = this._index._rows(query).map((row) => row.value);
+    if (Number.isFinite(count)) values = values.slice(0, count);
+    request._succeed(values);
     return this._wrap(request);
   }
 
-  get(key) {
+  get(query) {
     const request = new FakeRequest(this._tx);
-    const values = this._index._getValues(key);
-    request._succeed(values.length > 0 ? values[0] : undefined);
+    const rows = this._index._rows(query);
+    request._succeed(rows.length > 0 ? rows[0].value : undefined);
     return this._wrap(request);
   }
 
-  count() {
+  count(query) {
     const request = new FakeRequest(this._tx);
-    request._succeed(this._index._getValues(undefined).length);
+    request._succeed(this._index._rows(query).length);
     return this._wrap(request);
+  }
+
+  openCursor(query, direction = 'next') {
+    return new FakeCursorRequest(this._tx, this._index._rows(query, direction), this._index._store)._start();
   }
 }
 
-/**
- * 模拟事务：请求全部派发完毕且事件循环空闲后自动提交；读写事务中止时回滚快照
- */
+/** 模拟事务 */
 class FakeTransaction {
   constructor(db, storeNames, mode) {
     this.db = db;
@@ -232,15 +427,12 @@ class FakeTransaction {
     this.onabort = null;
     this.onerror = null;
     this._storeNames = new Set(storeNames);
-    // 与真实 IDBTransaction 对齐：允许调用方探测事务覆盖的对象仓储
-    this.objectStoreNames = {
-      contains: (storeName) => this._storeNames.has(storeName)
-    };
+    this.objectStoreNames = createNameList(new Map([...this._storeNames].map((name) => [name, true])));
     this._active = true;
     this._aborted = false;
     this._pendingRequests = 0;
     this._completionScheduled = false;
-    // 读写事务开始前快照涉及仓储，abort 时整体回滚（贴近真实提交语义）
+    this._idlePasses = 0;
     this._snapshot = mode === 'readwrite' ? db._snapshotStores(storeNames) : null;
     dispatchTask(() => this._tryComplete());
   }
@@ -264,8 +456,10 @@ class FakeTransaction {
     });
   }
 
-  _track(request) {
+  _track() {
     this._pendingRequests++;
+    this._idlePasses = 0;
+    this._completionScheduled = false;
   }
 
   _requestSettled() {
@@ -274,28 +468,20 @@ class FakeTransaction {
   }
 
   _tryComplete() {
-    if (this._aborted || !this._active) return;
-    if (this._pendingRequests > 0) return;
+    if (this._aborted || !this._active || this._pendingRequests > 0) return;
+    if (this._idlePasses < 3) {
+      this._idlePasses += 1;
+      queueMicrotask(() => dispatchTask(() => this._tryComplete()));
+      return;
+    }
     if (this._completionScheduled) return;
     this._completionScheduled = true;
-    dispatchTask(() => {
-      if (this._aborted) return;
-      // 快照检查期间又有新请求入队（同一宏任务内继续操作事务），推迟提交
-      if (this._pendingRequests > 0) {
-        this._completionScheduled = false;
-        return;
-      }
-      this._active = false;
-      if (typeof this.oncomplete === 'function') {
-        this.oncomplete({ target: this, type: 'complete' });
-      }
-    });
+    this._active = false;
+    if (typeof this.oncomplete === 'function') this.oncomplete({ target: this, type: 'complete' });
   }
 }
 
-/**
- * 模拟数据库连接
- */
+/** 模拟数据库连接 */
 class FakeDatabase {
   constructor(name, version) {
     this.name = name;
@@ -304,22 +490,14 @@ class FakeDatabase {
     this._closed = false;
     this.onclose = null;
     this.onversionchange = null;
-    this.objectStoreNames = {
-      contains: (storeName) => this._stores.has(storeName)
-    };
+    this.objectStoreNames = createNameList(this._stores);
   }
 
   createObjectStore(name, options = {}) {
     if (this._stores.has(name)) throw new Error(`对象仓储已存在: ${name}`);
     const store = new FakeObjectStore(name, options.keyPath);
     this._stores.set(name, store);
-    return {
-      createIndex: (indexName, keyPath) => {
-        if (store._indexes.has(indexName)) throw new Error(`索引已存在: ${indexName}`);
-        store.addIndex(indexName, keyPath);
-        return { name: indexName, keyPath };
-      }
-    };
+    return new FakeStoreView(store, null);
   }
 
   deleteObjectStore(name) {
@@ -339,13 +517,10 @@ class FakeDatabase {
     this._closed = true;
   }
 
-  /** 模拟浏览器强制断开连接（Service Worker 休眠终结 / 版本升级抢占） */
   _forceClose() {
     if (this._closed) return;
     this._closed = true;
-    if (typeof this.onclose === 'function') {
-      this.onclose({ target: this });
-    }
+    if (typeof this.onclose === 'function') this.onclose({ target: this });
   }
 
   _snapshotStores(storeNames) {
@@ -365,9 +540,7 @@ class FakeDatabase {
   }
 }
 
-/**
- * 模拟 IDBFactory：管理数据库创建、版本升级与连接生命周期
- */
+/** 模拟 IDBFactory */
 export class FakeIDBFactory {
   constructor() {
     this._databases = new Map();
@@ -391,19 +564,25 @@ export class FakeIDBFactory {
           request._fail(new Error('VersionError: 不允许降级打开数据库'));
           return;
         }
-        // 版本升级：强制关闭旧连接（触发 onclose，促使连接管理器重建连接）
         db.version = targetVersion;
         upgradeNeeded = true;
         db._forceClose();
         this._connections.delete(db);
+        db._closed = false;
       } else {
-        // 同版本重新打开：允许同一数据库再次建立新连接（IndexedDBManager.close 后重连）
         db._closed = false;
       }
 
       this._connections.add(db);
       if (upgradeNeeded && typeof request.onupgradeneeded === 'function') {
         request.result = db;
+        request.transaction = {
+          objectStore: (storeName) => {
+            const store = db._stores.get(storeName);
+            if (!store) throw new Error(`对象仓储不存在: ${storeName}`);
+            return new FakeStoreView(store, null);
+          }
+        };
         request.onupgradeneeded({ target: request, oldVersion, newVersion: targetVersion });
       }
       request._succeed(db);
@@ -420,44 +599,34 @@ export class FakeIDBFactory {
     }
   }
 
-  /** 关闭全部连接并触发 onclose（用于测试间的状态隔离） */
   closeAll() {
-    for (const db of this._connections) {
-      db._forceClose();
-    }
+    for (const db of this._connections) db._forceClose();
     this._connections.clear();
   }
 }
 
-/**
- * 统计 IndexedDB 指定仓储的记录数
- * @param {{ runTransaction: Function, requestToPromise: Function }} IndexedDBManager
- * @param {string} storeName
- * @returns {Promise<number>}
- */
+/** 统计 IndexedDB 指定仓储的记录数 */
 export async function countStoreRecords(IndexedDBManager, storeName) {
   return await IndexedDBManager.runTransaction([storeName], 'readonly', async (tx) => {
     return await IndexedDBManager.requestToPromise(tx.objectStore(storeName).count());
   });
 }
 
-/**
- * 安装内存版 IndexedDB 全局对象
- * @returns {{ factory: FakeIDBFactory, restore: () => void }}
- */
+/** 安装内存版 IndexedDB 全局对象 */
 export function installFakeIndexedDB() {
   const factory = new FakeIDBFactory();
-  const previous = globalThis.indexedDB;
+  const previousIndexedDB = globalThis.indexedDB;
+  const previousKeyRange = globalThis.IDBKeyRange;
   globalThis.indexedDB = factory;
+  globalThis.IDBKeyRange = FakeIDBKeyRange;
   return {
     factory,
     restore() {
       factory.closeAll();
-      if (previous === undefined) {
-        delete globalThis.indexedDB;
-      } else {
-        globalThis.indexedDB = previous;
-      }
+      if (previousIndexedDB === undefined) delete globalThis.indexedDB;
+      else globalThis.indexedDB = previousIndexedDB;
+      if (previousKeyRange === undefined) delete globalThis.IDBKeyRange;
+      else globalThis.IDBKeyRange = previousKeyRange;
     }
   };
 }

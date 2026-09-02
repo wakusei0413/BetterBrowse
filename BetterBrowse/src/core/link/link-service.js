@@ -68,6 +68,18 @@ export class LinkService {
   }
 
   /**
+   * 获取内容脚本所需的最小页面上下文，避免向每个框架复制完整规则表。
+   * @param {string} pageUrl - 当前框架 URL
+   * @returns {Promise<{ effectiveMode: string }>}
+   */
+  static async getPageLinkContext(pageUrl) {
+    const domain = LinkMatcher.extractDomain(pageUrl);
+    if (!domain) return { effectiveMode: LinkModes.AUTO };
+    const { effectiveMode } = await this.getModeForDomain(domain);
+    return { effectiveMode };
+  }
+
+  /**
    * 设置指定域名的独立跳转规则
    * 读-改-写序列持跨上下文写锁，防止 popup 与选项页并发写入互相覆盖
    * @param {string} domain - 目标域名

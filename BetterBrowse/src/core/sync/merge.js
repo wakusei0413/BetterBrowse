@@ -322,18 +322,22 @@ export class SyncMerge {
       'readwrite',
       async (tx) => {
         const store = tx.objectStore(IDBStores.ACTIVITY_STATS);
-        const record = await IndexedDBManager.requestToPromise(store.get(StorageKeys.ACTIVITY_STATS));
-        const stats = record?.value && typeof record.value === 'object' ? { ...record.value } : {};
+        const writePage = async (pageId, incoming) => {
+          if (!pageId || pageId === 'fieldRevs' || !/^page_/.test(pageId)) return;
+          const existing = await IndexedDBManager.requestToPromise(store.get(pageId));
+          const merged = this._mergeActivityRecord(existing?.value, incoming);
+          store.put({ key: pageId, value: merged, updatedAt: Date.now() });
+        };
+
         if (op.entityId === 'stats' && op.fields?.pages && typeof op.fields.pages === 'object') {
           for (const [pageId, incoming] of Object.entries(op.fields.pages)) {
-            if (!pageId || pageId === 'fieldRevs') continue;
-            stats[pageId] = this._mergeActivityRecord(stats[pageId], incoming);
+            await writePage(pageId, incoming);
           }
         } else {
-          const pageId = op.entityId;
-          stats[pageId] = this._mergeActivityRecord(stats[pageId], op.fields || {});
+          await writePage(op.entityId, op.fields || {});
         }
-        store.put({ key: StorageKeys.ACTIVITY_STATS, value: stats, updatedAt: Date.now() });
+        // 清理历史聚合键，避免双形态并存
+        store.delete(StorageKeys.ACTIVITY_STATS);
         return 'applied';
       }
     );

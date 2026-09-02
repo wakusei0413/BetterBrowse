@@ -88,7 +88,24 @@ export const AI_ACTION_DOCS = {
   [ActionTypes.GET_TAB_COUNT_INFO]: { summary: '获取当前窗口可计数标签页数量与阈值' },
 
   // === 收纳箱数据管理 ===
-  [ActionTypes.GET_STASH_GROUPS]: { summary: '获取全部收纳组（星标优先、时间倒序）' },
+  [ActionTypes.GET_STASH_GROUPS]: { summary: '获取全部收纳组（星标优先、时间倒序，含完整 tabs）' },
+  [ActionTypes.GET_STASH_GROUP_SUMMARIES]: {
+    summary: '获取收纳组摘要（兼容旧调用；新调用优先使用分页动作）',
+    params: { previewLimit: 'number，缺省 0；兼容字段' }
+  },
+  [ActionTypes.GET_STASH_STATS]: { summary: '获取收纳组总数与条目总数' },
+  [ActionTypes.GET_STASH_TIMELINE_BUCKETS]: {
+    summary: '获取收纳时间线周分桶摘要，不返回组与条目实体'
+  },
+  [ActionTypes.GET_STASH_GROUP_SUMMARIES_PAGE]: {
+    summary: '按稳定游标分页读取收纳组摘要',
+    params: {
+      cursor: 'string，可选；上一页返回的 nextCursor',
+      limit: 'number，缺省 50，上限 200',
+      createdAtFrom: 'number，可选，时间范围下界',
+      createdAtTo: 'number，可选，时间范围上界'
+    }
+  },
   [ActionTypes.UPDATE_STASH_GROUP]: {
     summary: '更新收纳组属性',
     params: {
@@ -129,7 +146,16 @@ export const AI_ACTION_DOCS = {
   },
   [ActionTypes.EXPORT_STASH_DATA]: { summary: '导出收纳数据 JSON 字符串' },
   [ActionTypes.EXPORT_FULL_BACKUP]: {
-    summary: '导出全量备份 JSON（收纳组 + 配置 + 域名规则；不含凭据与自动备份）'
+    summary: '导出全量备份 JSON（兼容小数据完整响应；不含凭据与自动备份）'
+  },
+  [ActionTypes.READ_EXPORT_CHUNK]: {
+    summary: '按无状态游标分块生成导出内容，适合大数据写文件',
+    params: {
+      type: "'full_backup' | 'stash_json' | 'onetab'",
+      cursor: 'string，可选；上一块返回的 nextCursor',
+      maxChars: 'number，单块字符上限',
+      expectedStashRevision: 'number，可选；检测导出期间数据变化'
+    }
   },
   [ActionTypes.RESTORE_FULL_BACKUP]: {
     summary: '恢复全量备份（配置走白名单恢复）',
@@ -175,12 +201,22 @@ export const AI_ACTION_DOCS = {
     }
   },
   [ActionTypes.SEARCH_STASH]: {
-    summary: '按关键字全局检索收纳条目（标题 / URL 模糊匹配）',
-    params: { keyword: 'string', limit: 'number，缺省 100' }
+    summary: '按关键字游标检索收纳条目（标题 / URL 模糊匹配）',
+    params: {
+      keyword: 'string',
+      limit: 'number，缺省 100',
+      cursor: 'string，可选；上一页返回的 nextCursor',
+      paginated: 'boolean，true 返回分页对象；缺省兼容返回数组'
+    }
   },
   [ActionTypes.GET_STASH_GROUP_PAGE]: {
-    summary: '分页读取指定组条目（支撑超长组）',
-    params: { groupId: 'string', offset: 'number，缺省 0', limit: 'number，缺省 50，上限 500' }
+    summary: '使用数据库游标分页读取指定组条目',
+    params: {
+      groupId: 'string',
+      cursor: 'string，可选；上一页返回的 nextCursor',
+      offset: 'number，兼容旧调用，缺省 0',
+      limit: 'number，缺省 50，上限 500'
+    }
   },
 
   // === 自动备份管理（AI 增强）===

@@ -8,12 +8,18 @@
 export const DB_NAME = 'betterbrowse';
 
 /**
- * 本地主库结构修订号（新增对象仓储或索引时递增；修订 10 起增加本地统一运行日志仓储）。
+ * 本地主库结构修订号（新增对象仓储或索引时递增；修订 11 增加收纳组排序与组内位置复合索引）。
  * ⚠️ 必须单调递增且 > 磁盘上的现存修订号：IndexedDB 拒绝用更低的修订号打开库（VersionError），
  * 且"仅抬高修订号而不建表"的异常残留库需要更高的修订号才能重新触发 upgradeneeded 建表
  * （由 MigrationManager.repairMissingObjectStores 自愈流程处理）。
  */
-export const INDEXED_DB_SCHEMA_REVISION = 10;
+export const INDEXED_DB_SCHEMA_REVISION = 11;
+
+/** 收纳组按星标优先、创建时间倒序读取的复合索引 */
+export const STASH_GROUP_SORT_INDEX = 'starRank_createdAt_groupId';
+
+/** 收纳条目按组、位置、条目主键稳定分页的复合索引 */
+export const STASH_ENTRY_POSITION_INDEX = 'groupId_position_entryId';
 
 /**
  * 对象仓储名称与结构契约（详见 docs/01-local-indexeddb.md 第 2.1 节）
@@ -92,8 +98,8 @@ export class IndexedDBManager {
       }, 10000);
 
       request.onupgradeneeded = (event) => {
-        // 首次创建或版本升级时建立对象仓储与索引
-        this._ensureSchema(event.target.result);
+        // 首次创建或版本升级时建立对象仓储与索引；已有仓储的新增索引必须通过升级事务补建
+        this._ensureSchema(event.target.result, event.target.transaction);
       };
 
       request.onsuccess = () => {
@@ -140,26 +146,49 @@ export class IndexedDBManager {
   /**
    * 建立对象仓储与索引结构（幂等：已存在的仓储与索引直接跳过）
    * @param {IDBDatabase} db
+   * @param {IDBTransaction | null} [upgradeTx]
    */
-  static _ensureSchema(db) {
+  static _ensureSchema(db, upgradeTx = null) {
+    const ensureIndex = (store, name, keyPath, options = { unique: false }) => {
+      if (!store.indexNames.contains(name)) store.createIndex(name, keyPath, options);
+    };
+    const getUpgradeStore = (storeName) => upgradeTx?.objectStore(storeName);
+
+    let pages;
     if (!db.objectStoreNames.contains(IDBStores.PAGES)) {
-      const pages = db.createObjectStore(IDBStores.PAGES, { keyPath: 'pageId' });
-      pages.createIndex('url', 'url', { unique: false });
-      pages.createIndex('domain', 'domain', { unique: false });
-      pages.createIndex('updatedAt', 'updatedAt', { unique: false });
+      pages = db.createObjectStore(IDBStores.PAGES, { keyPath: 'pageId' });
+    } else {
+      pages = getUpgradeStore(IDBStores.PAGES);
+    }
+    if (pages) {
+      ensureIndex(pages, 'url', 'url');
+      ensureIndex(pages, 'domain', 'domain');
+      ensureIndex(pages, 'updatedAt', 'updatedAt');
     }
 
+    let groups;
     if (!db.objectStoreNames.contains(IDBStores.STASH_GROUPS)) {
-      const groups = db.createObjectStore(IDBStores.STASH_GROUPS, { keyPath: 'groupId' });
-      groups.createIndex('createdAt', 'createdAt', { unique: false });
-      groups.createIndex('name', 'title', { unique: false });
+      groups = db.createObjectStore(IDBStores.STASH_GROUPS, { keyPath: 'groupId' });
+    } else {
+      groups = getUpgradeStore(IDBStores.STASH_GROUPS);
+    }
+    if (groups) {
+      ensureIndex(groups, 'createdAt', 'createdAt');
+      ensureIndex(groups, 'name', 'title');
+      ensureIndex(groups, STASH_GROUP_SORT_INDEX, ['starRank', 'createdAt', 'groupId']);
     }
 
+    let entries;
     if (!db.objectStoreNames.contains(IDBStores.STASH_ENTRIES)) {
-      const entries = db.createObjectStore(IDBStores.STASH_ENTRIES, { keyPath: 'entryId' });
-      entries.createIndex('groupId', 'groupId', { unique: false });
-      entries.createIndex('pageId', 'pageId', { unique: false });
-      entries.createIndex('createdAt', 'createdAt', { unique: false });
+      entries = db.createObjectStore(IDBStores.STASH_ENTRIES, { keyPath: 'entryId' });
+    } else {
+      entries = getUpgradeStore(IDBStores.STASH_ENTRIES);
+    }
+    if (entries) {
+      ensureIndex(entries, 'groupId', 'groupId');
+      ensureIndex(entries, 'pageId', 'pageId');
+      ensureIndex(entries, 'createdAt', 'createdAt');
+      ensureIndex(entries, STASH_ENTRY_POSITION_INDEX, ['groupId', 'position', 'entryId']);
     }
 
     if (!db.objectStoreNames.contains(IDBStores.SETTINGS)) {

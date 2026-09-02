@@ -113,10 +113,12 @@ export class PinnedTabGuard {
         }
       } else {
         // 单个标签页常规关闭
+        const existing = windowId ? this.tabsByWindow.get(windowId)?.get(tabId) : null;
+        const wasOptions = existing ? isOwnOptionsUrl(existing.url) : false;
         if (windowId && this.tabsByWindow.has(windowId)) {
           this.tabsByWindow.get(windowId).delete(tabId);
         }
-        if (removeInfo && !removeInfo.isWindowClosing) {
+        if (removeInfo && !removeInfo.isWindowClosing && wasOptions) {
           this.scheduleCheck(150, windowId);
         }
       }
@@ -124,9 +126,14 @@ export class PinnedTabGuard {
 
     // 5. 监听标签页移动（如果 options.html 被拖动离开 index 0，自动移回首位）
     chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
-      if (moveInfo && typeof moveInfo.windowId === 'number') {
+      if (!moveInfo || typeof moveInfo.windowId !== 'number') return;
+      const snapshot = this.tabsByWindow.get(moveInfo.windowId)?.get(tabId);
+      if (snapshot && isOwnOptionsUrl(snapshot.url)) {
+        snapshot.index = moveInfo.toIndex;
         this.scheduleCheck(100, moveInfo.windowId);
+        return;
       }
+      if (moveInfo.toIndex === 0) this.scheduleCheck(100, moveInfo.windowId);
     });
 
     // 6. 监听浏览器窗口聚焦
@@ -153,29 +160,32 @@ export class PinnedTabGuard {
    */
   async stashClosingWindowTabs(windowId) {
     try {
-      // SW 冷启动瞬间快照可能尚未同步完成，等待其就绪再走兜底路径
-      // （实时 tabs.query 优先，快照仅作为查询失败时的兜底）
+      // SW 冷启动瞬间快照可能尚未同步完成，先等待快照就绪。
       await this.ready?.catch?.(() => {});
       const config = await StorageAdapter.getUserConfig();
       if (config.stashSettings?.pinnedTabGuard === false) return;
-      let tabsList = [];
-      try {
-        const liveTabs = await chrome.tabs.query({ windowId });
-        tabsList = liveTabs.map((tab) => ({
-          id: tab.id,
-          url: tab.url || '',
-          title: tab.title || tab.url || '无标题页面',
-          favIconUrl: tab.favIconUrl || '',
-          pinned: Boolean(tab.pinned),
-          index: tab.index
-        }));
-      } catch {}
-      if (tabsList.length === 0) {
-        const windowTabsMap = this.tabsByWindow.get(windowId);
-        tabsList = windowTabsMap ? Array.from(windowTabsMap.values()) : [];
+
+      // 窗口关闭事件到达时，Chrome 往往已开始销毁标签。优先使用事件持续维护的快照并先过滤，
+      // 只有快照完全缺失时才额外查询实时标签，避免每次关闭都做注定失败或空结果的全量查询。
+      const windowTabsMap = this.tabsByWindow.get(windowId);
+      let tabsToSave = windowTabsMap
+        ? Array.from(windowTabsMap.values()).filter((tab) => !isExcludedFromTabCounting(tab))
+        : [];
+      if (!windowTabsMap) {
+        try {
+          const liveTabs = await chrome.tabs.query({ windowId });
+          tabsToSave = liveTabs
+            .map((tab) => ({
+              id: tab.id,
+              url: tab.url || '',
+              title: tab.title || tab.url || '无标题页面',
+              favIconUrl: tab.favIconUrl || '',
+              pinned: Boolean(tab.pinned),
+              index: tab.index
+            }))
+            .filter((tab) => !isExcludedFromTabCounting(tab));
+        } catch {}
       }
-      if (tabsList.length === 0) return;
-      const tabsToSave = tabsList.filter((tab) => !isExcludedFromTabCounting(tab));
 
       if (tabsToSave.length > 0) {
         console.info(`[PinnedTabGuard] 正在执行窗口关闭全量收纳 (${tabsToSave.length} 个标签页)...`);
@@ -200,6 +210,13 @@ export class PinnedTabGuard {
     this.checkDebounceTimer = setTimeout(async () => {
       this.isGuarding = true;
       try {
+        if (windowId && windowId !== chrome.windows.WINDOW_ID_NONE) {
+          const windowTabs = this.tabsByWindow.get(windowId);
+          const optionsTab = windowTabs
+            ? [...windowTabs.values()].find((tab) => isOwnOptionsUrl(tab.url))
+            : null;
+          if (optionsTab && optionsTab.pinned && optionsTab.index === 0) return;
+        }
         const config = await StorageAdapter.getUserConfig();
         if (config.stashSettings?.pinnedTabGuard === false) return;
         if (windowId && windowId !== chrome.windows.WINDOW_ID_NONE) {

@@ -182,6 +182,23 @@ export class StorageAdapter {
    */
   static async _getIdbValue(storeName, key) {
     return await IndexedDBManager.runTransaction([storeName], 'readonly', async (tx) => {
+      // 活跃度自本地数据修订 10 起按 pageId 分记录；对外仍返回聚合对象以兼容旧调用方。
+      if (storeName === IDBStores.ACTIVITY_STATS && key === StorageKeys.ACTIVITY_STATS) {
+        const all = await IndexedDBManager.requestToPromise(tx.objectStore(storeName).getAll());
+        const aggregate = {};
+        for (const record of all || []) {
+          if (!record?.key) continue;
+          if (record.key === StorageKeys.ACTIVITY_STATS && record.value && typeof record.value === 'object') {
+            Object.assign(aggregate, record.value);
+            continue;
+          }
+          if (/^page_/.test(record.key) && record.value && typeof record.value === 'object') {
+            aggregate[record.key] = record.value;
+          }
+        }
+        // 已走 IndexedDB 主库时，即使结果为空也返回 {}，避免回退到旧 chrome.storage 脏快照。
+        return aggregate;
+      }
       const record = await IndexedDBManager.requestToPromise(tx.objectStore(storeName).get(key));
       return record ? record.value : undefined;
     });
@@ -201,6 +218,47 @@ export class StorageAdapter {
       stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
     }
     await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
+      // 活跃度整对象写入拆成 pageId 记录，并删除历史聚合键。
+      if (storeName === IDBStores.ACTIVITY_STATS && key === StorageKeys.ACTIVITY_STATS) {
+        const store = tx.objectStore(storeName);
+        const pages = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+        const existing = await IndexedDBManager.requestToPromise(store.getAllKeys());
+        for (const existingKey of existing || []) {
+          if (existingKey === StorageKeys.ACTIVITY_STATS || /^page_/.test(String(existingKey))) {
+            store.delete(existingKey);
+          }
+        }
+        for (const [pageId, pageValue] of Object.entries(pages)) {
+          if (!/^page_/.test(pageId) || !pageValue || typeof pageValue !== 'object') continue;
+          store.put({
+            key: pageId,
+            value: {
+              url: typeof pageValue.url === 'string' ? pageValue.url : '',
+              lastActivated: Number(pageValue.lastActivated) || 0,
+              activationTimestamps: Array.isArray(pageValue.activationTimestamps)
+                ? pageValue.activationTimestamps.filter((ts) => Number.isFinite(ts))
+                : []
+            },
+            updatedAt: Date.now()
+          });
+          if (shouldEnqueue) {
+            await SyncOutbox.enqueueInTx(tx, {
+              entityType: SyncEntityTypes.ACTIVITY,
+              entityId: pageId,
+              op: SyncOps.UPSERT,
+              fields: {
+                url: typeof pageValue.url === 'string' ? pageValue.url : '',
+                lastActivated: Number(pageValue.lastActivated) || 0,
+                activationTimestamps: Array.isArray(pageValue.activationTimestamps)
+                  ? pageValue.activationTimestamps.filter((ts) => Number.isFinite(ts))
+                  : []
+              }
+            });
+          }
+        }
+        return;
+      }
+
       let enqueueSpec = null;
       if (shouldEnqueue) {
         enqueueSpec = await this._buildEnqueueSpec(tx, storeName, key, value);

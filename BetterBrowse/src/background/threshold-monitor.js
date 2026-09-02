@@ -51,41 +51,42 @@ export class ThresholdMonitor {
     this.deadline = 0;
     this.actionNonce = '';
     this.alarmName = 'better-browse-threshold-countdown';
+    this.checkDebounceTimer = null;
+    this.pendingWindowIds = new Set();
 
     this.initListeners();
     // 状态恢复是异步的：alarm 与事件回调必须先等待本 Promise 完成，
     // 否则 SW 冷启动瞬间 deadline/lastActionTime 仍为 0，会导致倒计时丢失或重复触发
     this.readyPromise = this.restoreState();
+  }
 
-    // 插件启动或 Service Worker 唤醒时，延迟 1 秒主动检测一次当前窗口标签数（等待状态恢复完成）
-    setTimeout(() => {
-      this.readyPromise
-        .then(() => this.checkTabCount())
-        .catch(() => {});
-    }, 1000);
+  /**
+   * 仅供浏览器真正启动时调用，不在每次 Service Worker 冷启动时检查。
+   */
+  async checkOnStartup() {
+    await this.readyPromise.catch(() => {});
+    await this.checkTabCount();
   }
 
   initListeners() {
-    // 1. 监听新标签页创建
-    chrome.tabs.onCreated.addListener(() => {
-      this.checkTabCount().catch(() => {});
+    // 1. 创建、移除与窗口聚焦可能在短时间内成批发生，统一防抖后按涉及窗口检查。
+    chrome.tabs.onCreated.addListener((tab) => {
+      this.scheduleTabCountCheck(tab?.windowId);
     });
-
-    // 2. 监听标签页切换激活
-    chrome.tabs.onActivated.addListener(() => {
-      this.checkTabCount().catch(() => {});
-    });
-
-    // 3. 监听窗口获得焦点
+    if (chrome.tabs.onRemoved) {
+      chrome.tabs.onRemoved.addListener((_tabId, removeInfo) => {
+        this.scheduleTabCountCheck(removeInfo?.windowId);
+      });
+    }
     if (chrome.windows?.onFocusChanged) {
       chrome.windows.onFocusChanged.addListener((windowId) => {
         if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-          this.checkTabCount(windowId).catch(() => {});
+          this.scheduleTabCountCheck(windowId);
         }
       });
     }
 
-    // 4. 监听通知按钮点击
+    // 2. 监听通知按钮点击
     if (chrome.notifications && chrome.notifications.onButtonClicked) {
       chrome.notifications.onButtonClicked.addListener((notifId, btnIdx) => {
         if (notifId === this.notificationId) {
@@ -104,6 +105,24 @@ export class ThresholdMonitor {
         if (alarm?.name === this.alarmName) this.handleAlarm().catch(() => {});
       });
     }
+  }
+
+  /**
+   * 合并标签创建、移除与窗口聚焦引发的阈值检查，避免同一批浏览器事件重复全量读取标签。
+   * @param {number | undefined} windowId
+   */
+  scheduleTabCountCheck(windowId) {
+    if (typeof windowId === 'number' && windowId > 0) {
+      this.pendingWindowIds.add(windowId);
+    }
+    clearTimeout(this.checkDebounceTimer);
+    this.checkDebounceTimer = setTimeout(() => {
+      this.checkDebounceTimer = null;
+      const windowIds = [...this.pendingWindowIds];
+      this.pendingWindowIds.clear();
+      const targets = windowIds.length > 0 ? windowIds : [null];
+      Promise.allSettled(targets.map((target) => this.checkTabCount(target))).catch(() => {});
+    }, 150);
   }
 
   async restoreState() {
@@ -318,7 +337,7 @@ export class ThresholdMonitor {
 
       const tabId = tab.id;
       try {
-        const res = await MessageBus.sendToTab(tabId, ActionTypes.SHOW_AUTO_STASH_COUNTDOWN, payload, 800);
+        const res = await MessageBus.sendToFrame(tabId, 0, ActionTypes.SHOW_AUTO_STASH_COUNTDOWN, payload, 800);
         if (res?.success) continue;
 
         // 内容脚本尚未注入（刚打开的页面 / 被 CSP 阻断后动态注入）
@@ -331,7 +350,7 @@ export class ThresholdMonitor {
         } catch {
           continue;
         }
-        await MessageBus.sendToTab(tabId, ActionTypes.SHOW_AUTO_STASH_COUNTDOWN, payload, 800);
+        await MessageBus.sendToFrame(tabId, 0, ActionTypes.SHOW_AUTO_STASH_COUNTDOWN, payload, 800);
       } catch {
         // 标签页在探测/注入期间被关闭属正常竞态
       }
@@ -370,7 +389,7 @@ export class ThresholdMonitor {
         if (chrome.runtime.lastError || !tabs || tabs.length === 0) return;
         for (const tab of tabs) {
           if (tab.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
-            MessageBus.sendToTab(tab.id, ActionTypes.HIDE_AUTO_STASH_COUNTDOWN, null, 400).catch(() => {});
+            MessageBus.sendToFrame(tab.id, 0, ActionTypes.HIDE_AUTO_STASH_COUNTDOWN, null, 400).catch(() => {});
           }
         }
       });
