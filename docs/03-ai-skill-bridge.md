@@ -82,7 +82,7 @@
 
 ### 3.4 内部控制消息（不走 action 管道）
 
-- 宿主每 25s 向扩展发 `{"internal":"ping"}`，扩展回 `{"internal":"pong"}`——同时作为 MV3 Service Worker 保活信号。
+- 宿主维护定时器（25s）负责在途请求超时与队列自身健康检查；**只有存在在途请求时才向扩展发 `{"internal":"ping"}`**，扩展回 `{"internal":"pong"}`。空闲时不再周期唤醒 MV3 Service Worker。
 - 扩展连接成功即发 `{"internal":"hello","apiVersion":1}`，宿主校验后回 `{"internal":"ready","apiVersion":1,"compatible":true}`。
 
 ## 4. 生命周期
@@ -91,7 +91,7 @@
 | --- | --- |
 | 开关开启 / SW 冷启动 / onStartup / onInstalled | `AIBridgeManager.init()` → `chrome.runtime.connectNative('com.betterbrowse.bridge')` |
 | 宿主未安装 | `connectNative` 回调报错 → 状态置 `host_missing`，指数退避重试（5s→15s→60s→5min 封顶） |
-| 宿主已连 | 每 25s ping 保活，SW 在 Chrome 存续期内常驻（接受此功耗，换桥持续可用） |
+| 宿主已连 | 仅在有在途请求时 ping；开放中的 Native Messaging 端口本身即延长 SW 生命周期，无需空闲心跳 |
 | Chrome 退出 | stdio EOF → 宿主自行退出并删除 `bridge.json` |
 | 开关关闭 | 主动断开 native 端口、宿主退出、`bridge.json` 清除；Agent 请求全部被拒 |
 
@@ -121,7 +121,7 @@
 | --- | --- |
 | 弹窗三段拉杆 / 域名规则页 | `SET_LINK_RULE` `GET_DOMAIN_RULES` `SET_DOMAIN_RULE` `REMOVE_DOMAIN_RULE` `CLEAR_DOMAIN_RULES` `GET/SET_GLOBAL_LINK_RULE` |
 | 弹窗/收纳页「立即收纳」 | `EXECUTE_STASH`（`{forceAll:true}`）`EVALUATE_TABS` |
-| 收纳箱 Tab 组操作 | `GET_STASH_GROUPS` `UPDATE_STASH_GROUP` `RESTORE_STASH_GROUP` `RESTORE_STASH_ITEM` `RESTORE_STASH_GROUP_DATA` `DELETE_STASH_GROUP` `DELETE_STASH_ITEM` `CLEAR_ALL_STASH` `DEDUPLICATE_STASH_DATA` |
+| 收纳箱 Tab 组操作 | `GET_STASH_GROUPS` `GET_STASH_GROUP_SUMMARIES` `UPDATE_STASH_GROUP` `RESTORE_STASH_GROUP` `RESTORE_STASH_ITEM` `RESTORE_STASH_GROUP_DATA` `DELETE_STASH_GROUP` `DELETE_STASH_ITEM` `CLEAR_ALL_STASH` `DEDUPLICATE_STASH_DATA` |
 | 收纳箱搜索/分块浏览（AI 增强） | `SEARCH_STASH` `GET_STASH_GROUP_PAGE` `ADD_STASH_ITEM` `UPDATE_STASH_ITEM` |
 | 备份 Tab 导入导出 | `EXPORT_FULL_BACKUP` `RESTORE_FULL_BACKUP` `IMPORT_THIRD_PARTY_DATA` `IMPORT_STASH_DATA` `EXPORT_STASH_DATA` `EXPORT_ONETAB_TEXT`（AI 增强：`LIST/RESTORE/DELETE_AUTO_BACKUP`） |
 | 收纳设置 / 规则 Tab | `GET_CONFIG` `UPDATE_CONFIG` `RESET_CONFIG` `GET_TAB_ACTIVITY_STATS` |

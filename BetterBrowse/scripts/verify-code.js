@@ -5,7 +5,7 @@
  */
 
 import { dirname, fromFileUrl, resolve } from '@std/path';
-import { buildContentBundle } from './build-content.js';
+import { buildContentBundle, buildFrameContentBundle } from './build-content.js';
 
 const projectRoot = resolve(dirname(fromFileUrl(import.meta.url)), '..');
 
@@ -60,8 +60,12 @@ const allJsFiles = [
   'src/content/countdown-banner.js',
   'src/content/main-world-bridge.js',
   'src/content/index.js',
+  'src/content/frame-index.js',
   'src/content/content-bundle.js',
+  'src/content/frame-content-bundle.js',
+  'src/background/link-notifier.js',
   'src/popup/popup.js',
+  'src/options/list-window.js',
   'src/options/options.js',
   'native-host/bb_native_host.js',
   'native-host/install.js',
@@ -228,6 +232,22 @@ try {
     console.error('[FAIL] content-bundle.js 存在语法错误（请检查 build-content.js 的模块语法剥离规则）:', syntaxErr.message);
     hasError = true;
   }
+
+  const expectedFrameBundle = await buildFrameContentBundle();
+  const actualFrameBundle = await Deno.readTextFile(resolveProject('src/content/frame-content-bundle.js'));
+  if (expectedFrameBundle !== actualFrameBundle) {
+    console.error('[FAIL] src/content/frame-content-bundle.js 与当前 iframe 内容脚本源码不一致，请执行 deno task bundle');
+    hasError = true;
+  } else {
+    console.log('[PASS] frame-content-bundle.js 与源码一致');
+  }
+  try {
+    new Function(actualFrameBundle);
+    console.log('[PASS] frame-content-bundle.js 语法自检通过');
+  } catch (syntaxErr) {
+    console.error('[FAIL] frame-content-bundle.js 存在语法错误:', syntaxErr.message);
+    hasError = true;
+  }
 } catch (err) {
   console.error('[FAIL] 内容脚本产物一致性校验异常:', err);
   hasError = true;
@@ -239,6 +259,7 @@ const contentSourceFiles = [
   'src/content/form-detector.js',
   'src/content/countdown-banner.js',
   'src/content/index.js',
+  'src/content/frame-index.js',
   'src/content/main-world-bridge.js'
 ];
 const forbiddenStorageAccess = /chrome\.storage(?:\.local|\.sync)?\.(?:get|set|remove|clear)\b|indexedDB\.open\b/;

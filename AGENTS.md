@@ -139,13 +139,15 @@ BetterBrowse/
     │   │   ├── ai-bridge.js          # AI 桥接管理器 (Native Messaging 通道、确认位、凭据出口复查、审计)
     │   │   └── service-worker.js     # 后台总入口 (装配模块、监听事件)
     │   │
-    │   ├── content/               # 网页端内容脚本 (双层世界防御体系)
+    │   ├── content/               # 网页端内容脚本 (双层世界防御体系、顶层/iframe 双产物)
     │   │   ├── main-world-bridge.js  # 主页面世界 (Main World) 脚本，拦截 SPA 框架路由
     │   │   ├── link-interceptor.js   # 隔离世界 (Isolated World) 拦截器
     │   │   ├── form-detector.js      # 表单焦点与未保存输入探测器
     │   │   ├── countdown-banner.js   # 倒计时悬浮卡片 (Shadow DOM 样式彻底隔离)
-    │   │   ├── content-bundle.js     # 网页注入自包含单文件产物
-    │   │   └── index.js              # 内容脚本源码入口
+    │   │   ├── content-bundle.js       # 顶层页面完整能力自包含产物
+    │   │   ├── frame-content-bundle.js # iframe 轻量能力自包含产物
+    │   │   ├── frame-index.js          # iframe 轻量入口（表单探测 + 点击拦截 + 模式同步）
+    │   │   └── index.js                # 顶层内容脚本源码入口
     │   │
     │   ├── popup/                 # 弹出控制台 (极简扁平化 UI)
     │   │   ├── popup.html
@@ -155,7 +157,8 @@ BetterBrowse/
     │   ├── options/               # 选项与收纳管理中心仪表盘 (组件化设计)
     │   │   ├── options.html
     │   │   ├── options.css
-    │   │   └── options.js
+    │   │   ├── options.js
+    │   │   └── list-window.js     # 时间线虚拟窗口纯函数（组卡片/组内条目）
     │   │
     │   └── icons/                 # 高清图标资源 (16/32/48/128/256/512)
 ```
@@ -449,25 +452,38 @@ deno task ai-host-uninstall
    - 源码即为运行代码。修改 `src/` 中的 JS、HTML、CSS 后，在 Chrome 扩展管理界面点击刷新即可直接生效。
 2. **SPA 框架与单页面路由拦截**：
    - 任何涉及阻止单页跳转的行为，必须在 `src/content/main-world-bridge.js` 的**主世界捕获阶段**完成，绝对不能只在隔离世界（Isolated World）里调用 `event.stopPropagation()`，否则无法阻止页面的 Ember/Vue/React 路由。
-3. **内容脚本更新**：
-   - 浏览器内容脚本加载的是 `src/content/content-bundle.js`，修改了 `src/content/` 内部拆分源码后，**执行 `deno task bundle` 即可一键合并**。
-   - `content-bundle.js` 内联了 `constants/` 下的常量（StorageKeys、LOCAL_DATA_SCHEMA_REVISION 等），**修改这些内容脚本依赖后同样必须重新打包**，否则 `deno task verify` 会因产物不一致而失败。
-4. **IndexedDB 与旧存储双数据源**：
+3. **内容脚本更新（双产物）**：
+   - 浏览器内容脚本加载两个打包产物：`src/content/content-bundle.js`（顶层页面完整能力）与 `src/content/frame-content-bundle.js`（iframe 轻量能力）。修改了 `src/content/` 内部拆分源码后，**执行 `deno task bundle` 即可一键生成两个产物**。
+   - 两个 bundle 都内联了 `constants/` 下的常量（StorageKeys、LOCAL_DATA_SCHEMA_REVISION 等），**修改这些内容脚本依赖后同样必须重新打包**，否则 `deno task verify` 会因产物不一致而失败。
+   - 新增或调整内容脚本源码后，需同时维护 `scripts/build-content.js` 的入口清单、`manifest.json` 的注入声明，以及 `scripts/verify-code.js` 的文件列表与产物一致性校验。
+4. **内容脚本注入范围与休眠约定**：
+   - 两套内容脚本只注入 `http://*/*` 与 `https://*/*`，不再使用 `<all_urls>`。
+   - 隔离世界完整产物只进顶层框架（`all_frames: false`）；iframe 由轻量产物承载，且不在顶层重复初始化。
+   - 主世界桥接与隔离世界拦截器在 `auto` 模式下必须休眠：不绑定悬浮监听、不启动 body MutationObserver、不扫描全页链接、不替换 `window.open`。切到 `current/new` 时才激活；切回 `auto` 时按 `data-bb-orig-target` / `data-bb-orig-rel` 精确恢复原属性并释放资源。
+   - 非 `auto` 模式的 MutationObserver 只读 `MutationRecord.addedNodes`，仅处理新增子树中的链接，禁止再次执行整页 `querySelectorAll('a[href]')`。
+   - iframe 轻量产物不加载倒计时卡片、运行日志与全页 DOM 逻辑，仅保留表单探测、模式同步与点击拦截。
+5. **最小上下文与精准 frame 投递**：
+   - `GET_PAGE_LINK_CONTEXT` 只向内容脚本返回 `{ effectiveMode }`；后台不得把整份域名规则表或完整配置复制到每个框架。
+   - 后台读取模式时必须优先使用 `sender.url`（iframe 自身 URL），不要用 `sender.tab.url`，否则跨域 iframe 会继承顶层页面的跳转模式。
+   - 域名规则变更只通知受影响的 `tabId + frameId`；全局规则、清空规则、重置/恢复配置与云端合并才更新全部 HTTP(S) 框架，并在通知里直接携带新的 `effectiveMode`。
+   - 表单保护必须聚合标签页所有 HTTP(S) 框架的 `CHECK_FORM_INPUT` 结果（任一框架有输入或探测失败即保留标签），不能只依赖一次不带 `frameId` 的 `chrome.tabs.sendMessage()`。
+   - 收纳数据变更不再广播给普通网页，扩展页面统一以 `bb_stash_revision` 修订号为通知源。倒计时卡片只投递顶层框架（`frameId: 0`）。
+6. **IndexedDB 与旧存储双数据源**：
    - 收纳数据自本地数据修订 5 起、配置/规则/备份/活跃度自修订 7 起以 IndexedDB 为主库，**任何新功能严禁绕过 `LocalStashRepository` / `StorageAdapter` 门面直接读写 `bb_stash_groups`、`bb_user_config` 或 IndexedDB**；
    - 内容脚本不得访问 `chrome.storage.local` 或 IndexedDB，必须通过 `GET_PAGE_LINK_CONTEXT` 等消息向后台索取最小必要字段；
    - 门面写方法的后端决策发生在写锁临界区内，改动门面时**不得把 `_getBackend()` 决策移出锁外**，否则会引入"决策后版本翻转"竞态导致漏写；
    - `IndexedStashRepository` 的写方法自身**不持锁**（调用方持锁），直接调用必须自行包裹 `IndexedDBManager.withWriteLock`，且**严禁嵌套获取写锁**（死锁）；
    - 需要 UI 实时感知 IndexedDB 数据变化时，监听 `bb_stash_revision` 修订号（门面写成功后自动广播），不要依赖 `chrome.storage.onChanged` 的 `bb_stash_groups`。
-5. **消息来源授权（MessageBus 来源鉴权，`src/core/security/message-authorizer.js`）**：
+7. **消息来源授权（MessageBus 来源鉴权，`src/core/security/message-authorizer.js`）**：
    - **判 internal 只看 `sender.url`，绝不附加 `!sender.tab`**：选项页（options）几乎总是在普通标签页里打开（从 `chrome://extensions` 点「选项」、或从 popup 跳转过去），此时 Chrome 也会给扩展页面设置 `sender.tab`。若判定 `internal` 时额外要求 `!sender.tab`，会把 options 误判成"内容脚本"来源，导致除 5 个白名单动作（`GET_PAGE_LINK_CONTEXT` / `OPEN_TAB_BACKGROUND` / `APPEND_RUNTIME_LOG` / `CANCEL_AUTO_STASH` / `CONFIRM_AUTO_STASH`）外的所有 action（`GET_CONFIG` / `GET_STASH_GROUPS` / `IMPORT_STASH_DATA` / `UPDATE_CONFIG` / 同步相关等）全部被拒，UI 读不到任何数据、写不进配置、导不进备份，表现如同"数据全部消失"。数据实际没丢，刷新扩展即恢复。
    - **安全前提成立**：内容脚本的 `sender.url` 是网页 URL（非 `chrome-extension://`），不可能匹配本扩展来源，因此单凭 `sender.url.startsWith(ownOrigin)` 即可安全区分扩展页面与内容脚本，不会把网页放进 `internal`。
    - **新增 action 时同步三处**：人类 UI 与内容脚本若都要调用，在 `action-handlers.js` 挂 handler → 内容脚本路径必须同时加入 `message-authorizer.js` 的 `CONTENT_ALLOWED_ACTIONS`，否则内容脚本来源会被拒；属人类 UI 功能则同步更新 `tests/ai-bridge.test.js` 的 `HUMAN_UI_ACTIONS`（parity 断言）。
    - **改动鉴权逻辑必须补回归测试**：`tests/message-authorizer.test.js` 需覆盖"扩展页面在标签页里打开（`sender.url` 为扩展页面 + 带 `sender.tab`）仍判为 internal 且敏感 action 放行"这一关键路径，防止回归。
    - **`popup-lifecycle` 端口必须校验来源**：`onConnect` 只接受本扩展 `popup.html` 且不得带 `sender.tab`（`isTrustedPopupLifecyclePort`）。内容脚本也能 `connect()`，不能把任意短连接当成图标双击全量收纳。
    - **倒计时确认/取消对内容脚本要求 nonce**：`SHOW_AUTO_STASH_COUNTDOWN` 下发一次性凭证，卡片用 closed Shadow 持有，不写进 DOM；内容脚本调用 `CONFIRM_AUTO_STASH` / `CANCEL_AUTO_STASH` 必须回传。AI / 扩展页面 / 通知按钮不走此约束。
-6. **编码要求**：
+8. **编码要求**：
    - 任何新增文件必须以 **UTF-8** 格式保存，且代码注释与文本使用**简体中文**。
-7. **WebDAV 云端同步（阶段二 M3，协议见 docs/02-webdav-sync.md）**：
+9. **WebDAV 云端同步（阶段二 M3，协议见 docs/02-webdav-sync.md）**：
    - **outbox 同事务**：实体写入与 outbox / operationLogs / clock 更新必须在**同一个** `runTransaction` 事务内（`SyncOutbox.enqueueInTx`），拆开会出现"实体已写而操作丢失"的分叉；大组仍按 500 条分批，每批实体与操作同事务提交；
    - **严禁嵌套写锁**：`DeviceEventLog.append` 自行获取写锁，**不得**在已持锁的临界区内调用（倒计时回调、消息处理器均在锁外调用）；
    - **凭据排除**：`bb_webdav_credentials` 与 `bb_auto_backups` 被排除在 outbox、快照载荷与全量导出 JSON 之外，新增可同步键时必须维护 `StorageAdapter._shouldEnqueue` 与 `SyncSnapshot.buildPayload` 的排除表；
@@ -475,7 +491,7 @@ deno task ai-host-uninstall
    - **能力探测前置**：探测仅拒绝认证失败与写入失败；缺失 ETag / If-Match 的服务器进入**兼容模式**（如 123 云盘 WebDAV），清单更新必须经 `SyncEngine._updateManifest` 统一通道「读取最新远端清单 → 在最新内容上合并 → 条件写入 → 412 重试」，**严禁**基于运行开始时的缓存清单直接覆盖远端（会吞掉其他设备的并发写入）；
    - **远端不可变**：批次与快照文件唯一命名不可变，清单更新必须携带当前 ETag 的 `If-Match`，412 视为条件写入冲突而非覆盖理由。
    - **浏览器账号偏好镜像**：`chrome.storage.sync` 只允许写入 `bb_account_config`（阈值 / 规则开关 / 收纳箱设置 / WebDAV 地址）。**严禁**把收纳组、页面、条目、`bb_link_rules`、凭据、自动备份或 `fieldRevs` 写入 sync；`chrome.storage.sync` 缺失时直接跳过，**禁止**回退到 `chrome.storage.local`。
-8. **AI 桥接（阶段三 M4，协议见 docs/03-ai-skill-bridge.md）**：
+10. **AI 桥接（阶段三 M4，协议见 docs/03-ai-skill-bridge.md）**：
    - **同一处理路径**：人类 UI 消息与 AI 桥接指令共用 `action-handlers.js` 的同一份映射。**新增动作时**：在该映射挂 handler → 同步在 `src/core/ai/ai-capabilities.js` 的 `AI_ACTION_DOCS` 补参数文档 → 若属人类 UI 功能则更新 `tests/ai-bridge.test.js` 的 `HUMAN_UI_ACTIONS`（parity 断言强制"人类有的 AI 必有"，漏文档会直接挂测试）；
    - **确认位红线**：新增不可逆动作时必须加入 `AI_CONFIRM_REQUIRED_ACTIONS`（AI 调用需 `payload.confirm === true`，不受 UI"删除二次确认"设置影响，恒定要求）；
    - **凭据出口复查**：任何新接口的响应都不得包含 `bb_webdav_credentials` 内容或 `password` 字段（`AIBridgeManager._guardResponse` 序列化后复查，命中即拦截）；凭据类动作的审计摘要不得记录内容（`_buildAuditSummary` 白名单字段机制）；

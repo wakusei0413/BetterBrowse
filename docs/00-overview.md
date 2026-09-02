@@ -11,7 +11,7 @@
 现有架构以 `chrome.storage.local` 保存完整数组为核心（`StorageAdapter` 为简单 key-value 门面，`LocalStashRepository` 每次"整读 → 改 → 整写"）。其问题：
 
 - 配额有限（约 10MB），收纳组 + 自动备份无法规模化；
-- 无索引、无分页，列表/搜索需整数组加载；
+- 无索引、无分页，列表/搜索需整数组加载（阶段一主库已提供组内分页与检索；选项页时间线改走组摘要 `GET_STASH_GROUP_SUMMARIES` + `GET_STASH_GROUP_PAGE`，不再为渲染 join 全部 pages）；
 - 并发仅靠单进程串行 Promise 队列，多入口（Service Worker + 选项页）下不稳固；
 - 无法表达"页面实体 / 收纳记录"等需要关系查询的模型。
 

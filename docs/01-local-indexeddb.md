@@ -16,8 +16,8 @@
 | 名称 | 主键 | 索引 | 用途 |
 | --- | --- | --- | --- |
 | `pages` | `pageId` (URL 指纹) | `url`, `domain`, `updatedAt` | 同一 URL 的页面实体（标题、最后访问、来源） |
-| `stashGroups` | `groupId` | `createdAt`, `name` | 收纳组 |
-| `stashEntries` | `entryId` | `groupId`, `pageId`, `createdAt` | 组内条目，指向 `pages` |
+| `stashGroups` | `groupId` | `createdAt`, `name`, `starRank_createdAt_groupId` | 收纳组；含派生字段 `itemCount` / `starRank` / `nextPosition`（仅本地查询用，不进入同步冲突字段） |
+| `stashEntries` | `entryId` | `groupId`, `pageId`, `createdAt`, `groupId_position_entryId` | 组内条目，指向 `pages`；组内真分页走 `groupId + position + entryId` 复合索引游标 |
 | `settings` | `key` | — | 本地数据修订 7 起承载用户配置、域名跳转规则与自动备份 |
 | `activityStats` | `key` | — | 本地数据修订 7 起承载标签页活跃度快照 |
 | `deviceEvents` | `eventId` | `deviceId`, `sequence` | 本地操作事件（阶段二复用） |
@@ -49,11 +49,23 @@
 ## 5. 验收标准
 
 - 现有 `critical-flows.test.js`、`rules-engine.test.js`、`stash-settings.test.js` 在阶段一完成后全绿（见 `04-testing-verification.md`）；
-- 收纳 1 万条 URL 时，单组加载与搜索不再整数组加载；
+- 收纳 1 万条 URL 时，单组加载与搜索不再整数组加载。选项页首屏只读取 `GET_STASH_STATS`（总数）与 `GET_STASH_GROUP_SUMMARIES`（摘要，含派生 `itemCount`，不扫描条目仓储），超长组展开再按 `GET_STASH_GROUP_PAGE` 以数据库游标补页，搜索按 `SEARCH_STASH` 游标分页；组卡片与条目继续在主列内虚拟窗口化。
+  - **口径区分**：DOM 虚拟窗口只见得着界面这层；存储层的真分页由 `stashEntries` 的 `groupId + position + entryId` 复合索引与 `stashGroups` 的派生字段保障，摘要读取不加载 `stashEntries` 全表，搜索不再 `pages.getAll()`。
 - 迁移中断（强制退出）后重启可继续，不丢数据；
 - 写入并发（SW + 选项页同时操作）不出现覆盖或死锁。
 
-## 6. 本地数据修订 6 修复迁移（2026-08-29 补充）
+## 6. 真分页、派生字段与活跃度分记录（本地数据修订 9~10 / IndexedDB 修订 11）
+
+摘要、组内分页与搜索此前存在"接口分页、实现整读"的偏差，本轮一并纠正：
+
+- **索引**：`IndexedDB` 结构修订升至 11，新增 `stashGroups.starRank_createdAt_groupId` 与 `stashEntries.groupId_position_entryId`。已有对象仓储补索引必须在 `onupgradeneeded` 的 versionchange 事务中按 `indexNames` 判断后创建，不能只在新建仓储分支里 `createIndex`。
+- **派生字段**：`stashGroups` 增加 `itemCount`（组内有效条目数）、`starRank`（星标排序键，布尔不能作为索引键）、`nextPosition`（追加时的下一个位置）。它们属于**本地查询缓存**：不写 field revisions、不参与 WebDAV 冲突字段，由本地写入、导入、删除、同步 merge、快照应用与迁移回填共同维护。
+- **读取路径**：`listGroupSummariesPage` 只扫描组记录并按游标分页；`getGroupPage` 用复合索引游标只物化请求页，同时兼容旧 `offset`；`searchEntries` 用 `pages` 主键游标边扫边匹配，命中后再经 `pageId` 索引联查现存条目，不再 `pages.getAll()`，也避免孤儿页面占满 limit 导致漏结果。
+- **迁移**：本地数据修订 8 → 9 由 `MigrationManager.backfillGroupDerivedFields()` 回填派生字段（持写锁、幂等、失败停在 8 并于下次启动重试）。
+- **活跃度分记录（修订 10）**：`activityStats` 不再使用单一聚合键整对象重写；每个 `pageId` 一条记录。`TabActivityTracker` 只持久化本次激活的 page；`StorageAdapter.get/set(ACTIVITY_STATS)` 对外仍兼容聚合对象读写；快照线协议继续使用 `activityStats` 对象形状，应用时拆成 page 记录。
+- **导出分块**：`READ_EXPORT_CHUNK` 按组/条目游标生成 JSON 或 OneTab 文本，不先构造完整 `stashGroups` 数组；选项页与 AI 客户端边收边写。
+
+## 7. 本地数据修订 6 修复迁移（2026-08-29 补充）
 
 `LOCAL_DATA_SCHEMA_REVISION = 6`：修复两类历史异常数据（见 `MigrationManager.repairIndexedEntries`）：
 
