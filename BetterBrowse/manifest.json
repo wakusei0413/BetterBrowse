@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "BetterBrowse",
   "version": "1.0.0",
-  "version_name": "Milestone 3",
+  "version_name": "Milestone 4",
   "description": "智能链接跳转控制与基于优先级规则的多级标签页智能收纳插件。",
   "icons": {
     "16": "src/icons/icon16.png",
