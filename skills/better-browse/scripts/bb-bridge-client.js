@@ -265,7 +265,7 @@ function parseCliArgs(argv) {
  * @param {string} command
  * @param {string[]} positional
  * @param {Record<string, string | boolean>} flags
- * @returns {{ action: string, payload: any, outputFile?: string } | null}
+ * @returns {{ action: string, payload: any, outputFile?: string, paginate?: boolean, streamExport?: boolean } | null}
  */
 function buildRequest(command, positional, flags) {
   const json = (text, what) => {
@@ -282,7 +282,11 @@ function buildRequest(command, positional, flags) {
       if (!positional[0]) emit({ success: false, error: 'call 需要一个 ACTION 参数' });
       return { action: positional[0], payload: positional[1] ? json(positional[1], 'payload') : null };
     }
-    case 'stash-list': return { action: 'GET_STASH_GROUPS', payload: null };
+    case 'stash-list': return {
+      action: 'GET_STASH_GROUP_SUMMARIES_PAGE',
+      payload: { limit: Math.min(200, Math.max(1, Number(flags.limit) || 200)) },
+      paginate: true
+    };
     case 'stash-search':
       return { action: 'SEARCH_STASH', payload: { keyword: positional[0] || '', limit: Number(flags.limit) || 100 } };
     case 'group-show':
@@ -318,7 +322,12 @@ function buildRequest(command, positional, flags) {
     case 'stash-import':
       return { action: 'IMPORT_STASH_DATA', payload: { jsonString: positional[0] || '' } };
     case 'stash-export': return { action: 'EXPORT_STASH_DATA', payload: null };
-    case 'backup-export': return { action: 'EXPORT_FULL_BACKUP', payload: null, outputFile: positional[0] };
+    case 'backup-export': return {
+      action: 'READ_EXPORT_CHUNK',
+      payload: { type: 'full_backup' },
+      outputFile: positional[0],
+      streamExport: true
+    };
     case 'backup-import':
       return { action: 'RESTORE_FULL_BACKUP', payload: { jsonString: positional[0] || '', confirm: flags.confirm === true } };
     case 'backups': return { action: 'LIST_AUTO_BACKUPS', payload: null };
@@ -405,11 +414,50 @@ if (!built) {
 }
 
 const session = await connectSession();
+if (built.streamExport && built.outputFile) {
+  const chunks = [];
+  let cursor = null;
+  let expectedStashRevision;
+  let bytes = 0;
+  try {
+    do {
+      const response = await request(session, 'READ_EXPORT_CHUNK', {
+        type: built.payload?.type || 'full_backup',
+        cursor,
+        expectedStashRevision
+      });
+      if (!response?.success || typeof response.data?.chunk !== 'string') {
+        emit(response || { success: false, error: '分块导出失败' });
+      }
+      chunks.push(response.data.chunk);
+      bytes += response.data.chunk.length;
+      cursor = response.data.nextCursor;
+      expectedStashRevision = response.data.stashRevision;
+    } while (cursor);
+    await Deno.writeTextFile(built.outputFile, chunks.join(''));
+    emit({ success: true, data: { outputFile: built.outputFile, bytes } });
+  } finally {
+    session.closed = true;
+    try { session.conn.close(); } catch { /* 忽略 */ }
+  }
+}
+
 const response = await request(session, built.action, built.payload);
 session.closed = true;
 try { session.conn.close(); } catch { /* 忽略 */ }
 
-// 导出类命令支持落盘
+if (built.paginate && response?.success && response.data?.items) {
+  const items = [...response.data.items];
+  let cursor = response.data.nextCursor;
+  while (cursor) {
+    const page = await request(session, built.action, { ...built.payload, cursor });
+    if (!page?.success || !Array.isArray(page.data?.items)) break;
+    items.push(...page.data.items);
+    cursor = page.data.nextCursor;
+  }
+  emit({ success: true, data: items });
+}
+
 if (built.outputFile && response?.success && typeof response.data === 'string') {
   await Deno.writeTextFile(built.outputFile, response.data);
   emit({ success: true, data: { outputFile: built.outputFile, bytes: response.data.length } });

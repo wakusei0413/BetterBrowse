@@ -60,14 +60,10 @@ export class AIBridgeManager {
     this._alarmBound = (alarm) => {
       if (alarm?.name === WATCHDOG_ALARM) this._onWatchdog();
     };
-    // ⚠️ MV3 事件监听必须在首个事件循环轮次内同步注册：本构造器于模块顶层同步执行，
-    // 看门狗闹钟是 SW 休眠后重连循环的唯一自动唤醒路径，异步注册会导致 Chrome
-    // 在 SW 挂起期间认为"无监听者"而跳过唤醒，重连就此永久停摆。
-    // 闹钟创建同样同步执行（幂等覆盖）：即便下方 init() 的配置读取因 IndexedDB 异常挂起，
-    // 看门狗依然按分钟自愈重连；未启用开关时处理器直接返回，开销可忽略。
+    // MV3 事件监听必须在首个事件循环轮次内同步注册，确保已启用桥接的闹钟能唤醒 SW。
+    // 此处只注册监听，不创建闹钟；总开关关闭时不得保留任何周期唤醒。
     try {
-      chrome.alarms.onAlarm.addListener(this._alarmBound);
-      chrome.alarms.create(WATCHDOG_ALARM, { periodInMinutes: 1 });
+      chrome.alarms?.onAlarm?.addListener(this._alarmBound);
     } catch {
       // 测试环境可能无闹钟 API
     }
@@ -200,7 +196,11 @@ export class AIBridgeManager {
       } catch {
         // 配置读取失败时沿用上次开关状态
       }
-      if (!this._armed) return;
+      if (!this._armed) {
+        try { chrome.alarms?.clear?.(WATCHDOG_ALARM); } catch {}
+        this._state = 'disabled';
+        return;
+      }
       this._ensureWatchdog();
       if (this._reconnectTimer) {
         clearTimeout(this._reconnectTimer);

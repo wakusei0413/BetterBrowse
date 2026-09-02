@@ -21,13 +21,15 @@ deno run -A "$CLIENT" status
 deno run -A "$CLIENT" capabilities
 
 # 3. 调用任意动作
-deno run -A "$CLIENT" call GET_STASH_GROUPS
+deno run -A "$CLIENT" stash-list
 deno run -A "$CLIENT" call UPDATE_CONFIG '{"tabThreshold": 20}'
 ```
 
 退出码 0=成功、1=失败；输出统一为 JSON 信封 `{"success":true,"data":...}` / `{"success":false,"error":"..."}`。
 
 常用命令速查（完整清单见 `help`）：`stash-list` `stash-search` `group-show` `stash-add` `group-rename` `group-delete` `item-update` `config-get` `config-set` `rule-set` `sync-now` `backups` `backup-export`。超长请求可通过 `BB_BRIDGE_TIMEOUT_MS` 调整等待（默认 120 秒）。
+
+大数据读取约定：`stash-list` 走 `GET_STASH_GROUP_SUMMARIES_PAGE` 游标分页（客户端自动续页），`group-show` / `stash-search` 支持 `--limit`，`backup-export <文件>` 走 `READ_EXPORT_CHUNK` 边收边写。需要整组 tabs 的兼容场景才用 `call GET_STASH_GROUPS`。
 
 ## 硬性安全规则（必须遵守）
 

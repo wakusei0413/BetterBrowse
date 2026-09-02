@@ -9,7 +9,7 @@
  * 1. stdio 4 字节小端长度前缀 + UTF-8 JSON 帧与扩展双向收发；
  * 2. 监听 127.0.0.1 随机回环端口，生成一次性 32 字节令牌写入自发现文件 bridge.json，
  *   Agent 连接后凭令牌握手，之后按 NDJSON 收发请求/响应；
- * 3. 每 25 秒向扩展发送内部 ping（MV3 Service Worker 保活信号）；
+ * 3. 仅在存在在途请求时发送内部 ping 并执行活性检查，空闲时不周期唤醒 MV3 Service Worker；
  * 4. 请求串行转发（同一时刻只有一条在途请求，避免扩展侧写锁竞争）；
  * 5. 大消息自动分块（200000 字符，统一信封 {apiVersion,id,chunk:{i,n},part}，对两端透明重组）。
  *
@@ -23,7 +23,7 @@ import { join } from 'jsr:@std/path@^1.0.8';
 import { API_VERSION, apiVersionMismatchMessage, readApiVersion } from '../src/constants/api-version.js';
 
 const HOST_NAME = 'com.betterbrowse.bridge';
-const KEEPALIVE_PING_MS = 25000;
+const MAINTENANCE_INTERVAL_MS = 25000;
 /** 活性看门狗：连续 90 秒未收到扩展 pong（宿主被异常遗留时）自动退出并清理 */
 const LIVENESS_TIMEOUT_MS = 90000;
 /** 在途请求超时：超时未收到扩展响应则丢弃并放行后续请求 */
@@ -243,15 +243,15 @@ class BridgeHost {
     log(`桥接宿主已启动：扩展 ${this.extensionId}，侧信道 127.0.0.1:${port}`);
 
     this.acceptLoop(listener);
-    this.pingTimer = setInterval(async () => {
-      // 活性看门狗：扩展侧已消亡但 stdin 管道未正常关闭时，自动退出并清理痕迹
-      if (Date.now() - this.lastPongAt > LIVENESS_TIMEOUT_MS) {
-        log(`超过 ${Math.round(LIVENESS_TIMEOUT_MS / 1000)} 秒未收到扩展响应，宿主自动退出`);
+    this.maintenanceTimer = setInterval(async () => {
+      const now = Date.now();
+      // 空闲宿主只维持 TCP 与 Native Messaging 通道，不主动唤醒 Service Worker。
+      // 有在途请求时才用 ping 检查扩展活性，并保留原有超时放行保障。
+      if (this.inflight && now - this.lastPongAt > LIVENESS_TIMEOUT_MS) {
+        log(`在途请求期间超过 ${Math.round(LIVENESS_TIMEOUT_MS / 1000)} 秒未收到扩展响应，宿主自动退出`);
         await this.shutdown();
         Deno.exit(0);
       }
-      // 在途请求超时：响应丢失（如分块帧被丢弃）时释放串行转发器，绝不永久卡死
-      const now = Date.now();
       if (this.inflight && now - this.inflight.forwardedAt > INFLIGHT_TIMEOUT_MS) {
         const timed = this.inflight;
         log(`在途请求超时: reqId=${timed.id}，已丢弃并放行后续请求`);
@@ -259,12 +259,14 @@ class BridgeHost {
         this.writeAgentLine(timed.conn, { id: timed.id, success: false, error: '扩展响应超时丢失，请重试' }).catch(() => {});
       }
       this.drainQueue();
-      try {
-        await writeNativeFrame({ internal: 'ping' });
-      } catch {
-        // 写失败交由主循环 EOF 退出
+      if (this.inflight) {
+        try {
+          await writeNativeFrame({ internal: 'ping' });
+        } catch {
+          // 写失败交由主循环 EOF 退出
+        }
       }
-    }, KEEPALIVE_PING_MS);
+    }, MAINTENANCE_INTERVAL_MS);
 
     try {
       for await (const message of readNativeFrames(Deno.stdin.readable)) {
