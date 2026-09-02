@@ -11,6 +11,16 @@ import { API_VERSION } from '../constants/api-version.js';
 import { LinkMatcher } from '../core/link/link-matcher.js';
 import { MessageBus } from '../core/bus/message-bus.js';
 import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
+import {
+  GROUP_OVERSCAN,
+  TAB_OVERSCAN,
+  TABS_INITIAL_LIMIT,
+  computePads,
+  estimateGroupCardHeight,
+  getDensityMetrics,
+  getItemWindow,
+  getVisibleRange
+} from './list-window.js';
 
 installRuntimeLogger({
   context: 'options',
@@ -369,7 +379,7 @@ class TimeTreeBuilder {
       const year = date.getFullYear();
       const month = date.getMonth() + 1;
       const day = date.getDate();
-      const tabCount = group.tabs?.length || 0;
+      const tabCount = Number(group.itemCount ?? group.tabs?.length) || 0;
 
       const weekInfo = this.getWeekInfo(date);
       const weekKey = `${weekInfo.year}-W${pad(weekInfo.weekNum)}`;
@@ -1034,14 +1044,20 @@ class StashTabComponent {
   constructor() {
     this.groups = [];
     this.filteredGroups = [];
-    this.renderedGroupCount = 0;
-    this.PAGE_SIZE = 15;
-    this.TABS_INITIAL_LIMIT = 25;
+    this.groupPages = new Map();
+    this.searchItemFilter = null;
     this.expandedGroupIds = new Set();
+    this.pinnedGroupIds = new Set();
     this.recentlyDeletedGroups = new Map();
     this.searchDebounceTimer = null;
-    this.observer = null;
     this.activeTimeRangeFilter = null;
+    this.filterToken = 0;
+    this.loadGeneration = 0;
+    this.mountedRange = null;
+    this.measuredCardHeights = new Map();
+    this.itemWindowByGroup = new Map();
+    this.pageLoaders = new Map();
+    this.windowSyncTicking = false;
 
     this.container = document.getElementById('stashGroupsContainer');
     this.mainColumn = document.querySelector('.stash-main-column');
@@ -1054,6 +1070,8 @@ class StashTabComponent {
     this.loadingIndicator = document.getElementById('stashLoadingIndicator');
     this.contextMenu = document.getElementById('stashContextMenu');
     this.activeContextItem = null;
+    this.topSpacer = null;
+    this.bottomSpacer = null;
 
     // 单线时间滚动条相关 DOM
     this.timelineScrollbarTrack = document.getElementById('timelineScrollbar');
@@ -1079,9 +1097,9 @@ class StashTabComponent {
 
   init() {
     this.bindEvents();
-    this.initScrollObserver();
     this.initScrollSpy();
     this.initStorageListener();
+    if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
     this.loadData();
   }
 
@@ -1096,6 +1114,7 @@ class StashTabComponent {
       () => {
         if (!ticking) {
           window.requestAnimationFrame(() => {
+            this.syncListWindow();
             this.checkScrollSpy();
             ticking = false;
           });
@@ -1155,9 +1174,10 @@ class StashTabComponent {
       // 旧存储回退模式：直接使用变更数组即时呈现
       if (changes[StorageKeys.STASH_GROUPS]) {
         const newGroups = changes[StorageKeys.STASH_GROUPS].newValue || [];
-        this.groups = Array.isArray(newGroups)
+        const raw = Array.isArray(newGroups)
           ? newGroups.filter((group) => group && typeof group === 'object')
           : [];
+        this.ingestSummaries(raw.map((group) => StashTabComponent.toSummary(group)), raw);
         this.timelineScrollbar.update(this.groups);
         this.syncTimeFilterSnapshot();
         this.updateBadge();
@@ -1170,21 +1190,6 @@ class StashTabComponent {
         this.loadData();
       }
     });
-  }
-
-  initScrollObserver() {
-    if ('IntersectionObserver' in window && this.sentinel) {
-      const scrollRoot = this.mainColumn || document.querySelector('.stash-main-column');
-      this.observer = new IntersectionObserver(
-        (entries) => {
-          if (entries[0] && entries[0].isIntersecting) {
-            this.renderNextBatch();
-          }
-        },
-        { root: scrollRoot || null, rootMargin: '300px', threshold: 0.01 }
-      );
-      this.observer.observe(this.sentinel);
-    }
   }
 
   bindEvents() {
@@ -1415,10 +1420,77 @@ class StashTabComponent {
     }
   }
 
+  /**
+   * 将任意组记录压成时间线摘要（去掉 tabs，避免后续误用全量数组）
+   * @param {any} group
+   * @returns {{ id: string, createdAt: number, title: string, color: string, locked: boolean, starred: boolean, archived: boolean, itemCount: number }}
+   */
+  static toSummary(group) {
+    return {
+      id: group?.id,
+      createdAt: group?.createdAt,
+      title: typeof group?.title === 'string' ? group.title : '',
+      color: typeof group?.color === 'string' ? group.color : '',
+      locked: Boolean(group?.locked),
+      starred: Boolean(group?.starred),
+      archived: Boolean(group?.archived),
+      itemCount: Number.isFinite(group?.itemCount)
+        ? group.itemCount
+        : Array.isArray(group?.tabs)
+          ? group.tabs.length
+          : 0
+    };
+  }
+
+  /**
+   * 写入摘要列表；若来源仍带 tabs（旧存储回退），顺带灌进条目缓存
+   * @param {any[]} summaries
+   * @param {any[]} [legacyGroups]
+   */
+  ingestSummaries(summaries, legacyGroups = []) {
+    const merged = new Map();
+    for (const group of [...summaries, ...legacyGroups]) {
+      if (!group?.id) continue;
+      const existing = merged.get(group.id);
+      if (!existing || (!Array.isArray(existing.tabs) && Array.isArray(group.tabs))) {
+        merged.set(group.id, group);
+      }
+    }
+    const rawGroups = [...merged.values()];
+    this.groups = rawGroups.map((group) => StashTabComponent.toSummary(group));
+    this.groupPages = new Map();
+    this.measuredCardHeights = new Map();
+    this.itemWindowByGroup = new Map();
+    this.mountedRange = null;
+    this.pinnedGroupIds = new Set();
+    for (const group of rawGroups) {
+      if (!Array.isArray(group.tabs) || group.tabs.length === 0) continue;
+      const slots = new Map();
+      group.tabs.forEach((tab, index) => slots.set(index, tab));
+      this.groupPages.set(group.id, {
+        total: Number(group.itemCount) || group.tabs.length,
+        slots
+      });
+    }
+  }
+
+  isCompactDensity() {
+    return document.documentElement.dataset.displayDensity === 'compact';
+  }
+
   async loadData() {
-    const res = await MessageBus.sendToBackground(ActionTypes.GET_STASH_GROUPS);
+    const generation = ++this.loadGeneration;
+    const scrollTop = this.mainColumn?.scrollTop || 0;
+    const [statsRes, res] = await Promise.all([
+      MessageBus.sendToBackground(ActionTypes.GET_STASH_STATS),
+      MessageBus.sendToBackground(ActionTypes.GET_STASH_GROUP_SUMMARIES)
+    ]);
+    if (generation !== this.loadGeneration) return;
+    if (statsRes.success && statsRes.data && this.badge) {
+      this.badge.textContent = Number(statsRes.data.itemCount) || 0;
+    }
     if (res.success && Array.isArray(res.data)) {
-      this.groups = res.data.filter((group) => group && typeof group === 'object');
+      this.ingestSummaries(res.data.filter((group) => group && typeof group === 'object'));
       this.timelineScrollbar.update(this.groups);
       this.syncTimeFilterSnapshot();
 
@@ -1434,60 +1506,467 @@ class StashTabComponent {
           };
         }
       }
+      if (generation !== this.loadGeneration) return;
       this.updateBadge();
-      this.filterAndRender();
+      await this.filterAndRender({ preserveScroll: true, scrollTop });
     }
   }
 
   updateBadge() {
-    const totalTabs = this.groups.reduce((sum, g) => sum + (g.tabs?.length || 0), 0);
+    const totalTabs = this.groups.reduce((sum, g) => sum + (Number(g.itemCount) || 0), 0);
     if (this.badge) this.badge.textContent = totalTabs;
   }
 
-  filterAndRender() {
+  async filterAndRender(options = {}) {
+    const token = ++this.filterToken;
     const query = this.searchInput?.value.toLowerCase().trim() || '';
+    const inTimeRange = (groupId) =>
+      !this.activeTimeRangeFilter || this.activeTimeRangeFilter.groupIds.has(groupId);
 
-    // 1. 根据搜索条件和时间区间共同过滤
-    this.filteredGroups = this.groups
-      .filter((grp) => {
-        if (this.activeTimeRangeFilter && !this.activeTimeRangeFilter.groupIds.has(grp.id)) {
-          return false;
-        }
-        return true;
-      })
-      .map((grp) => {
-        if (!query) return grp;
-        const matchedTabs = (grp.tabs || []).filter(
-          (t) => (t.title && t.title.toLowerCase().includes(query)) || (t.url && t.url.toLowerCase().includes(query))
-        );
-        if (matchedTabs.length > 0 || (grp.title && grp.title.toLowerCase().includes(query))) {
-          return { ...grp, tabs: query ? matchedTabs : grp.tabs };
-        }
-        return null;
-      })
-      .filter(Boolean);
+    this.filteredGroups = this.groups.filter((grp) => inTimeRange(grp.id));
+    this.searchItemFilter = null;
 
-    // 2. 渲染主列表内容
-    this.container.innerHTML = '';
-    this.renderedGroupCount = 0;
-
-    if (this.filteredGroups.length === 0) {
-      // 区分"真为空"与"搜索无结果"，避免误导用户以为数据被清空
-      const hasSearchQuery = Boolean(query);
-      const titleEl = this.emptyState?.querySelector('.empty-title');
-      const descEl = this.emptyState?.querySelector('.empty-desc');
-      if (titleEl) titleEl.textContent = hasSearchQuery ? '未找到匹配的标签页' : '时间线目前是空的';
-      if (descEl) {
-        descEl.textContent = hasSearchQuery
-          ? '请尝试更换搜索关键词。'
-          : '当您在右上角点击「立即收纳」或标签页数量超出阈值时，未活跃标签将自动保存于此处。';
+    if (query) {
+      const res = await MessageBus.sendToBackground(ActionTypes.SEARCH_STASH, {
+        keyword: query,
+        limit: 100,
+        paginated: true
+      });
+      if (token !== this.filterToken) return;
+      const hits = Array.isArray(res?.data) ? res.data : (Array.isArray(res?.data?.items) ? res.data.items : []);
+      const hitsByGroup = new Map();
+      for (const hit of res?.success ? hits : []) {
+        if (!hit?.groupId || !inTimeRange(hit.groupId)) continue;
+        if (!hitsByGroup.has(hit.groupId)) hitsByGroup.set(hit.groupId, []);
+        hitsByGroup.get(hit.groupId).push({
+          id: hit.itemId,
+          url: hit.url,
+          title: hit.title,
+          favIconUrl: ''
+        });
       }
-      this.container.appendChild(this.emptyState);
-      this.emptyState.style.display = 'flex';
-      if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
+      this.searchItemFilter = hitsByGroup;
+      this.filteredGroups = this.filteredGroups.filter((grp) => {
+        const titleMatch = Boolean(grp.title && grp.title.toLowerCase().includes(query));
+        return titleMatch || hitsByGroup.has(grp.id);
+      });
+    }
+
+    this.mountedRange = null;
+    if (this.filteredGroups.length === 0) {
+      this.renderEmptyState(Boolean(query));
+      return;
+    }
+    if (this.emptyState) this.emptyState.style.display = 'none';
+    if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
+    this.syncListWindow();
+    if (options.preserveScroll && this.mainColumn) {
+      this.mainColumn.scrollTop = Number(options.scrollTop) || 0;
+      this.syncListWindow();
+    }
+  }
+
+  /**
+   * 区分"真为空"与"搜索无结果"
+   * @param {boolean} hasSearchQuery
+   */
+  renderEmptyState(hasSearchQuery) {
+    const titleEl = this.emptyState?.querySelector('.empty-title');
+    const descEl = this.emptyState?.querySelector('.empty-desc');
+    if (titleEl) titleEl.textContent = hasSearchQuery ? '未找到匹配的标签页' : '时间线目前是空的';
+    if (descEl) {
+      descEl.textContent = hasSearchQuery
+        ? '请尝试更换搜索关键词。'
+        : '当您在右上角点击「立即收纳」或标签页数量超出阈值时，未活跃标签将自动保存于此处。';
+    }
+    if (!this.container || !this.emptyState) return;
+    this.container.replaceChildren(this.emptyState);
+    this.emptyState.style.display = 'flex';
+    if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
+    this.topSpacer = null;
+    this.bottomSpacer = null;
+  }
+
+  getSearchQuery() {
+    return this.searchInput?.value.toLowerCase().trim() || '';
+  }
+
+  /**
+   * 当前过滤条件下该组应展示的条目数（决定卡片高度）
+   * @param {any} group
+   * @returns {number}
+   */
+  getVisibleItemCount(group) {
+    const query = this.getSearchQuery();
+    if (query) {
+      return this.searchItemFilter?.get(group.id)?.length || 0;
+    }
+    const total = Number(group.itemCount) || 0;
+    if (this.expandedGroupIds.has(group.id) || total <= TABS_INITIAL_LIMIT) return total;
+    return TABS_INITIAL_LIMIT;
+  }
+
+  buildGroupSizes() {
+    const compact = this.isCompactDensity();
+    const metrics = getDensityMetrics(compact);
+    return this.filteredGroups.map((group) => {
+      const measured = this.measuredCardHeights.get(group.id);
+      if (Number.isFinite(measured)) return measured;
+      return (
+        estimateGroupCardHeight({
+          itemCount: Number(group.itemCount) || 0,
+          expanded: this.expandedGroupIds.has(group.id),
+          compact,
+          visibleItemCount: this.getVisibleItemCount(group)
+        }) + metrics.gap
+      );
+    });
+  }
+
+  ensureSpacers() {
+    if (!this.topSpacer) {
+      this.topSpacer = document.createElement('div');
+      this.topSpacer.className = 'stash-list-spacer stash-list-spacer-top';
+      this.topSpacer.setAttribute('aria-hidden', 'true');
+    }
+    if (!this.bottomSpacer) {
+      this.bottomSpacer = document.createElement('div');
+      this.bottomSpacer.className = 'stash-list-spacer stash-list-spacer-bottom';
+      this.bottomSpacer.setAttribute('aria-hidden', 'true');
+    }
+    return { topSpacer: this.topSpacer, bottomSpacer: this.bottomSpacer };
+  }
+
+  /**
+   * 按主列滚动位置回收/挂载组卡片，并刷新已展开组的条目窗口
+   */
+  syncListWindow() {
+    if (!this.container || !this.mainColumn) return;
+    if (this.filteredGroups.length === 0) return;
+
+    const sizes = this.buildGroupSizes();
+    let range = getVisibleRange({
+      scrollTop: this.mainColumn.scrollTop,
+      viewportHeight: this.mainColumn.clientHeight,
+      sizes,
+      overscan: GROUP_OVERSCAN
+    });
+
+    for (const groupId of this.pinnedGroupIds) {
+      const index = this.filteredGroups.findIndex((group) => group.id === groupId);
+      if (index < 0) continue;
+      range.start = Math.min(range.start, index);
+      range.end = Math.max(range.end, index + 1);
+    }
+    const pads = computePads(sizes, range.start, range.end);
+    range = { ...range, padTop: pads.padTop, padBottom: pads.padBottom };
+
+    const sameRange =
+      this.mountedRange &&
+      this.mountedRange.start === range.start &&
+      this.mountedRange.end === range.end &&
+      this.container.querySelector('.stash-group-card');
+    if (sameRange) {
+      if (this.topSpacer) this.topSpacer.style.height = `${range.padTop}px`;
+      if (this.bottomSpacer) this.bottomSpacer.style.height = `${range.padBottom}px`;
     } else {
-      this.emptyState.style.display = 'none';
-      this.renderNextBatch();
+      this.mountGroupWindow(range);
+    }
+    this.patchExpandedItemWindows();
+    this.recordMeasuredHeights();
+    this.prefetchVisiblePages(range);
+  }
+
+  mountGroupWindow(range) {
+    const { topSpacer, bottomSpacer } = this.ensureSpacers();
+    topSpacer.style.height = `${range.padTop}px`;
+    bottomSpacer.style.height = `${range.padBottom}px`;
+
+    const existing = new Map();
+    for (const card of this.container.querySelectorAll('.stash-group-card')) {
+      existing.set(card.dataset.groupId, card);
+    }
+
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(topSpacer);
+    const keep = new Set();
+    for (let i = range.start; i < range.end; i++) {
+      const group = this.filteredGroups[i];
+      if (!group) continue;
+      keep.add(group.id);
+      let card = existing.get(group.id);
+      const pinned = this.pinnedGroupIds.has(group.id);
+      if (!card) {
+        card = this.createGroupCardElement(group);
+      } else if (!pinned) {
+        this.refreshCardItems(card, group);
+      }
+      fragment.appendChild(card);
+    }
+    fragment.appendChild(bottomSpacer);
+
+    this.container.replaceChildren(fragment);
+    this.mountedRange = { start: range.start, end: range.end };
+    if (this.emptyState) this.emptyState.style.display = 'none';
+  }
+
+  recordMeasuredHeights() {
+    if (!this.container) return;
+    const compact = this.isCompactDensity();
+    const gap = getDensityMetrics(compact).gap;
+    for (const card of this.container.querySelectorAll('.stash-group-card')) {
+      const groupId = card.dataset.groupId;
+      if (!groupId || this.pinnedGroupIds.has(groupId)) continue;
+      const group = this.filteredGroups.find((item) => item.id === groupId);
+      const expectedRows = group ? Math.min(this.getVisibleItemCount(group), TABS_INITIAL_LIMIT) : 0;
+      const mountedRows = card.querySelectorAll('.stash-item-row').length;
+      if (expectedRows > 0 && mountedRows === 0) continue;
+      this.measuredCardHeights.set(groupId, card.offsetHeight + gap);
+    }
+  }
+
+  hasFilledSlots(groupId, start, end) {
+    const cache = this.groupPages.get(groupId);
+    if (!cache) return false;
+    for (let index = start; index < end; index++) {
+      if (!cache.slots.has(index)) return false;
+    }
+    return true;
+  }
+
+  prefetchVisiblePages(range) {
+    for (let i = range.start; i < range.end; i++) {
+      const group = this.filteredGroups[i];
+      if (!group) continue;
+      if (this.getSearchQuery() && this.searchItemFilter?.has(group.id)) continue;
+      const visibleCount = this.getVisibleItemCount(group);
+      const itemWindow = this.itemWindowByGroup.get(group.id);
+      const start = itemWindow?.start || 0;
+      const end = Math.max(itemWindow?.end || visibleCount, Math.min(visibleCount, TABS_INITIAL_LIMIT));
+      if (end <= start || this.hasFilledSlots(group.id, start, end)) continue;
+      this.ensureSlots(group.id, start, end).then((result) => {
+        const card = this.container?.querySelector(`.stash-group-card[data-group-id="${CSS.escape(group.id)}"]`);
+        if (result.failed) {
+          if (card) card.dataset.pageLoadState = 'failed';
+          return;
+        }
+        if (card) delete card.dataset.pageLoadState;
+        if (!result.changed) return;
+        this.measuredCardHeights.delete(group.id);
+        if (card && !this.pinnedGroupIds.has(group.id)) {
+          this.refreshCardItems(card, group);
+          const gap = getDensityMetrics(this.isCompactDensity()).gap;
+          this.measuredCardHeights.set(group.id, card.offsetHeight + gap);
+        }
+      });
+    }
+  }
+
+  getGroupPageCache(groupId) {
+    let cache = this.groupPages.get(groupId);
+    if (!cache) {
+      const summary = this.groups.find((group) => group.id === groupId);
+      cache = { total: Number(summary?.itemCount) || 0, slots: new Map() };
+      this.groupPages.set(groupId, cache);
+    }
+    return cache;
+  }
+
+  async ensureSlots(groupId, start, end) {
+    const prev = this.pageLoaders.get(groupId) || Promise.resolve({ changed: false, failed: false });
+    const next = prev.then(() => this._ensureSlotsUnlocked(groupId, start, end));
+    this.pageLoaders.set(
+      groupId,
+      next.then(
+        () => ({ changed: false, failed: false }),
+        () => ({ changed: false, failed: true })
+      )
+    );
+    return next;
+  }
+
+  async _ensureSlotsUnlocked(groupId, start, end) {
+    const cache = this.getGroupPageCache(groupId);
+    const safeStart = Math.max(0, Math.floor(Number(start) || 0));
+    const safeEnd = Math.max(safeStart, Math.floor(Number(end) || 0));
+    let cursor = safeStart;
+    let changed = false;
+    let failed = false;
+    while (cursor < safeEnd) {
+      if (cache.slots.has(cursor)) {
+        cursor += 1;
+        continue;
+      }
+      let holeEnd = cursor + 1;
+      while (holeEnd < safeEnd && !cache.slots.has(holeEnd)) holeEnd += 1;
+      const limit = Math.min(500, holeEnd - cursor);
+      const res = await MessageBus.sendToBackground(ActionTypes.GET_STASH_GROUP_PAGE, {
+        groupId,
+        offset: cursor,
+        limit
+      });
+      if (!res?.success || !res.data) {
+        failed = true;
+        break;
+      }
+      cache.total = Number(res.data.total) || cache.total;
+      const items = Array.isArray(res.data.items) ? res.data.items : [];
+      items.forEach((item, index) => cache.slots.set(cursor + index, item));
+      changed = changed || items.length > 0;
+      if (items.length === 0) break;
+      cursor += items.length;
+    }
+    const summary = this.groups.find((group) => group.id === groupId);
+    if (summary && Number.isFinite(cache.total)) summary.itemCount = cache.total;
+    return { changed, failed };
+  }
+
+  async fetchAllGroupItems(groupId) {
+    const items = [];
+    let offset = 0;
+    while (true) {
+      const res = await MessageBus.sendToBackground(ActionTypes.GET_STASH_GROUP_PAGE, {
+        groupId,
+        offset,
+        limit: 500
+      });
+      if (!res?.success || !res.data) break;
+      const pageItems = Array.isArray(res.data.items) ? res.data.items : [];
+      items.push(...pageItems);
+      const total = Number(res.data.total) || items.length;
+      if (items.length >= total || pageItems.length === 0) break;
+      offset += pageItems.length;
+    }
+    const cache = this.getGroupPageCache(groupId);
+    cache.total = items.length;
+    items.forEach((item, index) => cache.slots.set(index, item));
+    return items;
+  }
+
+  resolveItemWindow(group, listEl) {
+    const total = this.getVisibleItemCount(group);
+    const compact = this.isCompactDensity();
+    const rowHeight = getDensityMetrics(compact).rowHeight;
+    const query = this.getSearchQuery();
+    const useVirtual =
+      (this.expandedGroupIds.has(group.id) || (query && (this.searchItemFilter?.get(group.id)?.length || 0) > TABS_INITIAL_LIMIT)) &&
+      total > TABS_INITIAL_LIMIT;
+    if (!useVirtual) {
+      const window = { start: 0, end: total, padTop: 0, padBottom: 0 };
+      this.itemWindowByGroup.set(group.id, window);
+      return window;
+    }
+    const listTop = listEl && this.mainColumn
+      ? listEl.getBoundingClientRect().top - this.mainColumn.getBoundingClientRect().top + this.mainColumn.scrollTop
+      : 0;
+    const window = getItemWindow({
+      listTop,
+      scrollTop: this.mainColumn?.scrollTop || 0,
+      viewportHeight: this.mainColumn?.clientHeight || 0,
+      itemCount: total,
+      rowHeight,
+      overscan: TAB_OVERSCAN
+    });
+    this.itemWindowByGroup.set(group.id, window);
+    return window;
+  }
+
+  buildItemRowsHtml(group, window) {
+    const query = this.getSearchQuery();
+    const searchItems = query ? this.searchItemFilter?.get(group.id) : null;
+    const cache = this.getGroupPageCache(group.id);
+    const rows = [];
+    for (let i = window.start; i < window.end; i++) {
+      const tab = searchItems ? searchItems[i] : cache.slots.get(i);
+      if (tab) rows.push(this.renderItemRowHtml(group.id, tab));
+    }
+    return rows.join('');
+  }
+
+  renderItemRowHtml(groupId, tab) {
+    const safeGroupId = this.escapeHTML(groupId);
+    const safeTabId = this.escapeHTML(tab.id);
+    const faviconSrc = tab.favIconUrl;
+    return `
+        <li class="stash-item-row" data-group-id="${safeGroupId}" data-item-id="${safeTabId}">
+          <div class="stash-item-main">
+            ${faviconSrc ? `
+              <img src="${this.escapeHTML(faviconSrc)}" class="tab-favicon" alt="" loading="lazy" decoding="async" />
+            ` : `
+              <svg class="tab-favicon tab-favicon-fallback" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="2" y1="12" x2="22" y2="12"></line>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+              </svg>
+            `}
+            <a href="${this.escapeHTML(tab.url || '')}" class="tab-link btn-restore-item-link" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="${this.escapeHTML(tab.title || tab.url || '')}&#10;${this.escapeHTML(tab.url || '')}">
+              <span class="tab-title">${this.escapeHTML(tab.title || tab.url || '')}</span>
+            </a>
+          </div>
+          <div class="tab-item-actions">
+            <button class="btn-icon-danger btn-edit-item" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="编辑标题" type="button" aria-label="编辑标题">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+              </svg>
+            </button>
+            <button class="btn-icon-danger btn-delete-item" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="删除此网页" type="button" aria-label="删除此网页">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+        </li>
+      `;
+  }
+
+  refreshCardItems(card, group) {
+    const listEl = card.querySelector('.stash-items-list');
+    if (!listEl) return;
+    const window = this.resolveItemWindow(group, listEl);
+    listEl.style.paddingTop = window.padTop ? `${window.padTop}px` : '';
+    listEl.style.paddingBottom = window.padBottom ? `${window.padBottom}px` : '';
+    listEl.classList.toggle('is-virtual', window.padTop > 0 || window.padBottom > 0);
+    listEl.innerHTML = this.buildItemRowsHtml(group, window);
+    card.classList.toggle('is-expanded', this.expandedGroupIds.has(group.id));
+
+    const tabCount = Number(group.itemCount) || 0;
+    const searching = Boolean(this.getSearchQuery());
+    const hasMoreTabs = !searching && tabCount > TABS_INITIAL_LIMIT && !this.expandedGroupIds.has(group.id);
+    let moreBtn = card.querySelector('.btn-show-more-tabs');
+    if (hasMoreTabs) {
+      if (!moreBtn) {
+        moreBtn = document.createElement('button');
+        moreBtn.className = 'btn-show-more-tabs';
+        moreBtn.type = 'button';
+        moreBtn.dataset.id = group.id;
+        card.appendChild(moreBtn);
+      }
+      moreBtn.textContent = `展开其余 ${tabCount - TABS_INITIAL_LIMIT} 个标签页...`;
+    } else if (moreBtn) {
+      moreBtn.remove();
+    }
+  }
+
+  patchExpandedItemWindows() {
+    for (const card of this.container?.querySelectorAll('.stash-group-card') || []) {
+      const groupId = card.dataset.groupId;
+      const group = this.filteredGroups.find((item) => item.id === groupId);
+      if (!group || this.pinnedGroupIds.has(groupId)) continue;
+      const listEl = card.querySelector('.stash-items-list');
+      const previous = this.itemWindowByGroup.get(groupId);
+      const next = this.resolveItemWindow(group, listEl);
+      if (
+        previous &&
+        previous.start === next.start &&
+        previous.end === next.end &&
+        previous.padTop === next.padTop &&
+        previous.padBottom === next.padBottom &&
+        listEl?.childElementCount
+      ) {
+        continue;
+      }
+      this.refreshCardItems(card, group);
     }
   }
 
@@ -1524,36 +2003,9 @@ class StashTabComponent {
     Toast.show('已恢复全量收纳列表');
   }
 
-  renderNextBatch() {
-    if (this.renderedGroupCount >= this.filteredGroups.length) {
-      if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
-      return;
-    }
-
-    const nextBatch = this.filteredGroups.slice(
-      this.renderedGroupCount,
-      this.renderedGroupCount + this.PAGE_SIZE
-    );
-
-    const fragment = document.createDocumentFragment();
-    for (const group of nextBatch) {
-      const cardEl = this.createGroupCardElement(group);
-      fragment.appendChild(cardEl);
-    }
-
-    this.container.appendChild(fragment);
-    this.renderedGroupCount += nextBatch.length;
-
-    if (this.renderedGroupCount < this.filteredGroups.length) {
-      if (this.loadingIndicator) this.loadingIndicator.classList.remove('hidden');
-    } else {
-      if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
-    }
-  }
-
   createGroupCardElement(group) {
     const card = document.createElement('div');
-    card.className = `stash-group-card ${group.starred ? 'is-starred' : ''} ${group.locked ? 'is-locked' : ''}`;
+    card.className = `stash-group-card ${group.starred ? 'is-starred' : ''} ${group.locked ? 'is-locked' : ''} ${this.expandedGroupIds.has(group.id) ? 'is-expanded' : ''}`;
     card.dataset.groupId = group.id;
 
     const createdAt = TimeTreeBuilder.getGroupTimestamp(group);
@@ -1568,53 +2020,13 @@ class StashTabComponent {
     }).format(dateObj);
 
     const timeAgo = this.formatTimeAgo(createdAt);
-    const tabCount = group.tabs ? group.tabs.length : 0;
-    const isExpanded = this.expandedGroupIds.has(group.id);
-    const visibleTabs = (group.tabs && !isExpanded && tabCount > this.TABS_INITIAL_LIMIT)
-      ? group.tabs.slice(0, this.TABS_INITIAL_LIMIT)
-      : (group.tabs || []);
-    const hasMoreTabs = tabCount > this.TABS_INITIAL_LIMIT && !isExpanded;
-
+    const tabCount = Number(group.itemCount) || 0;
     const displayGroupName = group.title || `${tabCount} 个标签页`;
     const safeGroupId = this.escapeHTML(group.id);
-
-    let itemsHtml = '';
-    for (const tab of visibleTabs) {
-      const safeTabId = this.escapeHTML(tab.id);
-      let faviconSrc = tab.favIconUrl;
-
-      itemsHtml += `
-        <li class="stash-item-row" data-group-id="${safeGroupId}" data-item-id="${safeTabId}">
-          <div class="stash-item-main">
-            ${faviconSrc ? `
-              <img src="${this.escapeHTML(faviconSrc)}" class="tab-favicon" alt="" loading="lazy" decoding="async" />
-            ` : `
-              <svg class="tab-favicon tab-favicon-fallback" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="2" y1="12" x2="22" y2="12"></line>
-                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-              </svg>
-            `}
-            <a href="${this.escapeHTML(tab.url)}" class="tab-link btn-restore-item-link" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="${this.escapeHTML(tab.title || tab.url)}&#10;${this.escapeHTML(tab.url)}">
-              <span class="tab-title">${this.escapeHTML(tab.title || tab.url)}</span>
-            </a>
-          </div>
-          <div class="tab-item-actions">
-            <button class="btn-icon-danger btn-edit-item" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="编辑标题" type="button" aria-label="编辑标题">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
-              </svg>
-            </button>
-            <button class="btn-icon-danger btn-delete-item" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="删除此网页" type="button" aria-label="删除此网页">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
-              </svg>
-            </button>
-          </div>
-        </li>
-      `;
-    }
+    const itemWindow = this.resolveItemWindow(group, null);
+    const itemsHtml = this.buildItemRowsHtml(group, itemWindow);
+    const searching = Boolean(this.getSearchQuery());
+    const hasMoreTabs = !searching && tabCount > TABS_INITIAL_LIMIT && !this.expandedGroupIds.has(group.id);
 
     card.innerHTML = `
       <div class="stash-group-header">
@@ -1704,13 +2116,13 @@ class StashTabComponent {
         </div>
       </div>
 
-      <ul class="stash-items-list">
+      <ul class="stash-items-list${itemWindow.padTop || itemWindow.padBottom ? ' is-virtual' : ''}" style="${itemWindow.padTop ? `padding-top:${itemWindow.padTop}px;` : ''}${itemWindow.padBottom ? `padding-bottom:${itemWindow.padBottom}px;` : ''}">
         ${itemsHtml}
       </ul>
 
       ${hasMoreTabs ? `
         <button class="btn-show-more-tabs" data-id="${safeGroupId}" type="button">
-          展开其余 ${tabCount - this.TABS_INITIAL_LIMIT} 个标签页...
+          展开其余 ${tabCount - TABS_INITIAL_LIMIT} 个标签页...
         </button>
       ` : ''}
 
@@ -1747,7 +2159,7 @@ class StashTabComponent {
       const groupId = btnRestoreAll.dataset.id;
       const group = this.groups.find((g) => g.id === groupId);
       btnRestoreAll.disabled = true;
-      Toast.show(`正在后台还原 ${group?.tabs?.length || 0} 个网页...`);
+      Toast.show(`正在后台还原 ${group?.itemCount || 0} 个网页...`);
       await MessageBus.sendToBackground(ActionTypes.RESTORE_STASH_GROUP, { groupId });
       await this.loadData();
       return;
@@ -1760,7 +2172,13 @@ class StashTabComponent {
       const wrapper = btnToggleDropdown.closest('.dropdown-wrapper');
       const wasOpen = wrapper.classList.contains('open');
       document.querySelectorAll('.dropdown-wrapper.open').forEach((el) => el.classList.remove('open'));
-      if (!wasOpen) wrapper.classList.add('open');
+      if (!wasOpen) {
+        wrapper.classList.add('open');
+        const groupId = btnToggleDropdown.dataset.id;
+        if (groupId) this.pinnedGroupIds.add(groupId);
+      } else if (btnToggleDropdown.dataset.id) {
+        this.pinnedGroupIds.delete(btnToggleDropdown.dataset.id);
+      }
       return;
     }
 
@@ -1783,8 +2201,18 @@ class StashTabComponent {
         if (!confirmed) return;
       }
 
+      const snapshotTabs = await this.fetchAllGroupItems(groupId);
       this.recentlyDeletedGroups.set(groupId, {
-        group: JSON.parse(JSON.stringify(targetGroup)),
+        group: {
+          id: targetGroup.id,
+          createdAt: targetGroup.createdAt,
+          title: targetGroup.title,
+          color: targetGroup.color,
+          locked: targetGroup.locked,
+          starred: targetGroup.starred,
+          archived: targetGroup.archived,
+          tabs: snapshotTabs
+        },
         index: this.groups.findIndex((g) => g.id === groupId)
       });
       // 缓存只保留最近 20 条，避免长时间使用后无界增长
@@ -1865,11 +2293,11 @@ class StashTabComponent {
     if (btnCopyUrls) {
       e.preventDefault();
       const groupId = btnCopyUrls.dataset.id;
-      const group = this.groups.find((g) => g.id === groupId);
-      if (group && group.tabs) {
-        const text = group.tabs.map((t) => `${t.url} | ${t.title}`).join('\n');
+      const items = await this.fetchAllGroupItems(groupId);
+      if (items.length > 0) {
+        const text = items.map((t) => `${t.url} | ${t.title}`).join('\n');
         await navigator.clipboard.writeText(text);
-        Toast.show(`已复制该组全部 ${group.tabs.length} 个网页链接到剪贴板`);
+        Toast.show(`已复制该组全部 ${items.length} 个网页链接到剪贴板`);
       }
       return;
     }
@@ -1906,8 +2334,23 @@ class StashTabComponent {
     if (btnShowMore) {
       e.preventDefault();
       const groupId = btnShowMore.dataset.id;
+      const scrollTop = this.mainColumn?.scrollTop || 0;
       this.expandedGroupIds.add(groupId);
-      this.filterAndRender();
+      this.measuredCardHeights.delete(groupId);
+      const group = this.groups.find((item) => item.id === groupId);
+      const card = btnShowMore.closest('.stash-group-card');
+      if (group && card) {
+        this.refreshCardItems(card, group);
+        this.ensureSlots(groupId, 0, Math.min(Number(group.itemCount) || 0, TABS_INITIAL_LIMIT + TAB_OVERSCAN)).then((result) => {
+          if (result.changed) this.refreshCardItems(card, group);
+          if (result.failed) card.dataset.pageLoadState = 'failed';
+          else delete card.dataset.pageLoadState;
+          this.syncListWindow();
+          if (this.mainColumn) this.mainColumn.scrollTop = scrollTop;
+        });
+      } else {
+        this.syncListWindow();
+      }
       return;
     }
   }
@@ -1919,6 +2362,7 @@ class StashTabComponent {
     const group = this.groups.find((g) => g.id === groupId);
     if (!group) return;
 
+    this.pinnedGroupIds.add(groupId);
     const titleBlock = card.querySelector('.stash-title-block');
     const oldTitle = group.title || '';
 
@@ -1951,6 +2395,7 @@ class StashTabComponent {
         saveNewTitle();
       } else if (e.key === 'Escape') {
         isSaved = true;
+        this.pinnedGroupIds.delete(groupId);
         this.filterAndRender();
       }
     });
@@ -1961,8 +2406,15 @@ class StashTabComponent {
       `.stash-item-row[data-group-id="${CSS.escape(groupId)}"][data-item-id="${CSS.escape(itemId)}"]`
     );
     if (!row) return;
-    const group = this.groups.find((g) => g.id === groupId);
-    const tab = group?.tabs?.find((t) => t.id === itemId);
+    this.pinnedGroupIds.add(groupId);
+    const cached = this.getGroupPageCache(groupId);
+    let tab = null;
+    for (const item of cached.slots.values()) {
+      if (item.id === itemId) {
+        tab = item;
+        break;
+      }
+    }
     const titleEl = row.querySelector('.tab-title');
     if (!titleEl) return;
 
@@ -1995,6 +2447,7 @@ class StashTabComponent {
       if (e.key === 'Enter') saveTitle();
       else if (e.key === 'Escape') {
         isSaved = true;
+        this.pinnedGroupIds.delete(groupId);
         this.filterAndRender();
       }
     });
@@ -2016,7 +2469,9 @@ class StashTabComponent {
 
   handleDeleteItemWithAnimation(groupId, itemId) {
     const row = this.container.querySelector(`.stash-item-row[data-item-id="${CSS.escape(itemId)}"]`);
+    if (groupId) this.pinnedGroupIds.add(groupId);
     const runDelete = async () => {
+      this.pinnedGroupIds.delete(groupId);
       await MessageBus.sendToBackground(ActionTypes.DELETE_STASH_ITEM, { groupId, itemId });
       await this.loadData();
     };
@@ -2035,6 +2490,7 @@ class StashTabComponent {
 
   showContextMenu({ x, y, groupId, itemId, url, title }) {
     if (!this.contextMenu) return;
+    if (groupId) this.pinnedGroupIds.add(groupId);
     this.activeContextItem = { groupId, itemId, url, title };
     this.contextMenu.classList.remove('hidden');
 
@@ -2055,7 +2511,11 @@ class StashTabComponent {
   hideContextMenu() {
     if (this.contextMenu && !this.contextMenu.classList.contains('hidden')) {
       this.contextMenu.classList.add('hidden');
+      const groupId = this.activeContextItem?.groupId;
       this.activeContextItem = null;
+      if (groupId && !this.container?.querySelector('.inline-title-input')) {
+        this.pinnedGroupIds.delete(groupId);
+      }
     }
   }
 }
@@ -2589,15 +3049,43 @@ class BackupComponent {
   bindEvents() {
     // 1. 导出完整 JSON 备份文件
     this.btnExportFullJSON?.addEventListener('click', async () => {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const filename = `better-browse-backup-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+      try {
+        if (typeof window.showSaveFilePicker === 'function') {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: filename,
+            types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
+          });
+          const writable = await handle.createWritable();
+          let cursor = null;
+          let expectedStashRevision;
+          do {
+            const res = await MessageBus.sendToBackground(ActionTypes.READ_EXPORT_CHUNK, {
+              type: 'full_backup',
+              cursor,
+              expectedStashRevision
+            });
+            if (!res.success || !res.data?.chunk) throw new Error(res.error || res.data?.error || '导出失败');
+            await writable.write(res.data.chunk);
+            cursor = res.data.nextCursor;
+            expectedStashRevision = res.data.stashRevision;
+          } while (cursor);
+          await writable.close();
+          Toast.show('完整备份文件已成功导出');
+          return;
+        }
+      } catch (err) {
+        if (err?.name === 'AbortError') return;
+        console.warn('[Backup] 流式导出失败，回退完整备份:', err);
+      }
       const res = await MessageBus.sendToBackground(ActionTypes.EXPORT_FULL_BACKUP);
       if (res.success && res.data) {
         const jsonStr = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
         const blob = new Blob([jsonStr], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        const now = new Date();
-        const pad = (n) => String(n).padStart(2, '0');
-        const filename = `better-browse-backup-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
         a.href = url;
         a.download = filename;
         a.click();
@@ -3366,7 +3854,7 @@ class AboutComponent {
         `--------------------`,
         `软件版本: ${softwareVersion} (${versionName})`,
         `API 版本: ${API_VERSION}`,
-        `数据修订: ${LOCAL_DATA_SCHEMA_REVISION ?? 8}`,
+        `数据结构版本: ${LOCAL_DATA_SCHEMA_REVISION ?? 8}`,
         `扩展 ID: ${extensionId}`,
         `User Agent: ${userAgent}`,
         `当前时间: ${new Date().toISOString()}`
@@ -3379,6 +3867,72 @@ class AboutComponent {
         Toast.show('复制失败，请手动选择并复制');
       }
     });
+  }
+}
+
+/**
+ * 搜索主页组件 (Capybara 风格)
+ *
+ * 迁移自 capybera/search-engine 的视觉布局与基础交互。只保留搜索引擎切换、
+ * 搜索提交（在新标签页打开所选引擎）与快捷链接三块用户可见能力；不迁移
+ * SearXNG 本地代理与结果渲染（依赖独立 Node 服务器，不适合直接搬进扩展）。
+ */
+class SearchHomeComponent {
+  constructor() {
+    // 搜索引擎跳转地址映射
+    this.ENGINES = {
+      google:     'https://www.google.com/search?q=',
+      baidu:      'https://www.baidu.com/s?wd=',
+      bing:       'https://www.bing.com/search?q=',
+      duckduckgo: 'https://duckduckgo.com/?q='
+    };
+
+    this.currentEngine = 'google';
+    this.engineBtns = document.querySelectorAll('#tab-search .search-engine-btn');
+    this.searchForm = document.getElementById('searchHomeForm');
+    this.searchInput = document.getElementById('searchHomeInput');
+    this.bindEvents();
+  }
+
+  bindEvents() {
+    // 切换搜索引擎
+    this.engineBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.engineBtns.forEach((b) => b.setAttribute('aria-pressed', 'false'));
+        btn.setAttribute('aria-pressed', 'true');
+        this.currentEngine = btn.dataset.engine;
+        this.searchInput?.focus();
+      });
+    });
+
+    // 提交搜索：在当前标签页打开所选引擎结果页
+    this.searchForm?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const query = this.searchInput.value.trim();
+      if (!query) return;
+      const url = this.ENGINES[this.currentEngine] + encodeURIComponent(query);
+      chrome.tabs?.create({ url, active: true });
+    });
+
+    // / 聚焦搜索框、Esc 清空
+    document.addEventListener('keydown', (e) => {
+      const panel = document.getElementById('tab-search');
+      const isSearchActive = panel && !panel.hidden && panel.classList.contains('active');
+      if (!isSearchActive) return;
+
+      if (e.key === '/' && document.activeElement !== this.searchInput) {
+        e.preventDefault();
+        this.searchInput?.focus();
+      } else if (e.key === 'Escape' && document.activeElement === this.searchInput) {
+        this.searchInput.value = '';
+        this.searchInput.blur();
+      }
+    });
+  }
+
+  /** 进入搜索面板时聚焦输入框，便于直接输入 */
+  activate() {
+    setTimeout(() => this.searchInput?.focus(), 60);
   }
 }
 
@@ -3403,10 +3957,12 @@ const SETTINGS_SUBTABS = Object.keys(SETTINGS_SUBTAB_TITLES);
 class OptionsApp {
   constructor() {
     this.tabStash = document.getElementById('tab-stash');
+    this.tabSearch = document.getElementById('tab-search');
     this.viewSettingsHub = document.getElementById('view-settings-hub');
     this.btnSidebarSettings = document.getElementById('btnSidebarSettings');
     this.btnBackToStash = document.getElementById('btnBackToStash');
     this.navItemStash = document.getElementById('navTabStash');
+    this.navItemSearch = document.getElementById('navTabSearch');
     this.subnavItems = document.querySelectorAll('.settings-subnav-item');
     this.breadcrumbCurrent = document.getElementById('settingsCurrentSubtabBreadcrumb');
     this.panels = document.querySelectorAll('.tab-panel');
@@ -3417,23 +3973,27 @@ class OptionsApp {
   }
 
   init() {
-    const stashComponent = new StashTabComponent();
-    const stashSettingsComponent = new StashSettingsComponent();
-    const rulesComponent = new RulesConfigComponent();
-    const domainComponent = new DomainRulesComponent();
-    const syncComponent = new WebdavSyncComponent();
-    this.runtimeLogComponent = new RuntimeLogComponent();
-    const aiBridgeComponent = new AIBridgeComponent();
-    const aboutComponent = new AboutComponent();
+    this.components = new Map();
+    this.componentFactories = {
+      'stash-settings': () => new StashSettingsComponent(),
+      rules: () => new RulesConfigComponent(),
+      links: () => new DomainRulesComponent(),
+      sync: () => new WebdavSyncComponent(),
+      'ai-bridge': () => new AIBridgeComponent(),
+      logs: () => new RuntimeLogComponent(),
+      about: () => new AboutComponent(),
+      backup: () => new BackupComponent(() => {
+        this.components.get('stash')?.loadData?.();
+        this.components.get('stash-settings')?.loadSettings?.();
+        this.components.get('rules')?.loadConfig?.();
+        this.components.get('links')?.loadRules?.();
+      })
+    };
+    this.components.set('stash', new StashTabComponent());
+    this.components.set('search', new SearchHomeComponent());
     this.bindNavigation();
-    new BackupComponent(() => {
-      stashComponent.loadData();
-      stashSettingsComponent.loadSettings();
-      rulesComponent.loadConfig();
-      domainComponent.loadRules();
-    });
 
-    // 接收来自后台的主动广播通知（双通道保障即时呈现）
+    // 接收来自后台的主动通知；尚未打开的面板不提前实例化，首次进入时读取最新状态。
     chrome.runtime.onMessage.addListener((message) => {
       if (!message || !message.action) return false;
       if (message.action === 'SWITCH_OPTIONS_TAB' && message.payload?.tab) {
@@ -3441,39 +4001,50 @@ class OptionsApp {
       } else if (message.action === ActionTypes.OPEN_OPTIONS_PAGE && message.payload?.tab) {
         this.switchTab(message.payload.tab);
       } else if (message.action === ActionTypes.NOTIFY_STASH_UPDATED) {
-        stashComponent.loadData();
+        this.components.get('stash')?.loadData?.();
       } else if (message.action === ActionTypes.NOTIFY_RULE_UPDATED) {
-        domainComponent.loadRules();
+        this.components.get('links')?.loadRules?.();
       } else if (message.action === ActionTypes.NOTIFY_CONFIG_UPDATED) {
-        stashSettingsComponent.loadSettings();
-        rulesComponent.loadConfig();
-        syncComponent.loadAccountConfigSync();
-        aiBridgeComponent.loadConfig();
+        this.components.get('stash-settings')?.loadSettings?.();
+        this.components.get('rules')?.loadConfig?.();
+        this.components.get('sync')?.loadAccountConfigSync?.();
+        this.components.get('ai-bridge')?.loadConfig?.();
       } else if (message.action === ActionTypes.NOTIFY_SYNC_UPDATED) {
-        syncComponent.loadAll();
+        this.components.get('sync')?.loadAll?.();
       }
       return false;
     });
 
-    // 监听 URL Hash 变化以支持浏览器前进/后退
     window.addEventListener('hashchange', () => {
       const rawHash = window.location.hash.replace(/^#/, '');
       if (rawHash) this.switchTab(rawHash, false);
     });
 
-    // 读取初始 URL Hash 路由 (如 #stash, #stash-settings, #rules, #links 等)
     const rawHash = window.location.hash.replace(/^#/, '');
-    if (rawHash) {
-      this.switchTab(rawHash, false);
-    } else {
-      this.switchTab('stash', false);
-    }
+    this.switchTab(rawHash || 'stash', false);
+  }
+
+  ensureComponent(tabName) {
+    if (!tabName || tabName === 'stash') return this.components.get('stash');
+    if (this.components.has(tabName)) return this.components.get(tabName);
+    const factory = this.componentFactories[tabName];
+    if (!factory) return null;
+    const component = factory();
+    this.components.set(tabName, component);
+    if (tabName === 'logs') this.runtimeLogComponent = component;
+    CustomSelectEnhancer.enhanceAll(document.getElementById(`tab-${tabName}`) || document);
+    return component;
   }
 
   bindNavigation() {
     // 侧边栏时间线按钮点击
     this.navItemStash?.addEventListener('click', () => {
       this.switchTab('stash');
+    });
+
+    // 侧边栏搜索主页按钮点击
+    this.navItemSearch?.addEventListener('click', () => {
+      this.switchTab('search');
     });
 
     // 侧边栏左下角系统设置按钮点击（进入统一设置中心）
@@ -3509,13 +4080,14 @@ class OptionsApp {
 
   /**
    * 统一切换视图与设置选项
-   * @param {string} tabName 目标标签名 ('stash' | 'settings' | 'stash-settings' | 'rules' | 'links' | 'backup' | 'sync' | 'ai-bridge' | 'logs')
+   * @param {string} tabName 目标标签名 ('stash' | 'search' | 'settings' | 'stash-settings' | 'rules' | 'links' | 'backup' | 'sync' | 'ai-bridge' | 'logs')
    * @param {boolean} [updateHash=true] 是否同步更新 URL Hash
    */
   switchTab(tabName, updateHash = true) {
     if (!tabName) tabName = 'stash';
 
     const isStashView = tabName === 'stash';
+    const isSearchView = tabName === 'search';
     const isSettingsSubtab = SETTINGS_SUBTABS.includes(tabName);
     const targetSubtab = isSettingsSubtab ? tabName : (tabName === 'settings' ? this.currentSettingsSubtab : null);
 
@@ -3524,6 +4096,10 @@ class OptionsApp {
       if (this.tabStash) {
         this.tabStash.classList.add('active');
         this.tabStash.hidden = false;
+      }
+      if (this.tabSearch) {
+        this.tabSearch.classList.remove('active');
+        this.tabSearch.hidden = true;
       }
       if (this.viewSettingsHub) {
         this.viewSettingsHub.classList.remove('active');
@@ -3534,6 +4110,10 @@ class OptionsApp {
       this.navItemStash?.classList.add('active');
       this.navItemStash?.setAttribute('aria-selected', 'true');
       this.navItemStash?.setAttribute('tabindex', '0');
+
+      this.navItemSearch?.classList.remove('active');
+      this.navItemSearch?.setAttribute('aria-selected', 'false');
+      this.navItemSearch?.setAttribute('tabindex', '-1');
 
       this.btnSidebarSettings?.classList.remove('active');
       this.btnSidebarSettings?.setAttribute('aria-selected', 'false');
@@ -3548,8 +4128,58 @@ class OptionsApp {
       return;
     }
 
+    if (isSearchView) {
+      // 1. 激活搜索主视图、隐藏时间线与设置中心
+      if (this.tabSearch) {
+        this.tabSearch.classList.add('active');
+        this.tabSearch.hidden = false;
+      }
+      if (this.tabStash) {
+        this.tabStash.classList.remove('active');
+        this.tabStash.hidden = true;
+      }
+      if (this.viewSettingsHub) {
+        this.viewSettingsHub.classList.remove('active');
+        this.viewSettingsHub.hidden = true;
+      }
+
+      // 2. 侧边栏按钮状态同步
+      this.navItemStash?.classList.remove('active');
+      this.navItemStash?.setAttribute('aria-selected', 'false');
+      this.navItemStash?.setAttribute('tabindex', '-1');
+
+      this.navItemSearch?.classList.add('active');
+      this.navItemSearch?.setAttribute('aria-selected', 'true');
+      this.navItemSearch?.setAttribute('tabindex', '0');
+
+      this.btnSidebarSettings?.classList.remove('active');
+      this.btnSidebarSettings?.setAttribute('aria-selected', 'false');
+
+      // 3. 进入时聚焦搜索框，便于直接输入
+      this.components.get('search')?.activate?.();
+
+      if (updateHash) {
+        try {
+          history.replaceState(null, '', '#search');
+        } catch {
+          // 忽略历史记录异常
+        }
+      }
+      return;
+    }
+
+    // 进入设置中心前，先隐藏搜索主视图
+    if (this.tabSearch) {
+      this.tabSearch.classList.remove('active');
+      this.tabSearch.hidden = true;
+    }
+    this.navItemSearch?.classList.remove('active');
+    this.navItemSearch?.setAttribute('aria-selected', 'false');
+    this.navItemSearch?.setAttribute('tabindex', '-1');
+
     if (targetSubtab) {
-      // 1. 激活统一系统设置中心视图
+      // 进入面板时才实例化并读取数据，避免打开时间线就加载全部隐藏设置页。
+      const targetComponent = this.ensureComponent(targetSubtab);
       this.currentSettingsSubtab = targetSubtab;
 
       if (this.tabStash) {
@@ -3592,9 +4222,9 @@ class OptionsApp {
         }
       });
 
-      // 5. 触发对应组件懒加载
+      // 日志列表需要在面板可见后读取高度并渲染。
       if (targetSubtab === 'logs') {
-        this.runtimeLogComponent?.load();
+        targetComponent?.load?.();
       }
 
       if (updateHash) {

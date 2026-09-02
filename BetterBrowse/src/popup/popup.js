@@ -33,7 +33,10 @@ class PopupController {
     this.isSpecialPage = false;
     this.isGlobalApplied = false;
     this.statusTimer = null;
-    this.countdownPollTimer = null;
+    this.countdownTickTimer = null;
+    this.countdownDeadline = 0;
+    this.currentTabCount = 0;
+    this.tabThreshold = 15;
 
     // DOM 元素引用缓存
     this.dom = {
@@ -58,7 +61,7 @@ class PopupController {
     this.bindSegmentedEvents();
     this.bindActionEvents();
     window.addEventListener('unload', () => {
-      if (this.countdownPollTimer) clearInterval(this.countdownPollTimer);
+      if (this.countdownTickTimer) clearInterval(this.countdownTickTimer);
     });
     await this.loadActiveTabInfo();
     await this.loadLinkRuleState();
@@ -186,7 +189,7 @@ class PopupController {
   }
 
   /**
-   * 加载当前标签页总数及阈值状态（支持实时倒计时感知）
+   * 加载一次当前标签数量与倒计时状态，倒计时展示由弹窗本地时钟推进。
    */
   async loadTabCountInfo() {
     const [countRes, countdownRes] = await Promise.all([
@@ -194,36 +197,54 @@ class PopupController {
       MessageBus.sendToBackground(ActionTypes.GET_COUNTDOWN_STATUS)
     ]);
 
-    if (countRes.success && countRes.data) {
-      const { currentCount, threshold } = countRes.data;
-      const countdown = countdownRes?.data;
+    if (!countRes.success || !countRes.data) return;
+    this.currentTabCount = countRes.data.currentCount;
+    this.tabThreshold = countRes.data.threshold;
+    const countdown = countdownRes?.data;
+    this.countdownDeadline = countdown?.isCountingDown
+      ? Date.now() + Math.max(0, Number(countdown.remainingSeconds) || 0) * 1000
+      : 0;
+    this.renderTabCount();
+    this.syncCountdownTicker();
+  }
 
-      if (countdown && countdown.isCountingDown) {
-        this.dom.tabCountText.textContent = `⏳ 倒计时: ${countdown.remainingSeconds}s (${currentCount}/${threshold})`;
-        this.dom.tabCounterContainer.classList.add('warning');
-        this.showStatus(`将在 ${countdown.remainingSeconds}s 后自动收纳闲置标签`, 'warning');
-      } else {
-        this.dom.tabCountText.textContent = `标签: ${currentCount} / ${threshold}`;
-        if (currentCount >= threshold) {
-          this.dom.tabCounterContainer.classList.add('warning');
-          this.dom.tabCounterContainer.title = '标签页数量已达阈值，建议收纳';
-        } else {
-          this.dom.tabCounterContainer.classList.remove('warning');
-          this.dom.tabCounterContainer.title = '当前窗口标签页数量及阈值';
-        }
-      }
-
-      // 倒计时进行中每秒轮询刷新，保证 popup 打开期间状态实时；结束后自动停止
-      const isCounting = Boolean(countdown && countdown.isCountingDown);
-      if (isCounting && !this.countdownPollTimer) {
-        this.countdownPollTimer = setInterval(() => {
-          this.loadTabCountInfo();
-        }, 1000);
-      } else if (!isCounting && this.countdownPollTimer) {
-        clearInterval(this.countdownPollTimer);
-        this.countdownPollTimer = null;
-      }
+  renderTabCount() {
+    const remainingSeconds = this.countdownDeadline > 0
+      ? Math.max(0, Math.ceil((this.countdownDeadline - Date.now()) / 1000))
+      : 0;
+    if (remainingSeconds > 0) {
+      this.dom.tabCountText.textContent = `⏳ 倒计时: ${remainingSeconds}s (${this.currentTabCount}/${this.tabThreshold})`;
+      this.dom.tabCounterContainer.classList.add('warning');
+      this.dom.tabCounterContainer.title = '自动收纳倒计时进行中';
+      this.showStatus(`将在 ${remainingSeconds}s 后自动收纳闲置标签`, 'warning');
+      return;
     }
+
+    this.dom.tabCountText.textContent = `标签: ${this.currentTabCount} / ${this.tabThreshold}`;
+    if (this.currentTabCount >= this.tabThreshold) {
+      this.dom.tabCounterContainer.classList.add('warning');
+      this.dom.tabCounterContainer.title = '标签页数量已达阈值，建议收纳';
+    } else {
+      this.dom.tabCounterContainer.classList.remove('warning');
+      this.dom.tabCounterContainer.title = '当前窗口标签页数量及阈值';
+    }
+  }
+
+  syncCountdownTicker() {
+    if (this.countdownDeadline > Date.now()) {
+      if (this.countdownTickTimer) return;
+      this.countdownTickTimer = setInterval(() => {
+        this.renderTabCount();
+        if (this.countdownDeadline > Date.now()) return;
+        clearInterval(this.countdownTickTimer);
+        this.countdownTickTimer = null;
+        this.countdownDeadline = 0;
+        this.loadTabCountInfo().catch(() => {});
+      }, 1000);
+      return;
+    }
+    if (this.countdownTickTimer) clearInterval(this.countdownTickTimer);
+    this.countdownTickTimer = null;
   }
 
   /**
@@ -247,14 +268,6 @@ class PopupController {
     });
 
     if (res.success) {
-      // 直连当前标签页通知其立刻刷新内存模式（零延迟双重保障）
-      if (this.currentTab && this.currentTab.id) {
-        MessageBus.sendToTab(this.currentTab.id, ActionTypes.NOTIFY_RULE_UPDATED, {
-          domain: this.currentDomain,
-          mode: mode
-        }, 800).catch(() => {});
-      }
-
       const cfg = MODES_CONFIG.find((c) => c.mode === mode);
       const label = cfg ? cfg.label : mode;
       if (this.isGlobalApplied) {
