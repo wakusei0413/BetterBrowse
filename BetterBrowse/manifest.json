@@ -32,7 +32,8 @@
   "content_scripts": [
     {
       "matches": [
-        "<all_urls>"
+        "http://*/*",
+        "https://*/*"
       ],
       "js": [
         "src/content/main-world-bridge.js"
@@ -43,10 +44,22 @@
     },
     {
       "matches": [
-        "<all_urls>"
+        "http://*/*",
+        "https://*/*"
       ],
       "js": [
         "src/content/content-bundle.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/content/frame-content-bundle.js"
       ],
       "run_at": "document_start",
       "all_frames": true
@@ -60,9 +73,11 @@
     "notifications",
     "scripting",
     "contextMenus",
-    "nativeMessaging"
+    "nativeMessaging",
+    "webNavigation"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "http://*/*",
+    "https://*/*"
   ]
 }

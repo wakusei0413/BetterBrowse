@@ -40,18 +40,54 @@ export class FormGuardRule extends BaseRule {
     );
     if (pendingTabs.length === 0) return;
 
-    // 并行探测所有候选页面（单页超时由 MessageBus.sendToTab 内部 2 秒兜底）
     await Promise.all(
       pendingTabs.map(async (tab) => {
-        try {
-          const response = await MessageBus.sendToTab(tab.id, ActionTypes.CHECK_FORM_INPUT);
-          results.set(tab.id, response);
-        } catch {
-          // 单页通信异常不影响其余页面的预加载，评估阶段会按 fail-closed 策略兜底
-          results.set(tab.id, { success: false, error: '探测异常' });
-        }
+        results.set(tab.id, await FormGuardRule.probeTabFrames(tab.id));
       })
     );
+  }
+
+  /**
+   * 聚合标签页全部 HTTP(S) 框架的表单状态：任一框架有输入或探测失败即视为需保护。
+   * @param {number} tabId
+   * @returns {Promise<{ success: boolean, data?: { hasActiveInput: boolean, reason?: string }, error?: string }>}
+   */
+  static async probeTabFrames(tabId) {
+    let frames = [{ frameId: 0 }];
+    try {
+      if (chrome.webNavigation?.getAllFrames) {
+        const listed = await chrome.webNavigation.getAllFrames({ tabId });
+        if (Array.isArray(listed) && listed.length > 0) frames = listed;
+      }
+    } catch {
+      // 无 webNavigation 时只探测顶层
+    }
+
+    let sawSuccess = false;
+    let activeReason = '';
+    for (const frame of frames) {
+      if (!Number.isInteger(frame.frameId) || frame.frameId < 0) continue;
+      const url = frame.url || '';
+      if (url && !url.startsWith('http://') && !url.startsWith('https://') && frame.frameId !== 0) continue;
+      try {
+        // 顶层框架走不带 options 的普通发送，兼容更简单的测试桩与旧调用约定
+        const response = frame.frameId === 0
+          ? await MessageBus.sendToTab(tabId, ActionTypes.CHECK_FORM_INPUT, null, 2000)
+          : await MessageBus.sendToFrame(tabId, frame.frameId, ActionTypes.CHECK_FORM_INPUT, null, 2000);
+        if (!response?.success) {
+          return { success: false, error: response?.error || '框架探测失败' };
+        }
+        sawSuccess = true;
+        if (response.data?.hasActiveInput) {
+          activeReason = response.data.reason || '框架内存在未提交输入';
+          return { success: true, data: { hasActiveInput: true, reason: activeReason } };
+        }
+      } catch {
+        return { success: false, error: '探测异常' };
+      }
+    }
+    if (!sawSuccess) return { success: false, error: '无可探测框架' };
+    return { success: true, data: { hasActiveInput: false } };
   }
 
   async evaluate({ tab, config, formResults }) {
@@ -73,7 +109,7 @@ export class FormGuardRule extends BaseRule {
 
     try {
       const cached = formResults?.get(tab.id);
-      const response = cached || await MessageBus.sendToTab(tab.id, ActionTypes.CHECK_FORM_INPUT);
+      const response = cached || await FormGuardRule.probeTabFrames(tab.id);
       formResults?.set(tab.id, response);
       if (response && response.success && response.data && response.data.hasActiveInput) {
         return {

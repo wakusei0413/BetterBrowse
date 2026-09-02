@@ -57,6 +57,25 @@ export class MessageBus {
    * @returns {Promise<{ success: boolean, data?: any, error?: string }>}
    */
   static async sendToTab(tabId, action, payload = null, timeoutMs = 2000) {
+    return await this._sendToContentScript(tabId, action, payload, timeoutMs);
+  }
+
+  /**
+   * 发送消息至指定标签页的指定框架。
+   * @param {number} tabId - 目标标签页 ID
+   * @param {number} frameId - 目标框架 ID，顶层框架为 0
+   * @param {string} action - 动作名称
+   * @param {any} [payload=null] - 负载数据
+   * @param {number} [timeoutMs=2000] - 响应超时毫秒数
+   */
+  static async sendToFrame(tabId, frameId, action, payload = null, timeoutMs = 2000) {
+    if (!Number.isInteger(frameId) || frameId < 0) {
+      return { success: false, error: '框架 ID 无效' };
+    }
+    return await this._sendToContentScript(tabId, action, payload, timeoutMs, { frameId });
+  }
+
+  static async _sendToContentScript(tabId, action, payload, timeoutMs, options) {
     return new Promise((resolve) => {
       let settled = false;
       const timeoutId = setTimeout(() => {
@@ -71,26 +90,23 @@ export class MessageBus {
         clearTimeout(timeoutId);
         resolve(value);
       };
+      const callback = (response) => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          finish({ success: false, error: lastError.message });
+          return;
+        }
+        finish(response || { success: true });
+      };
+
       try {
-        const chromeResult = chrome.tabs.sendMessage(tabId, { action, payload }, (response) => {
-          const lastError = chrome.runtime.lastError;
-          if (lastError) {
-            // 很多特殊标签页（如 chrome://, edge://, 空白页）无法注入脚本，属正常预期
-            finish({
-              success: false,
-              error: lastError.message
-            });
-            return;
-          }
-          finish(response || { success: true });
-        });
-        // MV3：即使传入 callback，sendMessage 仍可能返回会拒绝的 Promise
+        const message = { action, payload };
+        const chromeResult = options
+          ? chrome.tabs.sendMessage(tabId, message, options, callback)
+          : chrome.tabs.sendMessage(tabId, message, callback);
         this.settleChromePromise(chromeResult);
       } catch (err) {
-        finish({
-          success: false,
-          error: err.message
-        });
+        finish({ success: false, error: err.message });
       }
     });
   }
