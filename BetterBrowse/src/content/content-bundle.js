@@ -2,6 +2,7 @@
  * @file content-bundle.js
  * @description BetterBrowse 顶层页面完整内容脚本打包产物
  * @encoding UTF-8
+ * @betterbrowse-sources src/constants/action-types.js=fa99dd24;src/constants/config.js=142b21b8;src/core/logging/runtime-logger.js=4392ab33;src/core/link/link-matcher.js=25202d73;src/content/form-detector.js=ac1a1c56;src/content/countdown-banner.js=4edc5f7d;src/content/link-interceptor.js=1242386c;src/content/index.js=543e068f
  */
 (function() {
   'use strict';

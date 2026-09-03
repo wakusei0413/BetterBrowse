@@ -2,6 +2,7 @@
  * @file frame-content-bundle.js
  * @description BetterBrowse iframe 轻量内容脚本打包产物
  * @encoding UTF-8
+ * @betterbrowse-sources src/constants/action-types.js=fa99dd24;src/constants/config.js=142b21b8;src/core/link/link-matcher.js=25202d73;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=1242386c;src/content/frame-index.js=ecaaf4df
  */
 (function() {
   'use strict';
