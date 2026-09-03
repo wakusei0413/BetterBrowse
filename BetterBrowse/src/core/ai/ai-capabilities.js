@@ -167,6 +167,10 @@ export const AI_ACTION_DOCS = {
     params: { textString: 'string，OneTab 文本或 JSON' }
   },
   [ActionTypes.EXPORT_ONETAB_TEXT]: { summary: '导出 OneTab 兼容纯文本（URL | Title）' },
+  [ActionTypes.RESOLVE_FAVICON_DATA_URL]: {
+    summary: '后台代取站点图标并转为 data URL，避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露',
+    params: { url: 'string，网页 URL 或已知 favicon URL' }
+  },
 
   // === 配置管理 ===
   [ActionTypes.GET_CONFIG]: { summary: '获取用户配置（与默认值深合并后的全量）' },

@@ -60,6 +60,7 @@ const ActionTypes = {
   RESTORE_FULL_BACKUP: 'RESTORE_FULL_BACKUP', // 恢复全量备份 (还原标签页 + 插件全局配置 + 域名规则)
   IMPORT_THIRD_PARTY_DATA: 'IMPORT_THIRD_PARTY_DATA', // 从第三方工具导入标签页 (如 OneTab 文本/JSON)
   EXPORT_ONETAB_TEXT: 'EXPORT_ONETAB_TEXT',   // 导出为 OneTab 兼容纯文本 (URL | Title)
+  RESOLVE_FAVICON_DATA_URL: 'RESOLVE_FAVICON_DATA_URL', // 后台代取站点图标并转为 data URL，避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露
 
   // === 配置与状态同步相关 ===
   GET_CONFIG: 'GET_CONFIG',                   // 获取插件配置
@@ -597,8 +598,8 @@ class CountdownBanner {
         }
 
         .banner-card {
-          width: 330px;
-          background: rgba(255, 255, 255, 0.96);
+          width: 340px;
+          background: rgba(255, 255, 255, 0.98);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
           border: 1px solid rgba(0, 0, 0, 0.08);
@@ -644,8 +645,16 @@ class CountdownBanner {
         }
 
         .card-icon {
-          font-size: 16px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          color: #2563eb;
           line-height: 1;
+        }
+
+        .card-icon-svg {
+          width: 16px;
+          height: 16px;
         }
 
         .card-title {
@@ -657,36 +666,46 @@ class CountdownBanner {
         .threshold-tag {
           font-size: 11px;
           font-weight: 500;
-          color: #d97706;
+          color: #b45309;
           background: #fef3c7;
-          padding: 2px 6px;
+          border: 1px solid #fde68a;
+          padding: 1px 6px;
           border-radius: 6px;
         }
 
         .btn-close {
           background: transparent;
           border: none;
-          color: #9ca3af;
+          color: #6b7280;
           cursor: pointer;
-          font-size: 14px;
-          line-height: 1;
-          padding: 4px;
-          border-radius: 4px;
-          transition: all 0.15s ease;
-          display: flex;
+          width: 32px;
+          height: 32px;
+          min-width: 32px;
+          min-height: 32px;
+          border-radius: 6px;
+          transition: color 0.15s ease, background 0.15s ease;
+          display: inline-flex;
           align-items: center;
           justify-content: center;
+          padding: 0;
         }
 
         .btn-close:hover {
-          color: #4b5563;
-          background: rgba(0, 0, 0, 0.05);
+          color: #111827;
+          background: rgba(0, 0, 0, 0.06);
+        }
+
+        .btn-close:focus-visible {
+          outline: 2px solid #2563eb;
+          outline-offset: 1px;
         }
 
         /* 主体说明与倒计时数字 */
         .card-body {
-          margin-bottom: 12px;
-          color: #4b5563;
+          margin-bottom: 10px;
+          color: #374151;
+          font-size: 13px;
+          line-height: 1.5;
         }
 
         .highlight-text {
@@ -698,11 +717,19 @@ class CountdownBanner {
           display: inline-flex;
           align-items: center;
           font-weight: 700;
-          color: #2563eb;
+          color: #1d4ed8;
           background: #eff6ff;
+          border: 1px solid #dbeafe;
           padding: 1px 6px;
           border-radius: 4px;
           margin: 0 2px;
+        }
+
+        .card-retention-note {
+          margin-top: 6px;
+          font-size: 11px;
+          line-height: 1.4;
+          color: #6b7280;
         }
 
         /* 进度条 */
@@ -735,35 +762,45 @@ class CountdownBanner {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          padding: 6px 12px;
+          min-height: 32px;
+          padding: 0 12px;
           border-radius: 8px;
           font-size: 12px;
           font-weight: 500;
           cursor: pointer;
           border: 1px solid transparent;
-          transition: all 0.15s ease;
+          transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
           line-height: 1.2;
           user-select: none;
+          text-decoration: none;
         }
 
         .btn-secondary {
           background: #f3f4f6;
-          color: #4b5563;
+          color: #374151;
           border-color: #e5e7eb;
         }
 
         .btn-secondary:hover {
           background: #e5e7eb;
-          color: #1f2937;
+          color: #111827;
+          border-color: #d1d5db;
         }
 
         .btn-primary {
           background: #2563eb;
           color: #ffffff;
+          border-color: #2563eb;
         }
 
         .btn-primary:hover {
           background: #1d4ed8;
+          border-color: #1d4ed8;
+        }
+
+        .btn:focus-visible {
+          outline: 2px solid #2563eb;
+          outline-offset: 1px;
         }
 
         .btn:disabled {
@@ -771,13 +808,38 @@ class CountdownBanner {
           cursor: not-allowed;
         }
 
-        /* 深色模式自适应 */
+        /* 减弱动画模式适配 */
+        @media (prefers-reduced-motion: reduce) {
+          .banner-card {
+            animation: none !important;
+            transition: none !important;
+            transform: none !important;
+            opacity: 1 !important;
+          }
+          .banner-card.fade-out {
+            animation: none !important;
+            transition: none !important;
+            opacity: 0 !important;
+          }
+          .progress-bar {
+            transition: none !important;
+          }
+          .btn,
+          .btn-close {
+            transition: none !important;
+          }
+        }
+
+        /* 深色模式自适应与高对比度补全 */
         @media (prefers-color-scheme: dark) {
           .banner-card {
-            background: rgba(30, 41, 59, 0.94);
-            border-color: rgba(255, 255, 255, 0.1);
+            background: rgba(30, 41, 59, 0.96);
+            border-color: rgba(255, 255, 255, 0.12);
             color: #e2e8f0;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+          }
+          .card-icon {
+            color: #60a5fa;
           }
           .card-title {
             color: #f8fafc;
@@ -788,57 +850,87 @@ class CountdownBanner {
           .highlight-text {
             color: #ffffff;
           }
+          .card-retention-note {
+            color: #94a3b8;
+          }
           .threshold-tag {
             background: rgba(217, 119, 6, 0.2);
             color: #fbbf24;
+            border-color: rgba(245, 158, 11, 0.35);
           }
           .btn-close {
             color: #94a3b8;
           }
           .btn-close:hover {
-            color: #f1f5f9;
-            background: rgba(255, 255, 255, 0.08);
+            color: #f8fafc;
+            background: rgba(255, 255, 255, 0.1);
           }
           .countdown-indicator {
             background: rgba(37, 99, 235, 0.25);
             color: #93c5fd;
+            border-color: rgba(96, 165, 250, 0.3);
           }
           .progress-track {
             background: #334155;
           }
+          .progress-bar {
+            background: linear-gradient(90deg, #60a5fa, #818cf8);
+          }
           .btn-secondary {
             background: #334155;
-            color: #e2e8f0;
+            color: #f1f5f9;
             border-color: #475569;
           }
           .btn-secondary:hover {
             background: #475569;
             color: #ffffff;
+            border-color: #64748b;
+          }
+          .btn-primary {
+            background: #3b82f6;
+            color: #ffffff;
+            border-color: #3b82f6;
+          }
+          .btn-primary:hover {
+            background: #2563eb;
+            border-color: #2563eb;
           }
         }
       </style>
 
-      <div class="banner-card" id="bannerCard">
+      <div class="banner-card" id="bannerCard" role="dialog" aria-modal="false" aria-labelledby="bannerTitle" aria-describedby="cardBody" aria-live="polite">
         <div class="card-header">
           <div class="header-title-wrap">
-            <span class="card-icon">📦</span>
-            <span class="card-title">BetterBrowse</span>
-            <span class="threshold-tag">标签已满 ${this.currentCount}</span>
+            <span class="card-icon" aria-hidden="true">
+              <svg class="card-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="20" height="5" x="2" y="3" rx="1"/>
+                <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/>
+                <path d="M10 12h4"/>
+              </svg>
+            </span>
+            <span class="card-title" id="bannerTitle">BetterBrowse</span>
+            <span class="threshold-tag">标签已达 ${this.currentCount}</span>
           </div>
-          <button class="btn-close" id="btnClose" title="关闭并取消本次收纳" aria-label="关闭">✕</button>
+          <button class="btn-close" id="btnClose" type="button" title="取消本次收纳" aria-label="取消本次收纳">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 6 6 18"/>
+              <path d="m6 6 12 12"/>
+            </svg>
+          </button>
         </div>
 
         <div class="card-body" id="cardBody">
-          当前标签数已达 <span class="highlight-text">${this.currentCount}</span> 个（阈值 ${this.threshold}），将在 <span class="countdown-indicator" id="countdownNum">${this.remainingSeconds}s</span> 后自动智能收纳闲置标签...
+          <div>当前有 <span class="highlight-text">${this.currentCount}</span> 个标签（上限 ${this.threshold}），将在 <span class="countdown-indicator" id="countdownNum">${this.remainingSeconds} 秒</span> 后收走闲置标签。</div>
+          <div class="card-retention-note">正在播放、正在输入、固定及当前标签页将自动保留。</div>
         </div>
 
-        <div class="progress-track">
+        <div class="progress-track" aria-hidden="true">
           <div class="progress-bar" id="progressBar"></div>
         </div>
 
         <div class="card-actions" id="cardActions">
-          <button class="btn btn-secondary" id="btnCancel">取消收纳</button>
-          <button class="btn btn-primary" id="btnStashNow">立即收纳</button>
+          <button class="btn btn-secondary" id="btnCancel" type="button">先别收</button>
+          <button class="btn btn-primary" id="btnStashNow" type="button">现在收闲置标签</button>
         </div>
       </div>
     `;
@@ -892,7 +984,7 @@ class CountdownBanner {
       this.remainingSeconds -= 1;
 
       if (countdownNum) {
-        countdownNum.textContent = `${this.remainingSeconds}s`;
+        countdownNum.textContent = `${this.remainingSeconds} 秒`;
       }
 
       if (progressBar) {
@@ -942,7 +1034,7 @@ class CountdownBanner {
     const progressBar = this.shadowRoot.getElementById('progressBar');
 
     if (cardBody) {
-      cardBody.innerHTML = '⏳ 正在评估规则并智能收纳闲置标签...';
+      cardBody.innerHTML = '正在按规则收纳闲置标签…';
     }
     if (cardActions) {
       cardActions.style.display = 'none';
@@ -982,21 +1074,21 @@ class CountdownBanner {
         const { stashedCount, keptCount } = response.data;
         if (cardBody) {
           if (stashedCount > 0) {
-            cardBody.innerHTML = `✅ 已智能收纳 <strong>${stashedCount}</strong> 个闲置标签（保留 <strong>${keptCount || 0}</strong> 个活跃标签）`;
+            cardBody.innerHTML = `已按规则收纳 <strong>${stashedCount}</strong> 个闲置标签（已保留 <strong>${keptCount || 0}</strong> 个活跃或保护标签）`;
           } else {
-            cardBody.innerHTML = 'ℹ️ 当前所有标签均处于活跃/保护状态，未收纳标签';
+            cardBody.innerHTML = '当前所有标签均处于活跃或保护状态，未收纳标签';
           }
         }
       } else if (response && !response.success) {
         if (cardBody) {
-          cardBody.innerHTML = 'ℹ️ 当前无可收纳的标签页';
+          cardBody.innerHTML = '当前无可收纳的闲置标签页';
         }
       } else {
         if (cardBody) {
           cardBody.innerHTML = '收纳指令已发送';
         }
       }
-    } catch (err) {
+    } catch {
       if (cardBody) {
         cardBody.innerHTML = '收纳指令已发送';
       }
@@ -1042,6 +1134,7 @@ class CountdownBanner {
     }
   }
 }
+
 
 
 // ===== [模块: src/content/link-interceptor.js] =====

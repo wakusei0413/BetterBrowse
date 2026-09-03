@@ -38,7 +38,8 @@
           <!-- 3 个离散单选项 -->
           <button type="button" class="segmented-item" role="radio" aria-checked="false" data-mode="current" id="btnModeCurrent" tabindex="-1">
             <svg class="segmented-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+              <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+              <line x1="3" y1="9" x2="21" y2="9"></line>
             </svg>
             <span class="segmented-text">当前标签</span>
           </button>
@@ -59,6 +60,7 @@
             <span class="segmented-text">新标签页</span>
           </button>
         </div>
+        <p class="segmented-hint" id="segmentedHint">对当前网站生效。自动模式不改变浏览器默认打开方式。</p>
       </div>
     </section>
 
@@ -67,9 +69,11 @@
       <div class="card-header">
         <span class="card-label">标签页收纳</span>
         <div class="tab-counter" id="tabCounterContainer" title="当前窗口标签页数量与阈值">
-          <span id="tabCountText">标签: 0 / 15</span>
+          <span id="tabCountText">标签 0 / 15</span>
         </div>
       </div>
+
+      <p class="stash-desc">会保存并关闭本窗口的网页标签，之后可在时间线还原。</p>
 
       <div class="stash-action-row">
         <button type="button" class="primary-btn" id="btnExecuteStash">
@@ -78,7 +82,7 @@
             <path d="m3.3 7 8.7 5 8.7-5"></path>
             <path d="M12 22V12"></path>
           </svg>
-          <span id="btnExecuteStashText">立即收纳当前窗口</span>
+          <span id="btnExecuteStashText">收纳本窗口全部标签</span>
         </button>
         <button type="button" class="secondary-btn" id="btnViewStash" title="查看时间线">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

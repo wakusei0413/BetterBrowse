@@ -35,6 +35,38 @@ const OPEN_TAB_RATE_LIMIT = 8;
 const OPEN_TAB_RATE_WINDOW_MS = 10000;
 const openTabTimestampsByTab = new Map();
 
+// 站点图标解析的抓取超时与体积上限
+const FAVICON_FETCH_TIMEOUT_MS = 5000;
+const FAVICON_MAX_BYTES = 256 * 1024;
+
+/**
+ * 判定响应内容是否为可用的图片类型（防止站点把登录页 HTML 当成图标返回）。
+ * @param {string} contentType
+ * @returns {boolean}
+ */
+function isImageContentType(contentType) {
+  const mime = String(contentType || '').split(';')[0].trim().toLowerCase();
+  return mime.startsWith('image/') && mime !== 'image/svg+xml';
+}
+
+/**
+ * 将 Chrome 内部图标地址（chrome-extension://<id>/_favicon/?pageUrl=...&size=32）
+ * 还原为真实网页 URL。这类地址由 tab.favIconUrl 直接产生，扩展页无法自行加载，
+ * 必须在后台还原后再按域名取图标。
+ * @param {string} rawUrl
+ * @returns {string|null}
+ */
+function unwrapChromeFaviconUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== 'chrome-extension:') return null;
+    if (!/\/_favicon\/?$/.test(u.pathname)) return null;
+    return u.searchParams.get('pageUrl') || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 内容脚本开标签的后台速率兜底（按 sender.tab 滑动窗口）。
  * AI / 扩展页面无 tab 来源时不限流。
@@ -555,6 +587,66 @@ export function createActionHandlers(deps) {
     [ActionTypes.CLEAR_RUNTIME_LOGS]: async (payload) => {
       if (payload?.confirm !== true) return { success: false, error: '请先确认清空运行日志' };
       return await RuntimeLogRepository.clear();
+    },
+
+    // === 站点图标解析（避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露）===
+    [ActionTypes.RESOLVE_FAVICON_DATA_URL]: async (payload) => {
+      const rawUrl = typeof payload?.url === 'string' ? payload.url.trim() : '';
+      if (!rawUrl) return { success: false, dataUrl: '' };
+
+      // Chrome 内部图标地址（chrome-extension://<id>/_favicon/?pageUrl=…）无法被扩展页
+      // 直接加载，先还原出真实网页 URL 再走域名推导，否则这些条目永远显示默认图标
+      const target = unwrapChromeFaviconUrl(rawUrl) || rawUrl;
+
+      // 拒绝危险伪协议，杜绝后台被当作任意内容抓取代理
+      if (!/^https?:\/\//i.test(target)) return { success: false, dataUrl: '' };
+
+      // 候选顺序：域名根 /favicon.ico → 原始 favicon URL（若是图标路径）→ Google s2 兜底。
+      // ⚠️ 绝不能把原始 URL 放在首位：调用方传入的可能是"网页 URL"而非图标 URL，
+      // 直接抓取会拿到 HTML 页面（Content-Type: text/html），旧实现不校验类型就
+      // 当成图标返回，前端 <img> 加载失败后只能静默回退成默认图标。
+      const candidates = [];
+      try {
+        const u = new URL(target);
+        candidates.push(`${u.origin}/favicon.ico`);
+        if (/(?:^|\/)favicon\.ico$/i.test(u.pathname)) candidates.push(target);
+        candidates.push(`https://www.google.com/s2/favicons?sz=32&domain=${encodeURIComponent(u.hostname)}`);
+      } catch {
+        return { success: false, dataUrl: '' };
+      }
+
+      for (const url of candidates) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), FAVICON_FETCH_TIMEOUT_MS);
+          let res;
+          try {
+            res = await fetch(url, {
+              credentials: 'omit',
+              redirect: 'follow',
+              signal: controller.signal
+            });
+          } finally {
+            clearTimeout(timer);
+          }
+          if (!res.ok) continue;
+          // 只接受图片响应：站点常把 404/登录页以 200 + text/html 返回
+          if (!isImageContentType(res.headers.get('content-type'))) continue;
+          const buf = await res.arrayBuffer();
+          if (buf.byteLength === 0 || buf.byteLength > FAVICON_MAX_BYTES) continue;
+          const mime = String(res.headers.get('content-type') || '').split(';')[0].trim() || 'image/x-icon';
+          const bytes = new Uint8Array(buf);
+          let bin = '';
+          const chunkSize = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunkSize) {
+            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+          }
+          return { success: true, dataUrl: `data:${mime};base64,${btoa(bin)}` };
+        } catch {
+          continue;
+        }
+      }
+      return { success: false, dataUrl: '' };
     }
   };
 

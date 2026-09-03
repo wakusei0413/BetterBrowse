@@ -1432,7 +1432,8 @@ export class IndexedStashRepository {
               groupId: entry.groupId,
               itemId: entry.entryId,
               url: page.url,
-              title: page.title
+              title: page.title,
+              favIconUrl: page.favIconUrl || ''
             });
             if (items.length >= safeLimit) {
               return {

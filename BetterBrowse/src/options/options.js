@@ -1058,6 +1058,9 @@ class StashTabComponent {
     this.itemWindowByGroup = new Map();
     this.pageLoaders = new Map();
     this.windowSyncTicking = false;
+    // 站点图标解析结果缓存：URL → data URL / null（失败亦缓存，避免反复抓取）
+    this.faviconCache = new Map();
+    this.faviconInFlight = new Set();
 
     this.container = document.getElementById('stashGroupsContainer');
     this.mainColumn = document.querySelector('.stash-main-column');
@@ -1217,17 +1220,17 @@ class StashTabComponent {
       this.searchInput.focus();
     });
 
-    // 立即全量收纳全部窗口
+    // 立即收纳当前窗口全部标签页
     this.btnStashNow?.addEventListener('click', async () => {
       this.btnStashNow.disabled = true;
-      Toast.show('正在收纳全部窗口标签页...');
+      Toast.show('正在收纳本窗口标签…');
       const res = await MessageBus.sendToBackground(ActionTypes.EXECUTE_STASH, { forceAll: true });
       if (res.success && res.data) {
         const { stashedCount } = res.data;
         if (stashedCount > 0) {
-          Toast.show(`已全量收纳 ${stashedCount} 个标签页`);
+          Toast.show(`已收纳 ${stashedCount} 个标签`);
         } else {
-          Toast.show('没有可收纳的闲置网页');
+          Toast.show('没有可收纳的网页');
         }
         await this.loadData();
       } else {
@@ -1277,7 +1280,14 @@ class StashTabComponent {
       }
     });
 
-    // 6. 图标加载失败自动回退为默认网页 SVG 图标，保持对齐排版
+    // 6. 站点图标经后台解析为 data URL，避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露
+    this.container?.addEventListener(
+      'click',
+      () => this.resolveVisibleFavicons(),
+      true
+    );
+
+    // 图标加载失败时回退为默认网页 SVG 图标，保持对齐排版
     this.container?.addEventListener(
       'error',
       (e) => {
@@ -1310,6 +1320,7 @@ class StashTabComponent {
       if (!e.target.closest('.dropdown-wrapper')) {
         document.querySelectorAll('.dropdown-wrapper.open').forEach((el) => {
           el.classList.remove('open');
+          el.querySelector('.btn-toggle-dropdown')?.setAttribute('aria-expanded', 'false');
         });
       }
     });
@@ -1542,7 +1553,7 @@ class StashTabComponent {
           id: hit.itemId,
           url: hit.url,
           title: hit.title,
-          favIconUrl: ''
+          favIconUrl: hit.favIconUrl || ''
         });
       }
       this.searchItemFilter = hitsByGroup;
@@ -1564,6 +1575,7 @@ class StashTabComponent {
       this.mainColumn.scrollTop = Number(options.scrollTop) || 0;
       this.syncListWindow();
     }
+    this.resolveVisibleFavicons();
   }
 
   /**
@@ -1577,7 +1589,7 @@ class StashTabComponent {
     if (descEl) {
       descEl.textContent = hasSearchQuery
         ? '请尝试更换搜索关键词。'
-        : '当您在右上角点击「立即收纳」或标签页数量超出阈值时，未活跃标签将自动保存于此处。';
+        : '点右上角「收纳本窗口全部标签」，或标签数量超过阈值时，闲置标签会自动出现在这里。';
     }
     if (!this.container || !this.emptyState) return;
     this.container.replaceChildren(this.emptyState);
@@ -1675,6 +1687,7 @@ class StashTabComponent {
     this.patchExpandedItemWindows();
     this.recordMeasuredHeights();
     this.prefetchVisiblePages(range);
+    this.resolveVisibleFavicons();
   }
 
   mountGroupWindow(range) {
@@ -1758,6 +1771,8 @@ class StashTabComponent {
           const gap = getDensityMetrics(this.isCompactDensity()).gap;
           this.measuredCardHeights.set(group.id, card.offsetHeight + gap);
         }
+        // 条目行是异步分页填充的，同步渲染路径上的图标解析执行时行尚未挂载，此处补触发
+        this.resolveVisibleFavicons();
       });
     }
   }
@@ -1886,19 +1901,18 @@ class StashTabComponent {
   renderItemRowHtml(groupId, tab) {
     const safeGroupId = this.escapeHTML(groupId);
     const safeTabId = this.escapeHTML(tab.id);
-    const faviconSrc = tab.favIconUrl;
+    // 优先用已持久化的图标 URL；缺失时（OneTab 导入、剔除图标的备份快照等历史数据）
+    // 回退用页面 URL，由后台按域名推导 /favicon.ico，避免这些条目永远停在默认图标
+    const faviconSrc = tab.favIconUrl || tab.url || '';
+    const faviconAttr = faviconSrc ? ` data-favicon-url="${this.escapeHTML(faviconSrc)}"` : '';
     return `
         <li class="stash-item-row" data-group-id="${safeGroupId}" data-item-id="${safeTabId}">
           <div class="stash-item-main">
-            ${faviconSrc ? `
-              <img src="${this.escapeHTML(faviconSrc)}" class="tab-favicon" alt="" loading="lazy" decoding="async" />
-            ` : `
-              <svg class="tab-favicon tab-favicon-fallback" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="2" y1="12" x2="22" y2="12"></line>
-                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-              </svg>
-            `}
+            <svg class="tab-favicon tab-favicon-fallback"${faviconAttr} viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
             <a href="${this.escapeHTML(tab.url || '')}" class="tab-link btn-restore-item-link" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="${this.escapeHTML(tab.title || tab.url || '')}&#10;${this.escapeHTML(tab.url || '')}">
               <span class="tab-title">${this.escapeHTML(tab.title || tab.url || '')}</span>
             </a>
@@ -2047,9 +2061,11 @@ class StashTabComponent {
               </svg>
             ` : ''}
             <h3 class="title-text">${this.escapeHTML(displayGroupName)}</h3>
-            <svg class="edit-hint-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
-            </svg>
+            <button class="btn-icon-rename btn-rename-group" data-id="${safeGroupId}" type="button" aria-label="重命名此组" title="重命名此组">
+              <svg class="edit-hint-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -2062,8 +2078,8 @@ class StashTabComponent {
           </div>
 
           <div class="stash-actions-row">
-            <button class="stash-action-link btn-restore-all" data-id="${safeGroupId}" type="button">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <button class="stash-action-link btn-restore-all" data-id="${safeGroupId}" type="button" aria-label="还原此组全部网页">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
                 <polyline points="15 3 21 3 21 9"></polyline>
                 <line x1="10" y1="14" x2="21" y2="3"></line>
@@ -2072,7 +2088,7 @@ class StashTabComponent {
             </button>
 
             <div class="dropdown-wrapper">
-              <button class="stash-action-link btn-toggle-dropdown" data-id="${safeGroupId}" type="button">
+              <button class="stash-action-link btn-toggle-dropdown" data-id="${safeGroupId}" type="button" aria-label="更多操作" aria-haspopup="true" aria-expanded="false">
                 <span>更多...</span>
               </button>
               <div class="dropdown-menu">
@@ -2141,6 +2157,76 @@ class StashTabComponent {
     return `${Math.floor(diffSec / 31536000)} 年前`;
   }
 
+  /**
+   * 批量解析当前可见行的站点图标：经后台取回 data URL 后替换占位 SVG，避免直连第三方
+   *
+   * ⚠️ 两个易错点：
+   * 1. MessageBus 会把后台结果统一包装成 { success, data }，因此图标字段在 res.data.dataUrl，
+   *    直接读 res.dataUrl 恒为 undefined（图标永远替换不掉、全部停留在默认占位图标）。
+   * 2. 组内条目是 prefetchVisiblePages 异步分页填充的，同步渲染路径上调用本方法时行尚未挂载，
+   *    必须在异步分页的 .then 回补里再次调用（见 prefetchVisiblePages）。
+   */
+  async resolveVisibleFavicons() {
+    const placeholders = this.container?.querySelectorAll('svg.tab-favicon-fallback[data-favicon-url]:not([data-resolved])');
+    if (!placeholders || placeholders.length === 0) return;
+    const limit = 24;
+    let count = 0;
+    for (const svg of placeholders) {
+      if (count >= limit) break;
+      const url = svg.getAttribute('data-favicon-url') || '';
+      if (!url) continue;
+      svg.setAttribute('data-resolved', '1');
+      count += 1;
+      this.applyFavicon(svg, url);
+    }
+  }
+
+  /**
+   * 应用单个站点图标：命中缓存直接替换，否则经后台代取（同 URL 并发合并）
+   * @param {SVGElement} svg - 占位图标元素
+   * @param {string} url - 网页或图标 URL
+   */
+  async applyFavicon(svg, url) {
+    if (this.faviconCache.has(url)) {
+      const cached = this.faviconCache.get(url);
+      if (cached) this.replaceFaviconPlaceholder(svg, cached);
+      return;
+    }
+    if (this.faviconInFlight.has(url)) return;
+    this.faviconInFlight.add(url);
+    try {
+      const res = await MessageBus.sendToBackground(ActionTypes.RESOLVE_FAVICON_DATA_URL, { url });
+      // 后台返回值被 MessageBus 包装在 data 中：{ success: true, data: { success, dataUrl } }
+      const payload = res?.data || {};
+      const dataUrl = res?.success && payload.success ? payload.dataUrl : '';
+      this.faviconCache.set(url, dataUrl || null);
+      if (!dataUrl) return;
+      // 缓存命中批量回填：同一 URL 可能在多个组里重复出现
+      for (const node of this.container?.querySelectorAll(`svg.tab-favicon-fallback[data-favicon-url="${CSS.escape(url)}"]`) || []) {
+        this.replaceFaviconPlaceholder(node, dataUrl);
+      }
+    } catch {
+      this.faviconCache.set(url, null);
+    } finally {
+      this.faviconInFlight.delete(url);
+    }
+  }
+
+  /**
+   * 将占位 SVG 替换为真实图标 <img>，失败时由 error 委托自动回退默认图标
+   * @param {SVGElement} svg
+   * @param {string} dataUrl
+   */
+  replaceFaviconPlaceholder(svg, dataUrl) {
+    if (!svg?.isConnected) return;
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    img.className = 'tab-favicon';
+    img.alt = '';
+    img.decoding = 'async';
+    svg.replaceWith(img);
+  }
+
   escapeHTML(str) {
     if (typeof str !== 'string') return '';
     return str
@@ -2171,13 +2257,20 @@ class StashTabComponent {
       e.stopPropagation();
       const wrapper = btnToggleDropdown.closest('.dropdown-wrapper');
       const wasOpen = wrapper.classList.contains('open');
-      document.querySelectorAll('.dropdown-wrapper.open').forEach((el) => el.classList.remove('open'));
+      document.querySelectorAll('.dropdown-wrapper.open').forEach((el) => {
+        el.classList.remove('open');
+        el.querySelector('.btn-toggle-dropdown')?.setAttribute('aria-expanded', 'false');
+      });
       if (!wasOpen) {
         wrapper.classList.add('open');
+        btnToggleDropdown.setAttribute('aria-expanded', 'true');
         const groupId = btnToggleDropdown.dataset.id;
         if (groupId) this.pinnedGroupIds.add(groupId);
-      } else if (btnToggleDropdown.dataset.id) {
-        this.pinnedGroupIds.delete(btnToggleDropdown.dataset.id);
+      } else {
+        btnToggleDropdown.setAttribute('aria-expanded', 'false');
+        if (btnToggleDropdown.dataset.id) {
+          this.pinnedGroupIds.delete(btnToggleDropdown.dataset.id);
+        }
       }
       return;
     }
@@ -3891,17 +3984,68 @@ class SearchHomeComponent {
     this.engineBtns = document.querySelectorAll('#tab-search .search-engine-btn');
     this.searchForm = document.getElementById('searchHomeForm');
     this.searchInput = document.getElementById('searchHomeInput');
+    this.initRadioGroup();
     this.bindEvents();
   }
 
-  bindEvents() {
-    // 切换搜索引擎
+  /**
+   * 初始化搜索引擎单选组无障碍属性 (WAI-ARIA Radio Group)
+   */
+  initRadioGroup() {
+    let checkedEngine = null;
     this.engineBtns.forEach((btn) => {
+      const isChecked = btn.getAttribute('aria-checked') === 'true' || btn.getAttribute('aria-pressed') === 'true';
+      if (isChecked && btn.dataset.engine) {
+        checkedEngine = btn.dataset.engine;
+      }
+    });
+    if (checkedEngine) {
+      this.currentEngine = checkedEngine;
+    }
+    this.engineBtns.forEach((btn) => {
+      const isSelected = btn.dataset.engine === this.currentEngine;
+      btn.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+      btn.tabIndex = isSelected ? 0 : -1;
+    });
+  }
+
+  /**
+   * 切换当前选中的搜索引擎
+   * @param {string} engine
+   */
+  selectEngine(engine) {
+    if (!this.ENGINES[engine]) return;
+    this.currentEngine = engine;
+    this.engineBtns.forEach((b) => {
+      const isSelected = b.dataset.engine === engine;
+      b.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+      b.tabIndex = isSelected ? 0 : -1;
+    });
+  }
+
+  bindEvents() {
+    // 切换搜索引擎与键盘左右/上下键单选组无障碍导航
+    this.engineBtns.forEach((btn, index) => {
       btn.addEventListener('click', () => {
-        this.engineBtns.forEach((b) => b.setAttribute('aria-pressed', 'false'));
-        btn.setAttribute('aria-pressed', 'true');
-        this.currentEngine = btn.dataset.engine;
+        this.selectEngine(btn.dataset.engine);
         this.searchInput?.focus();
+      });
+
+      btn.addEventListener('keydown', (e) => {
+        const btns = Array.from(this.engineBtns);
+        let targetIndex = -1;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          targetIndex = (index + 1) % btns.length;
+        } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          targetIndex = (index - 1 + btns.length) % btns.length;
+        }
+        if (targetIndex !== -1) {
+          const targetBtn = btns[targetIndex];
+          this.selectEngine(targetBtn.dataset.engine);
+          targetBtn.focus();
+        }
       });
     });
 

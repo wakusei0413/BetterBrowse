@@ -977,7 +977,7 @@ export class LocalStashRepository {
           String(tab.title || '').toLowerCase().includes(kw) ||
           String(tab.url || '').toLowerCase().includes(kw)
         ) {
-          results.push({ groupId: group.id, itemId: tab.id, url: tab.url, title: tab.title });
+          results.push({ groupId: group.id, itemId: tab.id, url: tab.url, title: tab.title, favIconUrl: tab.favIconUrl || '' });
           if (results.length >= limit) return results;
         }
       }

@@ -60,6 +60,7 @@ const ActionTypes = {
   RESTORE_FULL_BACKUP: 'RESTORE_FULL_BACKUP', // 恢复全量备份 (还原标签页 + 插件全局配置 + 域名规则)
   IMPORT_THIRD_PARTY_DATA: 'IMPORT_THIRD_PARTY_DATA', // 从第三方工具导入标签页 (如 OneTab 文本/JSON)
   EXPORT_ONETAB_TEXT: 'EXPORT_ONETAB_TEXT',   // 导出为 OneTab 兼容纯文本 (URL | Title)
+  RESOLVE_FAVICON_DATA_URL: 'RESOLVE_FAVICON_DATA_URL', // 后台代取站点图标并转为 data URL，避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露
 
   // === 配置与状态同步相关 ===
   GET_CONFIG: 'GET_CONFIG',                   // 获取插件配置

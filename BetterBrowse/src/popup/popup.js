@@ -17,9 +17,9 @@ installRuntimeLogger({
 
 // 模式配置与档位索引 (0: 当前标签 | 1: 自动模式 | 2: 新标签页)
 const MODES_CONFIG = [
-  { mode: LinkModes.CURRENT, index: 0, label: '当前标签打开' },
-  { mode: LinkModes.AUTO, index: 1, label: '自动模式（不干涉）' },
-  { mode: LinkModes.NEW, index: 2, label: '新标签页打开' }
+  { mode: LinkModes.CURRENT, index: 0, label: '当前标签' },
+  { mode: LinkModes.AUTO, index: 1, label: '自动模式' },
+  { mode: LinkModes.NEW, index: 2, label: '新标签页' }
 ];
 
 const popupPort = chrome.runtime.connect({ name: 'popup-lifecycle' });
@@ -44,6 +44,7 @@ class PopupController {
       segmentedControl: document.getElementById('segmentedControl'),
       segmentedIndicator: document.getElementById('segmentedIndicator'),
       segmentedItems: document.querySelectorAll('.segmented-item'),
+      segmentedHint: document.getElementById('segmentedHint'),
       tabCounterContainer: document.getElementById('tabCounterContainer'),
       tabCountText: document.getElementById('tabCountText'),
       btnExecuteStash: document.getElementById('btnExecuteStash'),
@@ -144,20 +145,32 @@ class PopupController {
           this.dom.domainBadge.textContent = this.currentDomain;
           this.dom.domainBadge.title = `当前域名: ${this.currentDomain}`;
           this.dom.segmentedControl.classList.remove('disabled');
+          if (this.dom.segmentedHint) {
+            this.dom.segmentedHint.textContent = '对当前网站生效。自动模式不改变浏览器默认打开方式。';
+          }
         } else {
           this.isSpecialPage = true;
           this.dom.domainBadge.textContent = '系统/特殊页面';
           this.dom.domainBadge.title = '浏览器内置页面或特殊协议，不支持配置独立跳转偏好';
           this.dom.segmentedControl.classList.add('disabled');
+          if (this.dom.segmentedHint) {
+            this.dom.segmentedHint.textContent = '系统页面不能单独设置。';
+          }
           this.showStatus('系统页面不支持自定义域名规则', 'info', 0);
         }
       } else {
         this.dom.domainBadge.textContent = '未知页面';
         this.isSpecialPage = true;
+        if (this.dom.segmentedHint) {
+          this.dom.segmentedHint.textContent = '系统页面不能单独设置。';
+        }
       }
     } catch (err) {
       console.warn('[Popup] 读取当前标签页失败:', err);
       this.isSpecialPage = true;
+      if (this.dom.segmentedHint) {
+        this.dom.segmentedHint.textContent = '系统页面不能单独设置。';
+      }
     }
   }
 
@@ -181,7 +194,7 @@ class PopupController {
       this.updateSegmentedUI(this.currentMode);
 
       if (this.isGlobalApplied) {
-        this.showStatus('🌐 全局跳转规则生效中', 'info', 0);
+        this.showStatus('全局跳转规则生效中', 'info', 0);
       }
     } else {
       this.updateSegmentedUI(LinkModes.AUTO);
@@ -213,14 +226,14 @@ class PopupController {
       ? Math.max(0, Math.ceil((this.countdownDeadline - Date.now()) / 1000))
       : 0;
     if (remainingSeconds > 0) {
-      this.dom.tabCountText.textContent = `⏳ 倒计时: ${remainingSeconds}s (${this.currentTabCount}/${this.tabThreshold})`;
+      this.dom.tabCountText.textContent = `倒计时 ${remainingSeconds} 秒（${this.currentTabCount}/${this.tabThreshold}）`;
       this.dom.tabCounterContainer.classList.add('warning');
       this.dom.tabCounterContainer.title = '自动收纳倒计时进行中';
-      this.showStatus(`将在 ${remainingSeconds}s 后自动收纳闲置标签`, 'warning');
+      this.showStatus(`将在 ${remainingSeconds} 秒后收纳闲置标签`, 'warning');
       return;
     }
 
-    this.dom.tabCountText.textContent = `标签: ${this.currentTabCount} / ${this.tabThreshold}`;
+    this.dom.tabCountText.textContent = `标签 ${this.currentTabCount} / ${this.tabThreshold}`;
     if (this.currentTabCount >= this.tabThreshold) {
       this.dom.tabCounterContainer.classList.add('warning');
       this.dom.tabCounterContainer.title = '标签页数量已达阈值，建议收纳';
@@ -271,12 +284,12 @@ class PopupController {
       const cfg = MODES_CONFIG.find((c) => c.mode === mode);
       const label = cfg ? cfg.label : mode;
       if (this.isGlobalApplied) {
-        this.showStatus(`已保存偏好（全局规则生效中）`, 'success');
+        this.showStatus('已保存偏好（全局规则生效中）', 'success');
       } else {
-        this.showStatus(`已设置 ${this.currentDomain} 为【${label}】`, 'success');
+        this.showStatus(`已保存：${this.currentDomain} 设为【${label}】`, 'success');
       }
     } else {
-      this.showStatus('设置失败', 'error');
+      this.showStatus('保存设置失败', 'error');
     }
   }
 
@@ -318,7 +331,7 @@ class PopupController {
   async handleExecuteStash() {
     this.dom.btnExecuteStash.disabled = true;
     this.dom.btnExecuteStashText.textContent = '正在收纳...';
-    this.showStatus('正在收纳当前窗口所有标签页...', 'info', 0);
+    this.showStatus('正在收纳本窗口标签页...', 'info', 0);
 
     try {
       const res = await MessageBus.sendToBackground(ActionTypes.EXECUTE_STASH, { forceAll: true });
@@ -331,13 +344,13 @@ class PopupController {
         }
         await this.loadTabCountInfo();
       } else {
-        this.showStatus(res.error || '收纳执行失败', 'error');
+        this.showStatus(res.error || '收纳失败', 'error');
       }
     } catch (err) {
       this.showStatus('收纳请求异常', 'error');
     } finally {
       this.dom.btnExecuteStash.disabled = false;
-      this.dom.btnExecuteStashText.textContent = '立即收纳当前窗口';
+      this.dom.btnExecuteStashText.textContent = '收纳本窗口全部标签';
     }
   }
 

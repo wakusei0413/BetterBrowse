@@ -97,6 +97,7 @@ const HUMAN_UI_ACTIONS = [
   ActionTypes.RESTORE_FULL_BACKUP,
   ActionTypes.IMPORT_THIRD_PARTY_DATA,
   ActionTypes.EXPORT_ONETAB_TEXT,
+  ActionTypes.RESOLVE_FAVICON_DATA_URL,
   // 设置与规则 Tab
   ActionTypes.GET_CONFIG,
   ActionTypes.UPDATE_CONFIG,
@@ -315,4 +316,95 @@ Deno.test("AI 对等：SET_DOMAIN_RULE / OPEN_ONE_TAB 与兼容动作共用同�
   const handlers = buildHandlers();
   assertEquals(handlers[ActionTypes.SET_DOMAIN_RULE], handlers[ActionTypes.SET_LINK_RULE]);
   assertEquals(handlers[ActionTypes.OPEN_ONE_TAB], handlers[ActionTypes.OPEN_PINNED_STASH_TAB]);
+});
+
+/**
+ * 用可编排的 fetch 替身驱动图标解析，记录实际请求的 URL 顺序。
+ * @param {Map<string, { ok?: boolean, type?: string, body?: Uint8Array }>} routes
+ */
+function withFaviconRoutes(routes) {
+  const requested = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const key = String(url);
+    requested.push(key);
+    const route = routes.get(key);
+    if (!route) throw new Error(`未编排的请求: ${key}`);
+    return {
+      ok: route.ok !== false,
+      status: route.ok === false ? 404 : 200,
+      headers: { get: () => route.type || 'image/png' },
+      arrayBuffer: async () => (route.body || new Uint8Array([1, 2, 3])).buffer
+    };
+  };
+  return { requested, restore: () => { globalThis.fetch = originalFetch; } };
+}
+
+Deno.test("图标解析：网页 URL 优先取域名根 favicon.ico，绝不把 HTML 当图标返回", async () => {
+  const handlers = buildHandlers();
+  const iconBody = new Uint8Array([137, 80, 78, 71]);
+  const { requested, restore } = withFaviconRoutes(new Map([
+    ['https://example.com/favicon.ico', { type: 'image/x-icon', body: iconBody }]
+  ]));
+  try {
+    const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: 'https://example.com/some/deep/page' });
+    assertEquals(res.success, true);
+    assertStringIncludes(res.dataUrl, 'data:image/x-icon;base64,');
+    // 关键回归：原始"网页 URL"绝不能被当作图标直接抓取
+    assertEquals(requested.includes('https://example.com/some/deep/page'), false);
+    assertEquals(requested[0], 'https://example.com/favicon.ico');
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("图标解析：候选返回 HTML 时跳过，继续回退到下一个候选", async () => {
+  const handlers = buildHandlers();
+  const { requested, restore } = withFaviconRoutes(new Map([
+    // 站点把 404/登录页以 200 + text/html 返回，旧实现会将其当成图标
+    ['https://example.com/favicon.ico', { type: 'text/html; charset=utf-8', body: new Uint8Array([60, 104, 116, 109, 108]) }],
+    ['https://www.google.com/s2/favicons?sz=32&domain=example.com', { type: 'image/png' }]
+  ]));
+  try {
+    const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: 'https://example.com/page' });
+    assertEquals(res.success, true);
+    assertStringIncludes(res.dataUrl, 'data:image/png;base64,');
+    assertEquals(requested.length, 2);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("图标解析：还原 Chrome _favicon 内部地址并拒绝非 http(s) 协议", async () => {
+  const handlers = buildHandlers();
+  const { requested, restore } = withFaviconRoutes(new Map([
+    ['https://example.com/favicon.ico', { type: 'image/x-icon' }]
+  ]));
+  try {
+    // tab.favIconUrl 的实际形态：Chrome 内部图标地址，扩展页无法直接加载
+    const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({
+      url: 'chrome-extension://testextensionidaaaaaaaaaaaaaaa/_favicon/?pageUrl=https%3A%2F%2Fexample.com%2Fpage&size=32'
+    });
+    assertEquals(res.success, true);
+    assertEquals(requested[0], 'https://example.com/favicon.ico');
+
+    // 危险伪协议必须直接拒绝，后台不得被当作任意内容抓取代理
+    assertEquals((await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: 'javascript:alert(1)' })).success, false);
+    assertEquals((await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: '' })).success, false);
+    assertEquals((await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({})).success, false);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("图标解析：全部候选失败时返回 success=false 而非抛出", async () => {
+  const handlers = buildHandlers();
+  const { restore } = withFaviconRoutes(new Map());
+  try {
+    const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: 'https://example.com/page' });
+    assertEquals(res.success, false);
+    assertEquals(res.dataUrl, '');
+  } finally {
+    restore();
+  }
 });

@@ -55,7 +55,7 @@
         <div class="panel-header">
           <div>
             <h2 class="panel-title">时间线</h2>
-            <p class="panel-desc">管理已收纳的网页与标签组</p>
+            <p class="panel-desc">查看和还原已收纳的网页</p>
           </div>
           <div class="panel-actions">
             <div class="search-box-wrapper">
@@ -77,7 +77,7 @@
                 <path d="m3.3 7 8.7 5 8.7-5"></path>
                 <path d="M12 22V12"></path>
               </svg>
-              <span>立即收纳全部窗口</span>
+              <span>收纳本窗口全部标签</span>
             </button>
           </div>
         </div>
@@ -93,7 +93,7 @@
                   <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
                 </svg>
                 <span class="empty-title">时间线目前是空的</span>
-                <span class="empty-desc">点击「立即收纳」或标签页数量超过阈值时，未活跃标签将自动保存于此处。</span>
+                <span class="empty-desc">点右上角「收纳本窗口全部标签」，或标签数量超过阈值时，闲置标签会自动出现在这里。</span>
               </div>
             </div>
             <div id="stashScrollSentinel" class="stash-scroll-sentinel"></div>
@@ -123,13 +123,13 @@
       <section id="tab-search" class="tab-panel search-panel" role="tabpanel" aria-labelledby="navTabSearch" hidden>
         <div class="search-stage">
           <div class="search-stage-content" id="searchMainContent">
-            <h1 class="search-logo">Capybara<span class="search-logo-dot">.</span></h1>
+            <p class="search-logo">Capybara<span class="search-logo-dot">.</span></p>
 
             <div class="search-engine-selector" role="radiogroup" aria-label="选择搜索引擎">
-              <button class="search-engine-btn" data-engine="google" role="radio" aria-pressed="true" type="button">Google</button>
-              <button class="search-engine-btn" data-engine="baidu" role="radio" aria-pressed="false" type="button">百度</button>
-              <button class="search-engine-btn" data-engine="bing" role="radio" aria-pressed="false" type="button">Bing</button>
-              <button class="search-engine-btn" data-engine="duckduckgo" role="radio" aria-pressed="false" type="button">DuckDuckGo</button>
+              <button class="search-engine-btn" data-engine="google" role="radio" aria-checked="true" type="button">Google</button>
+              <button class="search-engine-btn" data-engine="baidu" role="radio" aria-checked="false" type="button">百度</button>
+              <button class="search-engine-btn" data-engine="bing" role="radio" aria-checked="false" type="button">Bing</button>
+              <button class="search-engine-btn" data-engine="duckduckgo" role="radio" aria-checked="false" type="button">DuckDuckGo</button>
             </div>
 
             <nav class="search-quick-links" aria-label="快捷链接">
@@ -290,7 +290,7 @@
         <!-- 设置子面板内容视口 -->
         <div class="settings-panels-container">
           <!-- Tab 2: 收纳箱设置 -->
-      <section id="tab-stash-settings" class="tab-panel" role="tabpanel" aria-labelledby="navTabStashSettings" hidden>
+      <section id="tab-stash-settings" class="tab-panel" role="tabpanel" aria-labelledby="subtabBtnStashSettings" hidden>
         <div class="panel-header">
           <div>
             <h2 class="panel-title">收纳箱设置</h2>
@@ -315,7 +315,7 @@
                 <span class="setting-hint">恢复单个标签或整组标签后，原收纳记录的处理策略</span>
               </div>
               <select id="selectRestoreBehavior" class="form-select" aria-labelledby="infoRestoreBehavior">
-                <option value="remove">恢复后从收纳箱移除 (默认)</option>
+                <option value="remove">恢复后从时间线移除 (默认)</option>
                 <option value="keep">恢复后继续保留在列表中</option>
                 <option value="archive">恢复后标记为已归档</option>
               </select>
@@ -378,7 +378,7 @@
             <div class="setting-item">
               <div class="setting-info" id="infoPinnedTabGuard">
                 <span class="setting-label">首位常驻收纳箱守护</span>
-                <span class="setting-hint">在浏览器最左侧固定收纳箱标签页，防止误关并方便快速打开</span>
+                <span class="setting-hint">在浏览器最左侧固定收纳箱标签页，防止误关并方便快速打开。开启后会占用窗口最左侧一个标签，并计入数量阈值。</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkPinnedTabGuard" aria-labelledby="infoPinnedTabGuard">
@@ -440,7 +440,7 @@
       </section>
 
       <!-- Tab 3: 智能收纳规则设置 -->
-      <section id="tab-rules" class="tab-panel" role="tabpanel" aria-labelledby="navTabRules" hidden>
+      <section id="tab-rules" class="tab-panel" role="tabpanel" aria-labelledby="subtabBtnRules" hidden>
         <div class="panel-header">
           <div>
             <h2 class="panel-title">智能收纳规则</h2>
@@ -515,71 +515,72 @@
             </div>
 
             <!-- 阶梯式降级收纳设置组 -->
-            <div class="setting-divider" role="separator"></div>
-            <h4 class="sub-section-title">阶梯式降级收纳</h4>
+            <details class="settings-advanced">
+              <summary>标签仍然太多时（高级）</summary>
 
-            <div class="setting-item">
-              <div class="setting-info" id="infoTieredStash">
-                <span class="setting-label">启用阶梯式降级收纳</span>
-                <span class="setting-hint">标准收纳后标签仍超标时，逐级放宽软性保护（缩短访问窗口、提高频次门槛）直至降到阈值以下</span>
+              <div class="setting-item">
+                <div class="setting-info" id="infoTieredStash">
+                  <span class="setting-label">仍超标时继续放宽保护</span>
+                  <span class="setting-hint">标准收纳后标签仍超标时，逐级放宽软性保护（缩短访问窗口、提高频次门槛）直至降到阈值以下</span>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="chkTieredStash" aria-labelledby="infoTieredStash">
+                  <span class="slider"></span>
+                </label>
               </div>
-              <label class="switch">
-                <input type="checkbox" id="chkTieredStash" aria-labelledby="infoTieredStash">
-                <span class="slider"></span>
-              </label>
-            </div>
 
-            <div class="setting-item" id="rowTierStepSeconds">
-              <div class="setting-info" id="infoTierStepSeconds">
-                <span class="setting-label">每级降级步长</span>
-                <span class="setting-hint">每放宽一级将“最近访问”保护窗口缩短的时长</span>
+              <div class="setting-item" id="rowTierStepSeconds">
+                <div class="setting-info" id="infoTierStepSeconds">
+                  <span class="setting-label">每次再缩短多少「最近访问」保护时间</span>
+                  <span class="setting-hint">每放宽一级将“最近访问”保护窗口缩短的时长</span>
+                </div>
+                <div class="input-with-unit">
+                  <input type="number" id="inputTierStepSeconds" class="num-input" min="1" max="300" value="60" aria-labelledby="infoTierStepSeconds" />
+                  <span class="unit-text">秒</span>
+                </div>
               </div>
-              <div class="input-with-unit">
-                <input type="number" id="inputTierStepSeconds" class="num-input" min="1" max="300" value="60" aria-labelledby="infoTierStepSeconds" />
-                <span class="unit-text">秒/级</span>
-              </div>
-            </div>
 
-            <div class="setting-item" id="rowTierMaxLevels">
-              <div class="setting-info" id="infoTierMaxLevels">
-                <span class="setting-label">最大降级层数</span>
-                <span class="setting-hint">软性保护最多放宽的轮数（设为 0 表示不降级）</span>
+              <div class="setting-item" id="rowTierMaxLevels">
+                <div class="setting-info" id="infoTierMaxLevels">
+                  <span class="setting-label">最多放宽几轮</span>
+                  <span class="setting-hint">软性保护最多放宽的轮数（设为 0 表示不降级）</span>
+                </div>
+                <div class="input-with-unit">
+                  <input type="number" id="inputTierMaxLevels" class="num-input" min="0" max="20" value="5" aria-labelledby="infoTierMaxLevels" />
+                  <span class="unit-text">轮</span>
+                </div>
               </div>
-              <div class="input-with-unit">
-                <input type="number" id="inputTierMaxLevels" class="num-input" min="0" max="20" value="5" aria-labelledby="infoTierMaxLevels" />
-                <span class="unit-text">级</span>
-              </div>
-            </div>
 
-            <div class="setting-item" id="rowTierSafetyMargin">
-              <div class="setting-info" id="infoTierSafetyMargin">
-                <span class="setting-label">达标缓冲余量</span>
-                <span class="setting-hint">标签数降到阈值以下后额外多收纳的标签数量</span>
+              <div class="setting-item" id="rowTierSafetyMargin">
+                <div class="setting-info" id="infoTierSafetyMargin">
+                  <span class="setting-label">降到阈值以下后再多收几个</span>
+                  <span class="setting-hint">标签数降到阈值以下后额外多收纳的标签数量</span>
+                </div>
+                <div class="input-with-unit">
+                  <input type="number" id="inputTierSafetyMargin" class="num-input" min="0" max="20" value="0" aria-labelledby="infoTierSafetyMargin" />
+                  <span class="unit-text">个</span>
+                </div>
               </div>
-              <div class="input-with-unit">
-                <input type="number" id="inputTierSafetyMargin" class="num-input" min="0" max="20" value="0" aria-labelledby="infoTierSafetyMargin" />
-                <span class="unit-text">个</span>
-              </div>
-            </div>
 
-            <div class="setting-item" id="rowTierUltimateFallback">
-              <div class="setting-info" id="infoTierUltimateFallback">
-                <span class="setting-label">终极兜底强制回收</span>
-                <span class="setting-hint">软性保护全部放宽后仍超标时，按活跃度强制收纳多余标签（始终保护音频、表单、固定与前台标签）</span>
+              <div class="setting-item" id="rowTierUltimateFallback">
+                <div class="setting-info" id="infoTierUltimateFallback">
+                  <span class="setting-label">仍超标时按活跃度强制收多余标签（播放中、输入中、固定和当前页除外）</span>
+                  <span class="setting-hint">软性保护全部放宽后仍超标时，按活跃度强制收纳多余标签（始终保护音频、表单、固定与前台标签）</span>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" id="chkTierUltimateFallback" aria-labelledby="infoTierUltimateFallback">
+                  <span class="slider"></span>
+                </label>
               </div>
-              <label class="switch">
-                <input type="checkbox" id="chkTierUltimateFallback" aria-labelledby="infoTierUltimateFallback">
-                <span class="slider"></span>
-              </label>
-            </div>
+            </details>
           </div>
 
           <!-- 优先级保留规则链开关 -->
           <div class="card">
-            <h3 class="card-title">标签保护规则 (P0 ~ P3)</h3>
+            <h3 class="card-title">自动收纳时保留哪些标签</h3>
             
             <div class="rule-row">
-              <div class="rule-priority p0">P0</div>
+              <div class="rule-priority p0">始终保留</div>
               <div class="rule-info" id="infoRuleAudible">
                 <span class="rule-name">媒体播放保护</span>
                 <span class="rule-desc">正在播放音频或视频的标签页不收纳</span>
@@ -591,7 +592,7 @@
             </div>
 
             <div class="rule-row">
-              <div class="rule-priority p0">P0</div>
+              <div class="rule-priority p0">始终保留</div>
               <div class="rule-info" id="infoRuleFormGuard">
                 <span class="rule-name">表单输入保护</span>
                 <span class="rule-desc">包含正在编辑表单或未保存输入的标签页不收纳</span>
@@ -603,7 +604,7 @@
             </div>
 
             <div class="rule-row">
-              <div class="rule-priority p1">P1</div>
+              <div class="rule-priority p1">尽量保留</div>
               <div class="rule-info" id="infoRuleRecentActive">
                 <span class="rule-name">最近访问与当前标签保护</span>
                 <span class="rule-desc">当前浏览的标签页及最近访问过的标签页保留</span>
@@ -615,7 +616,7 @@
             </div>
 
             <div class="rule-row">
-              <div class="rule-priority p2">P2</div>
+              <div class="rule-priority p2">尽量保留</div>
               <div class="rule-info" id="infoRuleHighFrequency">
                 <span class="rule-name">高频访问标签保护</span>
                 <span class="rule-desc">近 1 小时内访问频次排名前 20% 的标签页保留</span>
@@ -627,7 +628,7 @@
             </div>
 
             <div class="rule-row">
-              <div class="rule-priority p3">P3</div>
+              <div class="rule-priority p3">始终保留</div>
               <div class="rule-info" id="infoRulePinned">
                 <span class="rule-name">固定标签保护</span>
                 <span class="rule-desc">已固定的标签页不收纳</span>
@@ -642,7 +643,7 @@
       </section>
 
       <!-- Tab 4: 域名跳转规则管理 -->
-      <section id="tab-links" class="tab-panel" role="tabpanel" aria-labelledby="navTabLinks" hidden>
+      <section id="tab-links" class="tab-panel" role="tabpanel" aria-labelledby="subtabBtnLinks" hidden>
         <div class="panel-header">
           <div>
             <h2 class="panel-title">域名跳转规则</h2>
@@ -736,7 +737,7 @@
       </section>
 
       <!-- Tab 5: 数据备份与迁移 -->
-      <section id="tab-backup" class="tab-panel" role="tabpanel" aria-labelledby="navTabBackup" hidden>
+      <section id="tab-backup" class="tab-panel" role="tabpanel" aria-labelledby="subtabBtnBackup" hidden>
         <div class="panel-header">
           <div>
             <h2 class="panel-title">数据备份与迁移</h2>
@@ -916,7 +917,7 @@
       </section>
 
       <!-- Tab 6: 云端同步 (WebDAV) -->
-      <section id="tab-sync" class="tab-panel" role="tabpanel" aria-labelledby="navTabSync" hidden>
+      <section id="tab-sync" class="tab-panel" role="tabpanel" aria-labelledby="subtabBtnSync" hidden>
         <div class="panel-header">
           <div>
             <h2 class="panel-title">云端同步</h2>
@@ -965,7 +966,7 @@
               <input id="webdavUsername" class="text-input" type="text" autocomplete="off" aria-label="WebDAV 账号">
             </div>
             <div class="setting-item">
-              <div class="setting-info">
+              <div class="setting-info" id="infoWebdavPassword">
                 <label class="setting-label" for="webdavPassword">密码</label>
                 <span class="setting-hint">WebDAV 密码（仅保存在本机，不进入同步与导出）</span>
               </div>
@@ -1041,7 +1042,7 @@
       </section>
 
       <!-- Tab 7: 统一运行日志 -->
-      <section id="tab-logs" class="tab-panel" role="tabpanel" aria-labelledby="navTabLogs" hidden>
+      <section id="tab-logs" class="tab-panel" role="tabpanel" aria-labelledby="subtabBtnLogs" hidden>
         <div class="panel-header">
           <div>
             <h2 class="panel-title">运行日志</h2>
@@ -1078,7 +1079,7 @@
       </section>
 
       <!-- Tab 8: AI 桥接 (本机 AI Agent 对等操控通道) -->
-      <section id="tab-ai-bridge" class="tab-panel" role="tabpanel" aria-labelledby="navTabAiBridge" hidden>
+      <section id="tab-ai-bridge" class="tab-panel" role="tabpanel" aria-labelledby="subtabBtnAiBridge" hidden>
         <div class="panel-header">
           <div>
             <h2 class="panel-title">AI 桥接</h2>
