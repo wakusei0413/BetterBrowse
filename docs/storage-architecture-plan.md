@@ -227,7 +227,7 @@ Skill 按需启动 Python 本机服务：
 - 三平台 Python 诊断、IPC 认证、端口占用、服务重启和权限测试。
 - 浏览器实测 Service Worker 休眠、扩展重载、选项页刷新、内容脚本规则缓存和真实收纳恢复流程。
 
-当前环境中 `deno` 命令不可用，现有测试基线尚未执行；实现阶段必须先恢复 Deno 运行环境，再运行 `deno task test`、`deno task verify` 和内容脚本一致性校验。
+截至 2026-09-03，Deno 2.9.5 已可用，当前基线为 `deno task test` 147 个测试全部通过；实现阶段仍必须运行 `deno task verify` 与 `deno task bundle:check`，并在修改内容脚本后执行 `deno task bundle`。
 
 ## 8. 明确不做的事情
 

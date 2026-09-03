@@ -157,8 +157,17 @@ BetterBrowse/
     │   ├── options/               # 选项与收纳管理中心仪表盘 (组件化设计)
     │   │   ├── options.html
     │   │   ├── options.css
-    │   │   ├── options.js
-    │   │   └── list-window.js     # 时间线虚拟窗口纯函数（组卡片/组内条目）
+    │   │   ├── options.js         # OptionsApp 主控制器与引导
+    │   │   ├── constants.js       # 选项页共享导航常量
+    │   │   ├── list-window.js     # 时间线虚拟窗口纯函数（组卡片/组内条目）
+    │   │   ├── components/        # 收纳、设置、同步、日志等页面组件
+    │   │   │   ├── stash-tab.js / stash-settings.js / rules-config.js
+    │   │   │   ├── domain-rules.js / backup.js / webdav-sync.js
+    │   │   │   ├── ai-bridge.js / runtime-log.js / about.js
+    │   │   │   ├── search-home.js / toast.js
+    │   │   └── ui/                # 选项页纯 UI 与时间轴组件
+    │   │       ├── custom-select.js
+    │   │       └── time-tree.js
     │   │
     │   └── icons/                 # 高清图标资源 (16/32/48/128/256/512)
 ```
@@ -442,6 +451,9 @@ deno task ai-host-uninstall
 - [`docs/02-webdav-sync.md`](docs/02-webdav-sync.md): WebDAV 云端同步协议、outbox 事务模型、墓碑机制与冲突合并
 - [`docs/03-ai-skill-bridge.md`](docs/03-ai-skill-bridge.md): AI Native Messaging 桥接协议、人机能力对等（Parity）、确认位白名单与审计规范
 - [`docs/04-testing-verification.md`](docs/04-testing-verification.md): 自动化测试策略、覆盖矩阵与质量验收门禁
+- [`docs/06-versioning.md`](docs/06-versioning.md): 五套版本号的事实源、迁移边界与递增规则
+- [`docs/07-content-scripts.md`](docs/07-content-scripts.md): 双 bundle、主世界/隔离世界与 iframe 维护约束
+- [`docs/08-subsystem-runbook.md`](docs/08-subsystem-runbook.md): AI 桥接与 WebDAV 子系统排障手册
 - [`skills/better-browse/references/protocol.md`](skills/better-browse/references/protocol.md): AI Agent 桥接客户端与本机宿主线协议详细规范
 
 ---
@@ -483,7 +495,7 @@ deno task ai-host-uninstall
    - **倒计时确认/取消对内容脚本要求 nonce**：`SHOW_AUTO_STASH_COUNTDOWN` 下发一次性凭证，卡片用 closed Shadow 持有，不写进 DOM；内容脚本调用 `CONFIRM_AUTO_STASH` / `CANCEL_AUTO_STASH` 必须回传。AI / 扩展页面 / 通知按钮不走此约束。
 8. **编码要求**：
    - 任何新增文件必须以 **UTF-8** 格式保存，且代码注释与文本使用**简体中文**。
-9. **WebDAV 云端同步（阶段二 M3，协议见 docs/02-webdav-sync.md）**：
+9. **WebDAV 云端同步（阶段二 M3，协议见 docs/02-webdav-sync.md；排障见 docs/08-subsystem-runbook.md）**：
    - **outbox 同事务**：实体写入与 outbox / operationLogs / clock 更新必须在**同一个** `runTransaction` 事务内（`SyncOutbox.enqueueInTx`），拆开会出现"实体已写而操作丢失"的分叉；大组仍按 500 条分批，每批实体与操作同事务提交；
    - **严禁嵌套写锁**：`DeviceEventLog.append` 自行获取写锁，**不得**在已持锁的临界区内调用（倒计时回调、消息处理器均在锁外调用）；
    - **凭据排除**：`bb_webdav_credentials` 与 `bb_auto_backups` 被排除在 outbox、快照载荷与全量导出 JSON 之外，新增可同步键时必须维护 `StorageAdapter._shouldEnqueue` 与 `SyncSnapshot.buildPayload` 的排除表；
@@ -491,8 +503,8 @@ deno task ai-host-uninstall
    - **能力探测前置**：探测仅拒绝认证失败与写入失败；缺失 ETag / If-Match 的服务器进入**兼容模式**（如 123 云盘 WebDAV），清单更新必须经 `SyncEngine._updateManifest` 统一通道「读取最新远端清单 → 在最新内容上合并 → 条件写入 → 412 重试」，**严禁**基于运行开始时的缓存清单直接覆盖远端（会吞掉其他设备的并发写入）；
    - **远端不可变**：批次与快照文件唯一命名不可变，清单更新必须携带当前 ETag 的 `If-Match`，412 视为条件写入冲突而非覆盖理由。
    - **浏览器账号偏好镜像**：`chrome.storage.sync` 只允许写入 `bb_account_config`（阈值 / 规则开关 / 收纳箱设置 / WebDAV 地址）。**严禁**把收纳组、页面、条目、`bb_link_rules`、凭据、自动备份或 `fieldRevs` 写入 sync；`chrome.storage.sync` 缺失时直接跳过，**禁止**回退到 `chrome.storage.local`。
-10. **AI 桥接（阶段三 M4，协议见 docs/03-ai-skill-bridge.md）**：
-   - **同一处理路径**：人类 UI 消息与 AI 桥接指令共用 `action-handlers.js` 的同一份映射。**新增动作时**：在该映射挂 handler → 同步在 `src/core/ai/ai-capabilities.js` 的 `AI_ACTION_DOCS` 补参数文档 → 若属人类 UI 功能则更新 `tests/ai-bridge.test.js` 的 `HUMAN_UI_ACTIONS`（parity 断言强制"人类有的 AI 必有"，漏文档会直接挂测试）；
+10. **AI 桥接（阶段三 M4，协议见 docs/03-ai-skill-bridge.md；排障见 docs/08-subsystem-runbook.md）**：
+   - **同一处理路径**：人类 UI 消息与 AI 桥接指令共用 `action-handlers.js` 的同一份映射。**新增动作时**：在该映射挂 handler → 同步在 `src/core/ai/ai-capabilities.js` 的 `AI_ACTION_DOCS` 补参数文档 → 若属人类 UI 功能则更新 `tests/ai-bridge.test.js` 的 `HUMAN_UI_ACTIONS`（parity 断言强制"人类有的 AI 必有"，漏文档会直接挂测试）；若内容脚本调用还要更新 `message-authorizer.js` 白名单。`deno task verify` 已自动拦截这些漏项，但动作是否真的不可逆仍需人工判断；详见 `docs/05-action-contract.md`。
    - **确认位红线**：新增不可逆动作时必须加入 `AI_CONFIRM_REQUIRED_ACTIONS`（AI 调用需 `payload.confirm === true`，不受 UI"删除二次确认"设置影响，恒定要求）；
    - **凭据出口复查**：任何新接口的响应都不得包含 `bb_webdav_credentials` 内容或 `password` 字段（`AIBridgeManager._guardResponse` 序列化后复查，命中即拦截）；凭据类动作的审计摘要不得记录内容（`_buildAuditSummary` 白名单字段机制）；
    - **AI 请求串行**：桥接请求经 `AIBridgeManager` 队列串行派发（`sender=null`），handler 内**严禁**假设消息来自标签页或要求 `sender.tab` 存在；
@@ -507,3 +519,4 @@ deno task ai-host-uninstall
    - **SW 定时器可能冻结**：经 Native Messaging 唤醒并保活的 Service Worker 存在 setTimeout 回调不触发的 Chrome 异常类行为——扩展侧与宿主侧的一切健壮性超时都不能只依赖 setTimeout（宿主侧看门狗闹钟 + 队列强制重置兜底），`AIBridgeManager._onWatchdog` 检测队列连续停滞会强制重置；
    - **审计绝不阻塞响应**：`_appendAudit` 为发射后不管（内部串行队列防丢条目），await 审计会在存储层挂起时饿死响应与整个请求队列；
    - **IDB 自愈**：`MigrationManager.repairMissingObjectStores` 在启动时重建"有库无表"的残留库并从旧存储回填；`INDEXED_DB_SCHEMA_REVISION` 只能单调递增（IndexedDB 拒绝用更低修订号打开），裸抬高修订号不建表会制造出需要再次提升修订号才能修复的空库。
+   - **五套版本号分工**：Manifest 软件版本、`API_VERSION`、`LOCAL_DATA_SCHEMA_REVISION`、`INDEXED_DB_SCHEMA_REVISION` 与备份/WebDAV 格式修订互不替代；新增 IndexedDB 仓储或索引必须同步 `onupgradeneeded`，详见 `docs/06-versioning.md`。`deno task verify` 已自动检查主要边界，但“这次变更是否真的不兼容”仍需人工判断。
