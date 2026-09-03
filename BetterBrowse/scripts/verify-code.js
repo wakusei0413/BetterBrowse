@@ -4,12 +4,16 @@
  * @encoding UTF-8
  */
 
-import { dirname, fromFileUrl, resolve } from '@std/path';
+import { dirname, fromFileUrl, relative, resolve } from '@std/path';
+import { walk } from '@std/fs';
 import { buildContentBundle, buildFrameContentBundle } from './build-content.js';
+import { runActionContractChecks } from './verify-action-contract.js';
+import { runVersioningChecks } from './verify-versioning.js';
+import { runStorageDisciplineChecks } from './verify-storage-discipline.js';
 
 const projectRoot = resolve(dirname(fromFileUrl(import.meta.url)), '..');
 
-const allJsFiles = [
+const allJsFiles = new Set([
   'src/constants/api-version.js',
   'src/constants/action-types.js',
   'src/constants/config.js',
@@ -66,13 +70,34 @@ const allJsFiles = [
   'src/background/link-notifier.js',
   'src/popup/popup.js',
   'src/options/list-window.js',
+  'src/options/constants.js',
+  'src/options/components/toast.js',
+  'src/options/components/stash-tab.js',
+  'src/options/components/stash-settings.js',
+  'src/options/components/rules-config.js',
+  'src/options/components/domain-rules.js',
+  'src/options/components/backup.js',
+  'src/options/components/webdav-sync.js',
+  'src/options/components/ai-bridge.js',
+  'src/options/components/runtime-log.js',
+  'src/options/components/about.js',
+  'src/options/components/search-home.js',
+  'src/options/ui/custom-select.js',
+  'src/options/ui/time-tree.js',
   'src/options/options.js',
   'native-host/bb_native_host.js',
   'native-host/install.js',
   'native-host/uninstall.js',
   'scripts/bump-api-version.js',
+  'scripts/verify-action-contract.js',
+  'scripts/verify-versioning.js',
   '../skills/better-browse/scripts/bb-bridge-client.js'
-];
+]);
+
+// 自动纳入扩展根目录下新增的 JavaScript 模块，避免手写清单遗漏新文件。
+for await (const entry of walk(projectRoot, { includeDirs: false, exts: ['.js'] })) {
+  allJsFiles.add(relative(projectRoot, entry.path).replaceAll('\\\\', '/'));
+}
 
 console.log('=== 开始代码与静态规范校验 ===\n');
 
@@ -316,6 +341,33 @@ for (const file of identifierBindingFiles) {
     console.error(`[FAIL] 无法读取绑定校验文件: ${file}`);
     hasError = true;
   }
+}
+
+// 9. 校验后台动作与 AI / 内容脚本 / 人类 UI 的静态契约
+try {
+  const actionContract = await runActionContractChecks(projectRoot);
+  if (!actionContract.pass) hasError = true;
+} catch (err) {
+  console.error('[FAIL] 动作静态契约校验异常:', err);
+  hasError = true;
+}
+
+// 10. 校验五套版本号的唯一事实源与迁移边界
+try {
+  const versioning = await runVersioningChecks(projectRoot);
+  if (!versioning.pass) hasError = true;
+} catch (err) {
+  console.error('[FAIL] 版本号护栏校验异常:', err);
+  hasError = true;
+}
+
+// 11. 校验存储门面、写锁与内容脚本产物访问纪律
+try {
+  const storageDiscipline = await runStorageDisciplineChecks(projectRoot);
+  if (storageDiscipline.errors.length > 0) hasError = true;
+} catch (err) {
+  console.error('[FAIL] 存储纪律校验异常:', err);
+  hasError = true;
 }
 
 if (hasError) {
