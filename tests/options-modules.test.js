@@ -67,7 +67,7 @@ Deno.test('选项页模块的具名导入都能在目标文件找到对应导出
 Deno.test('选项页关键类均已导出', async () => {
   const required = {
     'options.js': ['OptionsApp'],
-    'constants.js': ['SETTINGS_SUBTAB_TITLES', 'SETTINGS_SUBTABS'],
+    'constants.js': ['SETTINGS_SUBTAB_TITLES', 'SETTINGS_SUBTABS', 'SETTINGS_TERTIARY_ROUTES'],
     'components/ai-bridge.js': ['AIBridgeComponent'],
     'components/stash-tab.js': ['StashTabComponent'],
     'components/toast.js': ['Toast'],
