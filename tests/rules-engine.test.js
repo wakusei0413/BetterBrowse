@@ -7,6 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RuleEngine } from '../BetterBrowse/src/core/rules/rule-engine.js';
+import { FormGuardRule } from '../BetterBrowse/src/core/rules/form-guard-rule.js';
 import { DefaultConfig } from '../BetterBrowse/src/constants/config.js';
 
 test('AudibleRule (P0): 正在播放媒体的标签页必须安全保留', async () => {
@@ -182,4 +183,78 @@ test('TieredStash: 终极兜底 hardCoreOnly 仅保留硬性保护，软性保�
   const stashedIds = res.tabsToStash.map((t) => t.tab.id);
   assert.deepEqual(keptIds.sort(), [1, 2, 3]);
   assert.deepEqual(stashedIds.sort(), [4, 5]);
+});
+
+function installFormProbeChrome(sendMessage) {
+  const originalChrome = globalThis.chrome;
+  globalThis.chrome = {
+    runtime: { lastError: null },
+    webNavigation: {
+      getAllFrames: async () => ([
+        { frameId: 0, url: 'https://idle.example/' },
+        { frameId: 3, url: 'https://ads.example/pixel' }
+      ])
+    },
+    tabs: { sendMessage }
+  };
+  return () => {
+    globalThis.chrome = originalChrome;
+  };
+}
+
+test('FormGuardRule: 子框架探测失败不得把整页判为受保护', async () => {
+  const restore = installFormProbeChrome((tabId, message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    const frameId = typeof optionsOrCb === 'object' && optionsOrCb ? optionsOrCb.frameId : 0;
+    if (frameId === 0 || typeof optionsOrCb === 'function') {
+      chrome.runtime.lastError = null;
+      cb?.({ success: true, data: { hasActiveInput: false } });
+      return;
+    }
+    chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+    cb?.();
+    chrome.runtime.lastError = null;
+  });
+  try {
+    const res = await FormGuardRule.probeTabFrames(1);
+    assert.equal(res.success, true);
+    assert.equal(res.data.hasActiveInput, false);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: 顶层探测失败仍按 fail-closed 保护', async () => {
+  const restore = installFormProbeChrome((_tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+    cb?.();
+    chrome.runtime.lastError = null;
+  });
+  try {
+    const res = await FormGuardRule.probeTabFrames(1);
+    assert.equal(res.success, false);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: 子框架确认有输入时仍保护该标签', async () => {
+  const restore = installFormProbeChrome((_tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    const frameId = typeof optionsOrCb === 'object' && optionsOrCb ? optionsOrCb.frameId : 0;
+    chrome.runtime.lastError = null;
+    if (frameId === 3) {
+      cb?.({ success: true, data: { hasActiveInput: true, reason: '框架内存在未提交输入' } });
+      return;
+    }
+    cb?.({ success: true, data: { hasActiveInput: false } });
+  });
+  try {
+    const res = await FormGuardRule.probeTabFrames(1);
+    assert.equal(res.success, true);
+    assert.equal(res.data.hasActiveInput, true);
+  } finally {
+    restore();
+  }
 });

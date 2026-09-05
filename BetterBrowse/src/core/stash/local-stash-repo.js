@@ -304,12 +304,19 @@ export class LocalStashRepository {
         StorageAdapter.getUserConfig(),
         StorageAdapter.get(StorageKeys.LINK_RULES, {})
       ]);
+      const exportConfig = {
+        ...config,
+        home: {
+          ...(config.home || {}),
+          externalSuggestAgreed: false // 外部联想敏感同意状态不得导出
+        }
+      };
       push('{\n');
       push(`  "version": ${JSON.stringify(FULL_BACKUP_FORMAT_REVISION)},\n`);
       push(`  "exportedAt": ${Date.now()},\n`);
       push('  "plugin": "BetterBrowse",\n');
       push('  "type": "full_backup",\n');
-      push(`  "config": ${JSON.stringify(config, null, 2).split('\n').map((line, i) => (i === 0 ? line : `  ${line}`)).join('\n')},\n`);
+      push(`  "config": ${JSON.stringify(exportConfig, null, 2).split('\n').map((line, i) => (i === 0 ? line : `  ${line}`)).join('\n')},\n`);
       push(`  "linkRules": ${JSON.stringify(linkRules || {}, null, 2).split('\n').map((line, i) => (i === 0 ? line : `  ${line}`)).join('\n')},\n`);
       push(`  "globalLinkRule": ${JSON.stringify(config.globalLinkRule || { enabled: false, mode: 'auto' })},\n`);
       push('  "stashGroups": [');
@@ -1103,13 +1110,21 @@ export class LocalStashRepository {
       StorageAdapter.get(StorageKeys.LINK_RULES, {})
     ]);
 
+    const exportConfig = {
+      ...config,
+      home: {
+        ...(config.home || {}),
+        externalSuggestAgreed: false // 外部联想敏感同意状态不得导出
+      }
+    };
+
     return JSON.stringify(
       {
         version: FULL_BACKUP_FORMAT_REVISION,
         exportedAt: Date.now(),
         plugin: 'BetterBrowse',
         type: 'full_backup',
-        config: config,
+        config: exportConfig,
         linkRules: linkRules,
         globalLinkRule: config.globalLinkRule || { enabled: false, mode: 'auto' },
         stashGroups: groups
@@ -1162,6 +1177,12 @@ export class LocalStashRepository {
       if (configToRestore.globalLinkRule && typeof configToRestore.globalLinkRule === 'object') safeConfig.globalLinkRule = configToRestore.globalLinkRule;
       if (configToRestore.stashSettings && typeof configToRestore.stashSettings === 'object') safeConfig.stashSettings = configToRestore.stashSettings;
       if (configToRestore.tieredStash && typeof configToRestore.tieredStash === 'object') safeConfig.tieredStash = configToRestore.tieredStash;
+      if (configToRestore.home && typeof configToRestore.home === 'object') {
+        safeConfig.home = {
+          ...configToRestore.home,
+          externalSuggestAgreed: false // 外部联想同意状态属本地隐私项，不经备份继承，需在本地重新主动同意
+        };
+      }
       if (Object.keys(safeConfig).length > 0 || (parsed.linkRules && typeof parsed.linkRules === 'object')) {
         await IndexedDBManager.withWriteLock(async () => {
           if (Object.keys(safeConfig).length > 0) {
@@ -1222,7 +1243,7 @@ export class LocalStashRepository {
   }
 
   /**
-   * 智能导入收纳数据（自动识别 OneTab 文本、OneTab 内部数据与 Better Browse JSON）
+   * 智能导入收纳数据（自动识别 OneTab 文本、OneTab 内部数据与 BetterBrowse JSON）
    * 解析与清洗在锁外完成，写入在写锁临界区内按当前生效后端执行
    * @param {string} rawInputString - 文本或 JSON
    * @returns {Promise<{ success: boolean, importedCount: number, groupCount: number, formatName: string, error?: string }>}

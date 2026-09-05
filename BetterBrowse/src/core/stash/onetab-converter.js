@@ -1,6 +1,6 @@
 /**
  * @file onetab-converter.js
- * @description OneTab 数据格式双向转换器（智能解析 OneTab 纯文本、OneTab 内部数据与 Better Browse 数据）
+ * @description OneTab 数据格式双向转换器（智能解析 OneTab 纯文本、OneTab 内部数据与 BetterBrowse 数据）
  * @encoding UTF-8
  */
 
@@ -54,7 +54,7 @@ export class OneTabConverter {
   }
 
   /**
-   * 将 OneTab 导出的纯文本（每行 "URL | Title"，空行分隔不同组）解析为 Better Browse 标签组结构
+   * 将 OneTab 导出的纯文本（每行 "URL | Title"，空行分隔不同组）解析为 BetterBrowse 标签组结构
    * @param {string} rawText - OneTab 导出文本
    * @returns {Array<{ id: string, createdAt: number, title: string, locked: boolean, starred: boolean, tabs: Array<{ id: string, url: string, title: string, favIconUrl: string, pinned: boolean }> }>}
    */
@@ -119,7 +119,7 @@ export class OneTabConverter {
   }
 
   /**
-   * 将 Better Browse 标签组列表导出为 OneTab 兼容的纯文本格式（URL | Title）
+   * 将 BetterBrowse 标签组列表导出为 OneTab 兼容的纯文本格式（URL | Title）
    * @param {Array<any>} groups - 标签组列表
    * @returns {string}
    */
@@ -160,7 +160,7 @@ export class OneTabConverter {
   }
 
   /**
-   * 智能多格式自动识别与解析器（自动兼容：OneTab 纯文本、OneTab 内部 JSON、Better Browse JSON）
+   * 智能多格式自动识别与解析器（自动兼容：OneTab 纯文本、OneTab 内部 JSON、BetterBrowse JSON）
    * @param {string} inputString - 待解析的文本或 JSON 字符串
    * @returns {{ success: boolean, groups: Array<any>, totalTabs: number, formatName: string, error?: string }}
    */

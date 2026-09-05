@@ -13,6 +13,10 @@ import { DeviceEventLog, DeviceEventTypes } from '../core/sync/device-events.js'
 
 /** 恢复已过期倒计时的最大宽限期（超过则视为陈旧状态直接丢弃） */
 const EXPIRED_DEADLINE_GRACE_MS = 10 * 60 * 1000;
+/** Chrome 对一次性闹钟的最短可靠延迟（Chrome 120+ 约为 30 秒） */
+const MIN_ALARM_DELAY_MINUTES = 0.5;
+/** 视为“已到期”的提前容差，避免闹钟早触发数毫秒就被丢弃 */
+const ALARM_DUE_TOLERANCE_MS = 250;
 
 /**
  * 生成倒计时操作一次性凭证（内容脚本确认/取消必须回传）
@@ -53,6 +57,9 @@ export class ThresholdMonitor {
     this.alarmName = 'better-browse-threshold-countdown';
     this.checkDebounceTimer = null;
     this.pendingWindowIds = new Set();
+    this.localExpiryTimer = null;
+    this.earlyAlarmRescheduled = false;
+    this.finalizePromise = null;
 
     this.initListeners();
     // 状态恢复是异步的：alarm 与事件回调必须先等待本 Promise 完成，
@@ -198,7 +205,7 @@ export class ThresholdMonitor {
       const { windowId, tabs } = await this.getActiveWindowInfo(targetWindowId);
       const countableTabs = filterCountableTabs(tabs);
       if (countableTabs.length === 0) {
-        if (this.deadline > Date.now()) this.clearCountdownUI();
+        if (this.deadline > 0) this.clearCountdownUI();
         return;
       }
 
@@ -206,8 +213,8 @@ export class ThresholdMonitor {
       const threshold = config.tabThreshold || 15;
 
       if (currentCount < threshold) {
-        // 若标签数已降回阈值以下且正在倒计时，取消倒计时
-        if (this.deadline > Date.now()) {
+        // 若标签数已降回阈值以下且仍有未完成倒计时，取消倒计时
+        if (this.deadline > 0) {
           this.clearCountdownUI();
         }
         return;
@@ -217,8 +224,14 @@ export class ThresholdMonitor {
       const cooldownMs = cooldownMinutes * 60 * 1000;
       const now = Date.now();
 
+      // 倒计时已到期但尚未收纳（闹钟被提前消费、SW 休眠等）：立即补执行，避免冷却期把这次收纳永久跳过
+      if (this.deadline > 0 && this.deadline <= now) {
+        await this.finalizeCountdown('expired-check');
+        return;
+      }
+
       // 正在倒计时中或处于冷却期内，不重复打扰
-      if (this.deadline > Date.now()) {
+      if (this.deadline > now) {
         return;
       }
       if (now - this.lastActionTime < cooldownMs) {
@@ -227,8 +240,7 @@ export class ThresholdMonitor {
 
       // 1. 若开启了超阈值自动倒计时智能收纳
       if (config.autoStashOnThreshold !== false) {
-        this.lastActionTime = now;
-        this.startCountdown(windowId, countableTabs, config);
+        await this.startCountdown(windowId, countableTabs, config);
         return;
       }
 
@@ -245,7 +257,7 @@ export class ThresholdMonitor {
   /**
    * 启动全场景 15 秒倒计时体系（包含 Badge 动画、前台网页卡片与系统通知）
    */
-  startCountdown(windowId, tabs, config) {
+  async startCountdown(windowId, tabs, config) {
     // 并发事件（如批量开标签触发多次 onCreated）可能同时进入本方法，倒计时进行中直接忽略
     if (this.deadline > Date.now()) return;
 
@@ -253,6 +265,7 @@ export class ThresholdMonitor {
     this.totalSeconds = Math.max(3, config.countdownSeconds || 15);
     this.remainingSeconds = this.totalSeconds;
     this.actionNonce = generateActionNonce();
+    this.earlyAlarmRescheduled = false;
     const countableTabs = filterCountableTabs(tabs);
     const currentCount = countableTabs.length;
     const threshold = config.tabThreshold || 15;
@@ -274,12 +287,11 @@ export class ThresholdMonitor {
     }
 
     this.deadline = Date.now() + this.totalSeconds * 1000;
-    this.persistState().catch(() => {});
+    this.armLocalExpiryTimer();
     try {
-      if (chrome.alarms?.create) {
-        chrome.alarms.create(this.alarmName, { when: this.deadline });
-      }
+      await this.persistState();
     } catch {}
+    this.armCountdownAlarm();
     // 记录跨设备可见的倒计时事件（仅展示用途，其它设备不执行任何动作）
     DeviceEventLog.append(DeviceEventTypes.COUNTDOWN_START, {
       currentCount,
@@ -288,23 +300,118 @@ export class ThresholdMonitor {
     }).catch(() => {});
   }
 
+  /**
+   * 进程内到期定时器：Service Worker 仍存活时比短时 chrome.alarms 更准时。
+   * @param {number} [remainingMs]
+   */
+  armLocalExpiryTimer(remainingMs = this.deadline - Date.now()) {
+    this.clearLocalExpiryTimer();
+    const delay = Math.max(0, remainingMs);
+    this.localExpiryTimer = setTimeout(() => {
+      this.localExpiryTimer = null;
+      this.finalizeCountdown('timeout').catch(() => {});
+    }, delay);
+  }
+
+  clearLocalExpiryTimer() {
+    if (this.localExpiryTimer) {
+      clearTimeout(this.localExpiryTimer);
+      this.localExpiryTimer = null;
+    }
+  }
+
+  /**
+   * 注册一次性到期闹钟。短于 Chrome 最短间隔时仍按目标时刻注册，
+   * 若被立即触发则由 handleAlarm 改挂最短可靠备份闹钟。
+   */
+  armCountdownAlarm() {
+    try {
+      if (!chrome.alarms?.create || this.deadline <= 0) return;
+      chrome.alarms.create(this.alarmName, { when: this.deadline });
+    } catch {}
+  }
+
+  /**
+   * 短时一次性闹钟被提前消费后的兜底：按 Chrome 允许的最短间隔再挂一只。
+   */
+  armBackupAlarm() {
+    try {
+      if (!chrome.alarms?.create || this.deadline <= 0) return;
+      const remainingMinutes = Math.max(0, this.deadline - Date.now()) / 60000;
+      chrome.alarms.create(this.alarmName, {
+        delayInMinutes: Math.max(remainingMinutes, MIN_ALARM_DELAY_MINUTES)
+      });
+    } catch {}
+  }
+
   async handleAlarm() {
     // SW 可能由 alarm 直接唤醒，此时持久化状态尚未恢复：先等待恢复再判定
     try {
       await this.readyPromise;
     } catch {}
-    if (!this.deadline || this.deadline > Date.now()) return;
+    if (this.finalizePromise) return this.finalizePromise;
+    if (this.deadline <= 0 && !this.actionNonce) return;
+
+    const remaining = this.deadline - Date.now();
+    // Chrome 可能把短于 30 秒的一次性闹钟立即触发；若直接 return 会把唯一闹钟消费掉，倒计时走完也不再收纳
+    if (this.deadline > 0 && remaining > ALARM_DUE_TOLERANCE_MS) {
+      this.armLocalExpiryTimer(remaining);
+      if (!this.earlyAlarmRescheduled) {
+        this.earlyAlarmRescheduled = true;
+        this.armBackupAlarm();
+      }
+      return;
+    }
+
+    await this.finalizeCountdown('alarm');
+  }
+
+  /**
+   * 倒计时到期后的唯一收纳入口（闹钟 / 进程内定时器 / 前台归零确认 / 过期检查共用）。
+   * 单飞承诺防止多路触发重复收纳。
+   * @param {string} [via]
+   * @param {{ force?: boolean }} [options]
+   */
+  async finalizeCountdown(via = 'unknown', { force = false } = {}) {
+    if (this.finalizePromise) return this.finalizePromise;
+    this.finalizePromise = this._runFinalize(via, { force });
+    try {
+      return await this.finalizePromise;
+    } finally {
+      this.finalizePromise = null;
+    }
+  }
+
+  /**
+   * @param {string} via
+   * @param {{ force?: boolean }} options
+   */
+  async _runFinalize(via, { force = false } = {}) {
+    const hadCountdown = this.deadline > 0 || this.remainingSeconds > 0 || Boolean(this.actionNonce);
+    if (!force && !hadCountdown) {
+      return { success: false, note: '倒计时已结束，已忽略重复的收纳确认请求' };
+    }
+
     const windowId = this.activeWindowId;
     await this.clearCountdownUI();
     this.lastActionTime = Date.now();
-    DeviceEventLog.append(DeviceEventTypes.COUNTDOWN_CONFIRM, { via: 'alarm' }).catch(() => {});
-    if (this.onStashRequested) {
-      try {
-        const res = await this.onStashRequested(windowId);
-        DeviceEventLog.append(DeviceEventTypes.STASH_EXECUTED, { via: 'alarm', success: res?.success !== false }).catch(() => {});
-      } catch (err) {
-        console.warn('[ThresholdMonitor] 倒计时归零后执行智能收纳失败:', err?.message || err);
-      }
+    try {
+      await this.persistState();
+    } catch {}
+    DeviceEventLog.append(DeviceEventTypes.COUNTDOWN_CONFIRM, { via }).catch(() => {});
+    if (!this.onStashRequested) {
+      return { success: false, error: '未注册收纳回调' };
+    }
+    try {
+      const res = await this.onStashRequested(windowId);
+      DeviceEventLog.append(DeviceEventTypes.STASH_EXECUTED, {
+        via,
+        success: res?.success !== false
+      }).catch(() => {});
+      return res;
+    } catch (err) {
+      console.warn('[ThresholdMonitor] 倒计时结束后执行智能收纳失败:', err?.message || err);
+      return { success: false, error: err?.message || '智能收纳执行异常' };
     }
   }
 
@@ -365,6 +472,8 @@ export class ThresholdMonitor {
       clearInterval(this.countdownInterval);
       this.countdownInterval = null;
     }
+    this.clearLocalExpiryTimer();
+    this.earlyAlarmRescheduled = false;
     this.remainingSeconds = 0;
     this.deadline = 0;
     this.actionNonce = '';
@@ -431,28 +540,11 @@ export class ThresholdMonitor {
     if (options.requireNonce && !this.matchesActionNonce(options.nonce)) {
       return { success: false, error: '倒计时操作凭证无效' };
     }
-    // 守卫：倒计时结束后，网页卡片残留的"立即收纳"按钮不得再次触发完整收纳流程
-    // （alarm 归零已执行过一次收纳；通知按钮等可信入口通过 force 绕过本守卫）
-    const countdownActive = this.deadline > Date.now() || this.remainingSeconds > 0;
-    if (!options.force && !countdownActive) {
-      return { success: false, note: '倒计时已结束，已忽略重复的收纳确认请求' };
-    }
-
-    await this.clearCountdownUI();
-    this.lastActionTime = Date.now();
-    await this.persistState();
-    DeviceEventLog.append(DeviceEventTypes.COUNTDOWN_CONFIRM, { via: 'manual' }).catch(() => {});
-    if (this.onStashRequested) {
-      try {
-        const res = await this.onStashRequested(this.activeWindowId);
-        DeviceEventLog.append(DeviceEventTypes.STASH_EXECUTED, { via: 'manual', success: res?.success !== false }).catch(() => {});
-        return res;
-      } catch (err) {
-        console.warn('[ThresholdMonitor] 手动确认智能收纳失败:', err?.message || err);
-        return { success: false, error: err?.message || '智能收纳执行异常' };
-      }
-    }
-    return { success: false, error: '未注册收纳回调' };
+    // 过期但尚未收纳的倒计时仍允许确认（deadline 仍 > 0）；已 clear 后的残留按钮由 finalize 去重。
+    // 通知按钮等可信入口通过 force 在倒计时已清除后仍可手动补收纳。
+    return await this.finalizeCountdown(options.force ? 'manual-force' : 'manual', {
+      force: Boolean(options.force)
+    });
   }
 
   /**

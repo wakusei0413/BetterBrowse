@@ -8,9 +8,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ThresholdMonitor } from '../BetterBrowse/src/background/threshold-monitor.js';
 import { DefaultConfig } from '../BetterBrowse/src/constants/config.js';
+import { StorageAdapter } from '../BetterBrowse/src/core/storage/storage-adapter.js';
 
 function installMockChrome() {
   const sessionStore = {};
+  const createdAlarms = [];
   globalThis.chrome = {
     runtime: {
       lastError: null,
@@ -39,7 +41,9 @@ function installMockChrome() {
       setBadgeBackgroundColor: () => {}
     },
     alarms: {
-      create: () => {},
+      create: (name, info) => {
+        createdAlarms.push({ name, ...(info || {}) });
+      },
       clear: () => {},
       onAlarm: { addListener() {} }
     },
@@ -57,6 +61,7 @@ function installMockChrome() {
       }
     }
   };
+  globalThis.chrome._createdAlarms = createdAlarms;
 }
 
 test('ThresholdMonitor: 实例化与默认状态正常', () => {
@@ -134,4 +139,95 @@ test('ThresholdMonitor: 要求 nonce 时错误凭证不得确认或取消', asyn
   assert.equal(stashed, true);
   assert.equal(allowed.success, true);
   assert.equal(monitor.actionNonce, '');
+});
+
+test('ThresholdMonitor: 闹钟提前触发不得丢弃倒计时，到期后仍收纳', async () => {
+  installMockChrome();
+  let stashed = 0;
+  const monitor = new ThresholdMonitor({
+    onStashRequested: async () => {
+      stashed += 1;
+      return { success: true, stashedCount: 2 };
+    }
+  });
+  await monitor.readyPromise.catch(() => {});
+  monitor.deadline = Date.now() + 15000;
+  monitor.remainingSeconds = 15;
+  monitor.actionNonce = 'countdown-nonce-token-ok';
+  monitor.activeWindowId = 1;
+
+  await monitor.handleAlarm();
+  assert.equal(stashed, 0);
+  assert.equal(monitor.deadline > Date.now(), true);
+  assert.equal(
+    chrome._createdAlarms.some((item) => item.delayInMinutes >= 0.5),
+    true
+  );
+
+  monitor.deadline = Date.now() - 20;
+  await monitor.handleAlarm();
+  assert.equal(stashed, 1);
+  assert.equal(monitor.deadline, 0);
+  assert.equal(monitor.actionNonce, '');
+});
+
+test('ThresholdMonitor: 倒计时已到期时过期检查不受冷却拦截', async () => {
+  installMockChrome();
+  const originalGetUserConfig = StorageAdapter.getUserConfig;
+  StorageAdapter.getUserConfig = async () => ({
+    ...DefaultConfig,
+    tabThreshold: 2,
+    countdownSeconds: 3,
+    autoStashOnThreshold: true,
+    thresholdCooldownMinutes: 5
+  });
+  let stashed = 0;
+  const monitor = new ThresholdMonitor({
+    onStashRequested: async () => {
+      stashed += 1;
+      return { success: true, stashedCount: 1 };
+    }
+  });
+  monitor.getActiveWindowInfo = async () => ({
+    windowId: 1,
+    tabs: [
+      { id: 1, url: 'https://one.example' },
+      { id: 2, url: 'https://two.example' },
+      { id: 3, url: 'https://three.example' }
+    ]
+  });
+  try {
+    await monitor.readyPromise.catch(() => {});
+    monitor.lastActionTime = Date.now();
+    monitor.deadline = Date.now() - 1000;
+    monitor.actionNonce = 'countdown-nonce-token-ok';
+
+    await monitor.checkTabCount();
+    assert.equal(stashed, 1);
+    assert.equal(monitor.deadline, 0);
+  } finally {
+    StorageAdapter.getUserConfig = originalGetUserConfig;
+  }
+});
+
+test('ThresholdMonitor: 闹钟与手动确认并发时只收纳一次', async () => {
+  installMockChrome();
+  let stashed = 0;
+  const monitor = new ThresholdMonitor({
+    onStashRequested: async () => {
+      stashed += 1;
+      return { success: true, stashedCount: 1 };
+    }
+  });
+  await monitor.readyPromise.catch(() => {});
+  monitor.deadline = Date.now() - 10;
+  monitor.remainingSeconds = 0;
+  monitor.actionNonce = 'countdown-nonce-token-ok';
+
+  const [alarmRes, confirmRes] = await Promise.all([
+    monitor.handleAlarm(),
+    monitor.handleConfirmAutoStash({ requireNonce: true, nonce: 'countdown-nonce-token-ok' })
+  ]);
+  assert.equal(stashed, 1);
+  assert.equal(alarmRes?.success !== false || confirmRes?.success !== false, true);
 });

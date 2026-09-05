@@ -9,7 +9,7 @@
 - 非 auto 模式的 MutationObserver 只处理 `addedNodes`，不得再次整页 `querySelectorAll('a[href]')`。
 - 顶层 bundle 承载倒计时、日志和完整链接能力；iframe bundle 只承载表单探测、模式同步与点击拦截。倒计时只投递顶层 `frameId: 0`。
 - 后台读取跳转模式时使用 `sender.url`，不能用 `sender.tab.url`，否则跨域 iframe 会继承顶层规则。
-- 表单保护必须聚合标签页所有 HTTP(S) frame；任一 frame 有输入或探测失败都保留标签。
+- 表单保护必须聚合标签页所有 HTTP(S) frame：任一 frame 确认有输入即保留；顶层探测失败才 fail-closed；子框架无接收端或超时跳过，避免广告 iframe 把闲置标签全部保下来。
 - 内容脚本禁止直读 `chrome.storage` / IndexedDB；通过后台消息取最小字段，`GET_PAGE_LINK_CONTEXT` 只返回 `{ effectiveMode }`。
 
 ## 修改后的同步清单

@@ -48,7 +48,10 @@ export class FormGuardRule extends BaseRule {
   }
 
   /**
-   * 聚合标签页全部 HTTP(S) 框架的表单状态：任一框架有输入或探测失败即视为需保护。
+   * 聚合标签页全部 HTTP(S) 框架的表单状态：
+   * - 任一框架确认有输入 → 保护该标签；
+   * - 顶层框架探测失败 → fail-closed 保护（无法确认主页面表单）；
+   * - 子框架无接收端/超时 → 跳过该框架（广告、沙箱 iframe 普遍无法注入，不得把整页判为受保护）。
    * @param {number} tabId
    * @returns {Promise<{ success: boolean, data?: { hasActiveInput: boolean, reason?: string }, error?: string }>}
    */
@@ -63,30 +66,38 @@ export class FormGuardRule extends BaseRule {
       // 无 webNavigation 时只探测顶层
     }
 
-    let sawSuccess = false;
-    let activeReason = '';
+    let sawTopSuccess = false;
     for (const frame of frames) {
       if (!Number.isInteger(frame.frameId) || frame.frameId < 0) continue;
       const url = frame.url || '';
       if (url && !url.startsWith('http://') && !url.startsWith('https://') && frame.frameId !== 0) continue;
+      const isTop = frame.frameId === 0;
       try {
         // 顶层框架走不带 options 的普通发送，兼容更简单的测试桩与旧调用约定
-        const response = frame.frameId === 0
+        const response = isTop
           ? await MessageBus.sendToTab(tabId, ActionTypes.CHECK_FORM_INPUT, null, 2000)
           : await MessageBus.sendToFrame(tabId, frame.frameId, ActionTypes.CHECK_FORM_INPUT, null, 2000);
         if (!response?.success) {
-          return { success: false, error: response?.error || '框架探测失败' };
+          if (isTop) {
+            return { success: false, error: response?.error || '顶层框架探测失败' };
+          }
+          continue;
         }
-        sawSuccess = true;
+        if (isTop) sawTopSuccess = true;
         if (response.data?.hasActiveInput) {
-          activeReason = response.data.reason || '框架内存在未提交输入';
-          return { success: true, data: { hasActiveInput: true, reason: activeReason } };
+          return {
+            success: true,
+            data: {
+              hasActiveInput: true,
+              reason: response.data.reason || (isTop ? '页面存在未提交输入' : '框架内存在未提交输入')
+            }
+          };
         }
       } catch {
-        return { success: false, error: '探测异常' };
+        if (isTop) return { success: false, error: '顶层框架探测异常' };
       }
     }
-    if (!sawSuccess) return { success: false, error: '无可探测框架' };
+    if (!sawTopSuccess) return { success: false, error: '顶层框架未确认' };
     return { success: true, data: { hasActiveInput: false } };
   }
 
