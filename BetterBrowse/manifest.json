@@ -24,6 +24,9 @@
     "page": "src/options/options.html",
     "open_in_tab": true
   },
+  "chrome_url_overrides": {
+    "newtab": "src/newtab/newtab.html"
+  },
   "background": {
     "service_worker": "src/background/service-worker.js",
     "type": "module"
@@ -75,6 +78,9 @@
     "contextMenus",
     "nativeMessaging",
     "webNavigation"
+  ],
+  "optional_permissions": [
+    "history"
   ],
   "host_permissions": [
     "http://*/*",

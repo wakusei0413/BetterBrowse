@@ -48,7 +48,9 @@ export class RulesConfigComponent {
       rowTierMaxLevels: document.getElementById('rowTierMaxLevels'),
       rowTierSafetyMargin: document.getElementById('rowTierSafetyMargin'),
       rowTierUltimateFallback: document.getElementById('rowTierUltimateFallback'),
-      autoSaveIndicator: document.getElementById('rulesAutoSaveIndicator')
+      tieredStrategySummary: document.getElementById('tieredStrategySummary'),
+      autoSaveIndicator: document.getElementById('rulesAutoSaveIndicator'),
+      tieredAutoSaveIndicator: document.getElementById('tieredAutoSaveIndicator')
     };
 
     this.saveDebounceTimer = null;
@@ -86,6 +88,18 @@ export class RulesConfigComponent {
     if (this.dom.inputTierSafetyMargin) this.dom.inputTierSafetyMargin.value = Number.isFinite(tiered.targetSafetyMargin) ? tiered.targetSafetyMargin : 0;
     if (this.dom.chkTierUltimateFallback) this.dom.chkTierUltimateFallback.checked = tiered.ultimateFallback !== false;
     this.updateTieredRowsState();
+    this.updateTieredSummary();
+  }
+
+  updateTieredSummary() {
+    if (!this.dom.tieredStrategySummary) return;
+    if (!this.dom.chkTieredStash?.checked) {
+      this.dom.tieredStrategySummary.textContent = '当前已关闭，仅执行标准保护规则';
+      return;
+    }
+    const maxTiers = Math.max(0, parseInt(this.dom.inputTierMaxLevels?.value, 10) || 0);
+    const stepSeconds = Math.max(1, parseInt(this.dom.inputTierStepSeconds?.value, 10) || 60);
+    this.dom.tieredStrategySummary.textContent = `已启用 · 最多 ${maxTiers} 轮 · 每轮缩短 ${stepSeconds} 秒`;
   }
 
   /**
@@ -128,10 +142,14 @@ export class RulesConfigComponent {
       if (!el) return;
       el.addEventListener('change', () => {
         this.updateTieredRowsState();
+        this.updateTieredSummary();
         this.saveConfig();
       });
       if (el.type === 'number') {
-        el.addEventListener('input', () => this.saveConfig());
+        el.addEventListener('input', () => {
+          this.updateTieredSummary();
+          this.saveConfig();
+        });
       }
     });
   }
@@ -178,10 +196,10 @@ export class RulesConfigComponent {
   }
 
   flashSaveIndicator() {
-    if (!this.dom.autoSaveIndicator) return;
-    this.dom.autoSaveIndicator.classList.add('visible');
+    const indicators = [this.dom.autoSaveIndicator, this.dom.tieredAutoSaveIndicator].filter(Boolean);
+    for (const indicator of indicators) indicator.classList.add('visible');
     setTimeout(() => {
-      this.dom.autoSaveIndicator.classList.remove('visible');
+      for (const indicator of indicators) indicator.classList.remove('visible');
     }, 2000);
   }
 }

@@ -15,3 +15,26 @@ export const SETTINGS_SUBTAB_TITLES = {
   'about': '关于'
 };
 export const SETTINGS_SUBTABS = Object.keys(SETTINGS_SUBTAB_TITLES);
+
+export const SETTINGS_TERTIARY_ROUTES = {
+  'rules-tiered': {
+    parent: 'rules',
+    title: '阶梯降级策略'
+  },
+  'backup-onetab': {
+    parent: 'backup',
+    title: 'OneTab 迁移助手'
+  },
+  'backup-maintenance': {
+    parent: 'backup',
+    title: '数据维护'
+  },
+  'sync-conflicts': {
+    parent: 'sync',
+    title: '冲突裁决'
+  },
+  'sync-maintenance': {
+    parent: 'sync',
+    title: '设备与恢复'
+  }
+};

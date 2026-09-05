@@ -2,7 +2,7 @@
  * @file content-bundle.js
  * @description BetterBrowse 顶层页面完整内容脚本打包产物
  * @encoding UTF-8
- * @betterbrowse-sources src/constants/action-types.js=fa99dd24;src/constants/config.js=142b21b8;src/core/logging/runtime-logger.js=4392ab33;src/core/link/link-matcher.js=25202d73;src/content/form-detector.js=ac1a1c56;src/content/countdown-banner.js=4edc5f7d;src/content/link-interceptor.js=1242386c;src/content/index.js=543e068f
+ * @betterbrowse-sources src/constants/action-types.js=713fa0a0;src/constants/config.js=94245c84;src/core/logging/runtime-logger.js=4392ab33;src/core/link/link-matcher.js=25202d73;src/content/form-detector.js=ac1a1c56;src/content/countdown-banner.js=64be88cd;src/content/link-interceptor.js=1242386c;src/content/index.js=543e068f
  */
 (function() {
   'use strict';
@@ -107,7 +107,14 @@ const ActionTypes = {
   // === 云端同步损坏恢复 ===
   GET_SYNC_RECOVERY_INFO: 'GET_SYNC_RECOVERY_INFO',         // 读取损坏状态与本机快照可用性
   FALLBACK_PREVIOUS_SNAPSHOT: 'FALLBACK_PREVIOUS_SNAPSHOT', // 回退上一份远端/本地快照
-  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH'    // 从本机快照重建同步 { confirm: true }
+  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH',   // 从本机快照重建同步 { confirm: true }
+
+  // === 主页与新标签页 ===
+  GET_SEARCH_SUGGESTIONS: 'GET_SEARCH_SUGGESTIONS',         // 获取搜索引擎联想建议（Google/Bing，需主动同意）
+  GET_BROWSER_HISTORY: 'GET_BROWSER_HISTORY',               // 搜索本地浏览历史（需 optional history 权限）
+  GET_HISTORY_RECOMMENDATIONS: 'GET_HISTORY_RECOMMENDATIONS', // 获取历史推荐（最近/常访，标注候选范围和visitCount）
+  GET_HOME_STATS: 'GET_HOME_STATS',                         // 获取主页统计（当前窗口标签/阈值/收纳总计）
+  CHECK_HISTORY_PERMISSION: 'CHECK_HISTORY_PERMISSION'       // 检查 optional history 权限真实状态
 };
 
 
@@ -209,6 +216,17 @@ const DefaultConfig = {
     tierStepSeconds: 60,      // 每级将"最近访问"保护窗口缩短的秒数（默认 60 秒/级）
     ultimateFallback: true,   // 终极兜底：软性保护全部放宽后仍超标时，按重要度从低到高强制回收
     targetSafetyMargin: 0     // 达标安全余量：降到阈值以下后再额外多收纳的标签页数量
+  },
+
+  // === 主页与新标签页偏好配置（保持本地，不进入跨设备同步）===
+  home: {
+    searchEngine: 'google',           // 默认主搜索引擎: 'google' | 'bing' | 'baidu' | 'duckduckgo'
+    enableExternalSuggest: false,     // 外部联想建议总开关（默认关闭，需要主动同意）
+    suggestEngine: 'google',          // 联想建议服务源: 'google' | 'bing'
+    externalSuggestAgreed: false,     // 是否已明确主动同意向第三方外部引擎发送输入内容（本地敏感项，不导出、不同步）
+    showRecentStash: true,            // 是否在主页展示近期收纳
+    showHistoryRecommendations: true, // 是否在主页展示历史记录推荐（需 optional 权限）
+    showWindowTabStats: true          // 是否在主页展示当前窗口标签/阈值/收纳统计
   }
 };
 
@@ -993,10 +1011,12 @@ class CountdownBanner {
         progressBar.style.width = `${percent}%`;
       }
 
-      // 倒计时仅负责展示，自动收纳由后台唯一计时器触发，避免重复执行
+      // 归零时由前台补发确认：Chrome 对短于约 30 秒的一次性闹钟可能立即触发或延迟，
+      // 后台会用 nonce / 单飞承诺去重，避免与闹钟路径重复收纳。
       if (this.remainingSeconds <= 0) {
         clearInterval(this.timer);
         this.timer = null;
+        this.confirmAutoStash();
       }
     }, 1000);
   }

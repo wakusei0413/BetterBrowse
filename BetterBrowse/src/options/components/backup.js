@@ -52,6 +52,7 @@ export class BackupComponent {
     this.btnDeduplicate = document.getElementById('btnDeduplicateStash');
     this.btnClearAllStash = document.getElementById('btnClearAllStash');
     this.autoBackupList = document.getElementById('autoBackupList');
+    this.autoBackupSummary = document.getElementById('autoBackupSummary');
 
     this.init();
   }
@@ -66,7 +67,7 @@ export class BackupComponent {
     this.btnExportFullJSON?.addEventListener('click', async () => {
       const now = new Date();
       const pad = (n) => String(n).padStart(2, '0');
-      const filename = `better-browse-backup-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+      const filename = `BetterBrowse-backup-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
       try {
         if (typeof window.showSaveFilePicker === 'function') {
           const handle = await window.showSaveFilePicker({
@@ -247,6 +248,9 @@ export class BackupComponent {
     if (!this.autoBackupList) return;
     const res = await MessageBus.sendToBackground(ActionTypes.LIST_AUTO_BACKUPS);
     const items = Array.isArray(res?.data) ? res.data : [];
+    if (this.autoBackupSummary) {
+      this.autoBackupSummary.textContent = res?.success ? `${items.length} 份` : '读取失败';
+    }
     this.autoBackupList.innerHTML = '';
     if (!res?.success || items.length === 0) {
       const empty = document.createElement('p');

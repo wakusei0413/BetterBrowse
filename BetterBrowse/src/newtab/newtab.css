@@ -1,0 +1,134 @@
+/**
+ * @file newtab.css
+ * @description BetterBrowse 独立新标签页宿主样式
+ * @encoding UTF-8
+ */
+
+@import "../home/home.css";
+
+:root {
+  /* 基础背景色 */
+  --bg-app: #f8fafc;
+  --bg-sidebar: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: #f1f5f9;
+  --bg-active: #eff6ff;
+  
+  /* 文本对比度体系 (符合 WCAG AA 4.5+:1 标准) */
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --text-on-accent: #ffffff;
+  
+  /* 核心主色调 (Brand Royal Blue) */
+  --accent-color: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-light: #eff6ff;
+  --accent-glow: rgba(37, 99, 235, 0.18);
+  
+  /* 边框体系 */
+  --border-color: #e2e8f0;
+  --border-light: #f1f5f9;
+  --border-focus: rgba(37, 99, 235, 0.35);
+  
+  /* 语义色彩体系 */
+  --danger-color: #ef4444;
+  --danger-hover: #dc2626;
+  --danger-light: #fef2f2;
+  --danger-border: rgba(239, 68, 68, 0.2);
+  
+  --success-color: #10b981;
+  --success-light: #ecfdf5;
+  --warning-color: #f59e0b;
+  --warning-light: #fffbeb;
+  --star-color: #f59e0b;
+  --badge-bg: #f1f5f9;
+  
+  /* 圆角与几何体系 */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+  
+  /* 极简精致阴影体系 */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03);
+  --shadow-md: 0 4px 14px rgba(15, 23, 42, 0.06), 0 2px 4px rgba(15, 23, 42, 0.02);
+  --shadow-lg: 0 10px 25px -3px rgba(15, 23, 42, 0.08), 0 4px 6px -4px rgba(15, 23, 42, 0.03);
+  --shadow-dropdown: 0 10px 30px -4px rgba(15, 23, 42, 0.12), 0 4px 6px -2px rgba(15, 23, 42, 0.04);
+  
+  /* 字体系统 */
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* 深色模式自适应 (Dark Theme) */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-app: #0b0f19;
+    --bg-sidebar: #111827;
+    --bg-card: #1e293b;
+    --bg-hover: #2d3d54;
+    --bg-active: #1e3a5f;
+    
+    --text-primary: #f8fafc;
+    --text-secondary: #cbd5e1;
+    --text-muted: #94a3b8;
+    --text-on-accent: #ffffff;
+    
+    --accent-color: #60a5fa;
+    --accent-hover: #93c5fd;
+    --accent-light: rgba(96, 165, 250, 0.14);
+    --accent-glow: rgba(96, 165, 250, 0.25);
+    
+    --border-color: #334155;
+    --border-light: #253347;
+    --border-focus: rgba(96, 165, 250, 0.4);
+    
+    --danger-color: #f87171;
+    --danger-hover: #fca5a5;
+    --danger-light: rgba(239, 68, 68, 0.15);
+    --danger-border: rgba(248, 113, 113, 0.3);
+    
+    --success-color: #34d399;
+    --success-light: rgba(16, 185, 129, 0.15);
+    --warning-color: #fbbf24;
+    --warning-light: rgba(245, 158, 11, 0.15);
+    --star-color: #fbbf24;
+    --badge-bg: #283548;
+    
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.6);
+    --shadow-dropdown: 0 12px 32px rgba(0, 0, 0, 0.7);
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.bb-newtab-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding-top: 5vh;
+}

@@ -478,10 +478,12 @@ export class CountdownBanner {
         progressBar.style.width = `${percent}%`;
       }
 
-      // 倒计时仅负责展示，自动收纳由后台唯一计时器触发，避免重复执行
+      // 归零时由前台补发确认：Chrome 对短于约 30 秒的一次性闹钟可能立即触发或延迟，
+      // 后台会用 nonce / 单飞承诺去重，避免与闹钟路径重复收纳。
       if (this.remainingSeconds <= 0) {
         clearInterval(this.timer);
         this.timer = null;
+        this.confirmAutoStash();
       }
     }, 1000);
   }

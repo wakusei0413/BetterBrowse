@@ -56,6 +56,14 @@ export class SyncSnapshot {
         for (const record of settingsAll || []) {
           if (record.key === StorageKeys.WEBDAV_CREDENTIALS) continue;
           if (record.key === StorageKeys.AUTO_BACKUPS) continue;
+          if (record.key === StorageKeys.USER_CONFIG && record.value && typeof record.value === 'object') {
+            const copy = { ...record.value };
+            if (copy.home && typeof copy.home === 'object') {
+              copy.home = { ...copy.home, externalSuggestAgreed: false };
+            }
+            settings[record.key] = copy;
+            continue;
+          }
           settings[record.key] = record.value;
         }
 

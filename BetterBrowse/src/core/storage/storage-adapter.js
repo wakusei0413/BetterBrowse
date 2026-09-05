@@ -445,6 +445,10 @@ export class StorageAdapter {
       aiBridge: {
         ...DefaultConfig.aiBridge,
         ...(storedConfig.aiBridge || {})
+      },
+      home: {
+        ...DefaultConfig.home,
+        ...(storedConfig.home || {})
       }
     };
   }
@@ -519,6 +523,10 @@ export class StorageAdapter {
       aiBridge: {
         ...current.aiBridge,
         ...(partialConfig.aiBridge || {})
+      },
+      home: {
+        ...current.home,
+        ...(partialConfig.home || {})
       }
     };
     return await this.set(StorageKeys.USER_CONFIG, updated);

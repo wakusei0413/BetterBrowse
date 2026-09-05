@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>BetterBrowse 管理中心</title>
   <link rel="stylesheet" href="options.css">
+  <link rel="stylesheet" href="../home/home.css">
 </head>
 <body>
   <div class="app-layout">
@@ -27,12 +28,12 @@
           <span class="nav-label">时间线</span>
           <span class="nav-badge" id="stashCountBadge">0</span>
         </button>
-        <button class="nav-item" data-tab="search" type="button" id="navTabSearch" role="tab" aria-selected="false" aria-controls="tab-search" tabindex="-1">
+        <button class="nav-item" data-tab="home" type="button" id="navTabSearch" role="tab" aria-selected="false" aria-controls="tab-search" tabindex="-1">
           <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="8"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+            <polyline points="9 22 9 12 15 12 15 22"></polyline>
           </svg>
-          <span class="nav-label">搜索</span>
+          <span class="nav-label">主页</span>
         </button>
       </nav>
 
@@ -119,69 +120,8 @@
         </div>
       </section>
 
-      <!-- Tab: 搜索主页 (Capybara 风格) -->
-      <section id="tab-search" class="tab-panel search-panel" role="tabpanel" aria-labelledby="navTabSearch" hidden>
-        <div class="search-stage">
-          <div class="search-stage-content" id="searchMainContent">
-            <p class="search-logo">Capybara<span class="search-logo-dot">.</span></p>
-
-            <div class="search-engine-selector" role="radiogroup" aria-label="选择搜索引擎">
-              <button class="search-engine-btn" data-engine="google" role="radio" aria-checked="true" type="button">Google</button>
-              <button class="search-engine-btn" data-engine="baidu" role="radio" aria-checked="false" type="button">百度</button>
-              <button class="search-engine-btn" data-engine="bing" role="radio" aria-checked="false" type="button">Bing</button>
-              <button class="search-engine-btn" data-engine="duckduckgo" role="radio" aria-checked="false" type="button">DuckDuckGo</button>
-            </div>
-
-            <nav class="search-quick-links" aria-label="快捷链接">
-              <a href="https://github.com" class="search-quick-link" target="_blank" rel="noopener noreferrer">
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-                GitHub
-              </a>
-              <a href="https://www.youtube.com" class="search-quick-link" target="_blank" rel="noopener noreferrer">
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M23.498 6.186a3.016 3.016 0 00-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 00.502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 002.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 002.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
-                YouTube
-              </a>
-              <a href="https://twitter.com" class="search-quick-link" target="_blank" rel="noopener noreferrer">
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-                Twitter
-              </a>
-              <a href="https://www.reddit.com" class="search-quick-link" target="_blank" rel="noopener noreferrer">
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 01-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 01.042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 014.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 01.14-.197.35.35 0 01.238-.042l2.906.617a1.214 1.214 0 011.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 00-.231.094.33.33 0 000 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 000-.463.327.327 0 00-.462 0c-.545.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 00-.205-.094z"/></svg>
-                Reddit
-              </a>
-            </nav>
-          </div>
-
-          <footer class="search-input-area">
-            <form class="search-box" id="searchHomeForm" role="search" aria-label="网页搜索" autocomplete="off">
-              <div class="search-input-wrapper">
-                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <circle cx="11" cy="11" r="8"/>
-                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                </svg>
-                <input
-                  type="search"
-                  class="search-input"
-                  id="searchHomeInput"
-                  placeholder="搜索网页、图片、新闻…"
-                  autocomplete="off"
-                  aria-label="搜索内容"
-                  aria-describedby="searchShortcutHint"
-                >
-                <button type="submit" class="search-btn" aria-label="执行搜索">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <line x1="5" y1="12" x2="19" y2="12"/>
-                    <polyline points="12 5 19 12 12 19"/>
-                  </svg>
-                </button>
-              </div>
-            </form>
-            <div class="search-shortcut-hint" id="searchShortcutHint" aria-hidden="true">
-              按 <kbd class="search-kbd">/</kbd> 聚焦搜索 · <kbd class="search-kbd">Esc</kbd> 清空
-            </div>
-          </footer>
-        </div>
-      </section>
+      <!-- Tab: 主页 (共享 src/home 视图) -->
+      <section id="tab-search" class="tab-panel search-panel" role="tabpanel" aria-labelledby="navTabSearch" hidden></section>
 
       <!-- 统一系统设置中心 (Settings Hub) -->
       <div id="view-settings-hub" class="settings-hub-view" hidden>
@@ -198,6 +138,8 @@
             <div class="settings-breadcrumb" aria-label="当前路径">
               <span class="breadcrumb-root">系统设置</span>
               <span class="breadcrumb-separator">/</span>
+              <button class="breadcrumb-link" id="settingsParentSubtabBreadcrumb" type="button" hidden></button>
+              <span class="breadcrumb-separator" id="settingsTertiaryBreadcrumbSeparator" hidden>/</span>
               <span class="breadcrumb-current" id="settingsCurrentSubtabBreadcrumb">收纳箱设置</span>
             </div>
           </div>
@@ -514,65 +456,6 @@
               </label>
             </div>
 
-            <!-- 阶梯式降级收纳设置组 -->
-            <details class="settings-advanced">
-              <summary>标签仍然太多时（高级）</summary>
-
-              <div class="setting-item">
-                <div class="setting-info" id="infoTieredStash">
-                  <span class="setting-label">仍超标时继续放宽保护</span>
-                  <span class="setting-hint">标准收纳后标签仍超标时，逐级放宽软性保护（缩短访问窗口、提高频次门槛）直至降到阈值以下</span>
-                </div>
-                <label class="switch">
-                  <input type="checkbox" id="chkTieredStash" aria-labelledby="infoTieredStash">
-                  <span class="slider"></span>
-                </label>
-              </div>
-
-              <div class="setting-item" id="rowTierStepSeconds">
-                <div class="setting-info" id="infoTierStepSeconds">
-                  <span class="setting-label">每次再缩短多少「最近访问」保护时间</span>
-                  <span class="setting-hint">每放宽一级将“最近访问”保护窗口缩短的时长</span>
-                </div>
-                <div class="input-with-unit">
-                  <input type="number" id="inputTierStepSeconds" class="num-input" min="1" max="300" value="60" aria-labelledby="infoTierStepSeconds" />
-                  <span class="unit-text">秒</span>
-                </div>
-              </div>
-
-              <div class="setting-item" id="rowTierMaxLevels">
-                <div class="setting-info" id="infoTierMaxLevels">
-                  <span class="setting-label">最多放宽几轮</span>
-                  <span class="setting-hint">软性保护最多放宽的轮数（设为 0 表示不降级）</span>
-                </div>
-                <div class="input-with-unit">
-                  <input type="number" id="inputTierMaxLevels" class="num-input" min="0" max="20" value="5" aria-labelledby="infoTierMaxLevels" />
-                  <span class="unit-text">轮</span>
-                </div>
-              </div>
-
-              <div class="setting-item" id="rowTierSafetyMargin">
-                <div class="setting-info" id="infoTierSafetyMargin">
-                  <span class="setting-label">降到阈值以下后再多收几个</span>
-                  <span class="setting-hint">标签数降到阈值以下后额外多收纳的标签数量</span>
-                </div>
-                <div class="input-with-unit">
-                  <input type="number" id="inputTierSafetyMargin" class="num-input" min="0" max="20" value="0" aria-labelledby="infoTierSafetyMargin" />
-                  <span class="unit-text">个</span>
-                </div>
-              </div>
-
-              <div class="setting-item" id="rowTierUltimateFallback">
-                <div class="setting-info" id="infoTierUltimateFallback">
-                  <span class="setting-label">仍超标时按活跃度强制收多余标签（播放中、输入中、固定和当前页除外）</span>
-                  <span class="setting-hint">软性保护全部放宽后仍超标时，按活跃度强制收纳多余标签（始终保护音频、表单、固定与前台标签）</span>
-                </div>
-                <label class="switch">
-                  <input type="checkbox" id="chkTierUltimateFallback" aria-labelledby="infoTierUltimateFallback">
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </details>
           </div>
 
           <!-- 优先级保留规则链开关 -->
@@ -635,6 +518,109 @@
               </div>
               <label class="switch">
                 <input type="checkbox" id="chkRulePinned" aria-labelledby="infoRulePinned">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-link-grid" aria-label="智能规则高级配置">
+            <button class="settings-link-card" type="button" data-settings-route="rules-tiered" aria-label="打开阶梯降级策略">
+              <span class="settings-link-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 19h4v-4h4v-4h4V7h4"></path>
+                  <path d="m16 3 4 4-4 4"></path>
+                </svg>
+              </span>
+              <span class="settings-link-content">
+                <span class="settings-link-title">阶梯降级策略</span>
+                <span class="settings-link-desc">配置标签持续超标时如何逐步放宽软性保护</span>
+                <span class="settings-link-meta" id="tieredStrategySummary">读取当前策略…</span>
+              </span>
+              <svg class="settings-link-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-rules-tiered" class="tab-panel" role="tabpanel" aria-labelledby="rulesTieredTitle" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title" id="rulesTieredTitle">阶梯降级策略</h2>
+            <p class="panel-desc">仅在标准规则收纳后仍然超标时生效</p>
+          </div>
+          <div class="autosave-badge" id="tieredAutoSaveIndicator">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <span>修改已自动保存</span>
+          </div>
+        </div>
+
+        <div class="settings-grid settings-content-narrow">
+          <div class="tip-box">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tip-icon" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+            <span>媒体播放、表单输入、当前标签和固定标签始终受到保护，不会因阶梯降级被强制收纳。</span>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">标签持续超标时</h3>
+            <div class="setting-item">
+              <div class="setting-info" id="infoTieredStash">
+                <span class="setting-label">继续放宽软性保护</span>
+                <span class="setting-hint">逐级缩短最近访问窗口并提高高频访问门槛，直到标签数量低于阈值</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkTieredStash" aria-labelledby="infoTieredStash">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="setting-item" id="rowTierStepSeconds">
+              <div class="setting-info" id="infoTierStepSeconds">
+                <span class="setting-label">每轮缩短最近访问保护时间</span>
+                <span class="setting-hint">每放宽一级减少的保护窗口时长</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTierStepSeconds" class="num-input" min="1" max="300" value="60" aria-labelledby="infoTierStepSeconds" />
+                <span class="unit-text">秒</span>
+              </div>
+            </div>
+
+            <div class="setting-item" id="rowTierMaxLevels">
+              <div class="setting-info" id="infoTierMaxLevels">
+                <span class="setting-label">最多放宽轮数</span>
+                <span class="setting-hint">达到轮数上限后停止放宽软性保护</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTierMaxLevels" class="num-input" min="0" max="20" value="5" aria-labelledby="infoTierMaxLevels" />
+                <span class="unit-text">轮</span>
+              </div>
+            </div>
+
+            <div class="setting-item" id="rowTierSafetyMargin">
+              <div class="setting-info" id="infoTierSafetyMargin">
+                <span class="setting-label">目标安全余量</span>
+                <span class="setting-hint">降到阈值以下后额外收纳的标签数量</span>
+              </div>
+              <div class="input-with-unit">
+                <input type="number" id="inputTierSafetyMargin" class="num-input" min="0" max="20" value="0" aria-labelledby="infoTierSafetyMargin" />
+                <span class="unit-text">个</span>
+              </div>
+            </div>
+
+            <div class="setting-item" id="rowTierUltimateFallback">
+              <div class="setting-info" id="infoTierUltimateFallback">
+                <span class="setting-label">启用终极兜底</span>
+                <span class="setting-hint">软性保护全部放宽后仍超标时，按活跃度收纳剩余可安全处理的标签</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="chkTierUltimateFallback" aria-labelledby="infoTierUltimateFallback">
                 <span class="slider"></span>
               </label>
             </div>
@@ -799,17 +785,66 @@
 
           <!-- 3. 本地自动快照 -->
           <div class="card">
-            <h3 class="card-title">本地自动快照</h3>
-            <p class="card-desc">每日首次启动自动保存的快照。恢复时将标签组写回收纳箱，不影响现有其他组。</p>
+            <div class="card-heading-row card-heading-row--between">
+              <div>
+                <h3 class="card-title card-title--plain">本地自动快照</h3>
+                <p class="card-desc">每日首次启动自动保存。恢复时只写回快照中的标签组，不影响现有其他组。</p>
+              </div>
+              <span class="status-pill" id="autoBackupSummary">读取中…</span>
+            </div>
             <div id="autoBackupList" class="sync-list"></div>
           </div>
 
-          <!-- 4. 从第三方导入数据 -->
+          <div class="settings-link-grid settings-link-grid--two" aria-label="备份与迁移更多工具">
+            <button class="settings-link-card" type="button" data-settings-route="backup-onetab" aria-label="打开 OneTab 迁移助手">
+              <span class="settings-link-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 3v12"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <path d="M5 21h14"></path>
+                </svg>
+              </span>
+              <span class="settings-link-content">
+                <span class="settings-link-title">OneTab 迁移助手</span>
+                <span class="settings-link-desc">导入历史标签、时间戳与星标，或导出 OneTab 文本</span>
+                <span class="settings-link-meta">适合首次迁移或跨扩展转移</span>
+              </span>
+              <svg class="settings-link-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+
+            <button class="settings-link-card" type="button" data-settings-route="backup-maintenance" aria-label="打开数据维护">
+              <span class="settings-link-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14.7 6.3a4 4 0 0 0-5.6 5.6l-6.4 6.4a2.1 2.1 0 0 0 3 3l6.4-6.4a4 4 0 0 0 5.6-5.6l-2.4 2.4-3-3 2.4-2.4Z"></path>
+                </svg>
+              </span>
+              <span class="settings-link-content">
+                <span class="settings-link-title">数据维护</span>
+                <span class="settings-link-desc">扫描重复数据，并集中管理不可撤销的清理操作</span>
+                <span class="settings-link-meta">低频工具 · 操作前会再次确认</span>
+              </span>
+              <svg class="settings-link-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-backup-onetab" class="tab-panel" role="tabpanel" aria-labelledby="backupOneTabTitle" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title" id="backupOneTabTitle">OneTab 迁移助手</h2>
+            <p class="panel-desc">导入 OneTab 或普通网页链接列表，并支持导出兼容文本</p>
+          </div>
+        </div>
+
+        <div class="backup-grid settings-content-narrow">
           <div class="card">
-            <h3 class="card-title">从第三方导入</h3>
-            <p class="card-desc">
-              支持导入 OneTab 导出的文本（每行 <code>URL | 标题</code>）或网页链接列表，不影响现有设置。
-            </p>
+            <h3 class="card-title">导入第三方数据</h3>
+            <p class="card-desc">支持每行 <code>URL | 标题</code> 的 OneTab 文本、网页链接列表或完整状态数据，不影响现有设置。</p>
             <textarea id="importThirdPartyTextarea" class="code-textarea" placeholder="在此粘贴 OneTab 导出的文本（每行 URL | 标题）或网页链接列表..." aria-label="粘贴第三方数据"></textarea>
             <div class="btn-group">
               <button id="btnImportThirdPartyText" class="btn btn-primary" type="button">
@@ -828,60 +863,61 @@
                 <input type="file" id="fileImportThirdParty" accept=".txt,.json" style="display: none;">
               </label>
             </div>
-            <!-- OneTab 时间戳提取指引 -->
-            <div class="tip-box onetab-guide-box">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tip-icon" aria-hidden="true">
-                <circle cx="12" cy="12" r="10"></circle>
-                <polyline points="12 6 12 12 16 14"></polyline>
-              </svg>
-              <div class="onetab-guide-content">
-                <div class="onetab-guide-title">
-                  <strong>💡 如何从 OneTab 完整导入历史时间戳与星标？</strong>
-                </div>
-                <p class="onetab-guide-desc">
-                  OneTab 默认导出的纯文本不含时间信息。如需保留创建时间、星标与锁定状态：
-                </p>
-                <ol class="onetab-guide-steps">
-                  <li>在浏览器打开 OneTab 页面；</li>
-                  <li>按 <code>F12</code> 打开开发者工具，切换到 Console 控制台；</li>
-                  <li>运行下方命令（自动将完整数据复制到剪贴板）：</li>
-                </ol>
-                <div class="code-snippet-row">
-                  <code class="code-snippet">copy(localStorage.state)</code>
-                  <button id="btnCopyOneTabScript" class="btn btn-secondary btn-sm" type="button" title="点击复制控制台提取脚本">
-                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
-                      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
-                    </svg>
-                    <span>复制提取命令</span>
-                  </button>
-                </div>
-                <div class="onetab-guide-footer">
-                  复制完成后粘贴到上方文本框，点击「解析并导入」即可。
-                </div>
+          </div>
+
+          <div class="card card--subtle">
+            <div class="card-heading-row">
+              <span class="settings-link-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+              </span>
+              <div>
+                <h3 class="card-title card-title--plain">保留 OneTab 历史信息</h3>
+                <p class="card-desc">OneTab 默认文本不含创建时间、星标与锁定状态，可从其页面提取完整数据。</p>
               </div>
             </div>
-
-            <div class="tip-box">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tip-icon" aria-hidden="true">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="16" x2="12" y2="12"></line>
-                <line x1="12" y1="8" x2="12.01" y2="8"></line>
-              </svg>
-              <div>
-                <strong>导出为 OneTab 格式</strong>：
-                <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
-                  <button id="btnExportOneTabText" class="btn btn-secondary btn-sm" type="button">导出文本 (.txt)</button>
-                  <button id="btnCopyOneTabText" class="btn btn-secondary btn-sm" type="button">复制文本</button>
-                </div>
-              </div>
+            <ol class="onetab-guide-steps">
+              <li>打开 OneTab 页面；</li>
+              <li>按 <code>F12</code> 打开开发者工具并切换到 Console；</li>
+              <li>运行下方命令，将完整状态复制到剪贴板后粘贴至上方。</li>
+            </ol>
+            <div class="code-snippet-row">
+              <code class="code-snippet">copy(localStorage.state)</code>
+              <button id="btnCopyOneTabScript" class="btn btn-secondary btn-sm" type="button" title="复制控制台提取命令">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+                  <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+                </svg>
+                <span>复制提取命令</span>
+              </button>
             </div>
           </div>
 
-          <!-- 5. 智能数据清理与优化 -->
+          <div class="card">
+            <h3 class="card-title">导出为 OneTab 格式</h3>
+            <p class="card-desc">生成兼容 OneTab 的纯文本，可下载文件或直接复制。</p>
+            <div class="btn-group">
+              <button id="btnExportOneTabText" class="btn btn-primary" type="button">导出文本 (.txt)</button>
+              <button id="btnCopyOneTabText" class="btn btn-secondary" type="button">复制文本</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-backup-maintenance" class="tab-panel" role="tabpanel" aria-labelledby="backupMaintenanceTitle" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title" id="backupMaintenanceTitle">数据维护</h2>
+            <p class="panel-desc">整理重复数据，并集中处理高风险清理操作</p>
+          </div>
+        </div>
+
+        <div class="backup-grid settings-content-narrow">
           <div class="card">
             <h3 class="card-title">数据去重与整理</h3>
-            <p class="card-desc">扫描并清理重复导入的标签组，优先保留带历史时间戳的版本（锁定组不受影响）。</p>
+            <p class="card-desc">扫描并清理重复导入的标签组，优先保留带历史时间戳的版本，锁定组不受影响。</p>
             <div>
               <button id="btnDeduplicateStash" class="btn btn-secondary" type="button">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -892,7 +928,6 @@
             </div>
           </div>
 
-          <!-- 6. 危险操作区 -->
           <div class="card danger-zone">
             <div class="danger-header">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="danger-icon" aria-hidden="true">
@@ -900,14 +935,14 @@
                 <line x1="12" y1="9" x2="12" y2="13"></line>
                 <line x1="12" y1="17" x2="12.01" y2="17"></line>
               </svg>
-              <h3 class="card-title" style="border: none; padding: 0; margin: 0; color: var(--danger-color);">危险区域</h3>
+              <h3 class="card-title card-title--plain danger-title">危险区域</h3>
             </div>
-            <p class="card-desc">清空所有未锁定的收纳组。此操作无法撤销。</p>
+            <p class="card-desc">清空所有未锁定的收纳组。此操作无法撤销，执行前会再次确认。</p>
             <div>
               <button id="btnClearAllStash" class="btn btn-danger" type="button">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polyline points="3 6 5 6 21 6"></polyline>
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4c1.1 0 2 .9 2 2v2"></path>
                 </svg>
                 <span>清空所有未锁定标签组</span>
               </button>
@@ -1010,29 +1045,99 @@
             </div>
           </div>
 
-          <!-- 2. 冲突裁决 -->
+          <div class="settings-link-grid settings-link-grid--two" aria-label="云端同步管理工具">
+            <button class="settings-link-card" type="button" data-settings-route="sync-conflicts" aria-label="打开冲突裁决">
+              <span class="settings-link-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M8 3 4 7l4 4"></path>
+                  <path d="M4 7h12a4 4 0 0 1 4 4v1"></path>
+                  <path d="m16 21 4-4-4-4"></path>
+                  <path d="M20 17H8a4 4 0 0 1-4-4v-1"></path>
+                </svg>
+              </span>
+              <span class="settings-link-content">
+                <span class="settings-link-title">冲突裁决</span>
+                <span class="settings-link-desc">比较多设备同时修改产生的候选值</span>
+                <span class="settings-link-meta" id="syncConflictsSummary">正在读取冲突状态…</span>
+              </span>
+              <svg class="settings-link-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+
+            <button class="settings-link-card" type="button" data-settings-route="sync-maintenance" aria-label="打开设备与恢复">
+              <span class="settings-link-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="4" width="18" height="12" rx="2"></rect>
+                  <path d="M8 20h8"></path>
+                  <path d="M12 16v4"></path>
+                </svg>
+              </span>
+              <span class="settings-link-content">
+                <span class="settings-link-title">设备与恢复</span>
+                <span class="settings-link-desc">管理同步设备，并在数据异常时执行恢复</span>
+                <span class="settings-link-meta" id="syncMaintenanceSummary">正在读取设备状态…</span>
+              </span>
+              <svg class="settings-link-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-sync-conflicts" class="tab-panel" role="tabpanel" aria-labelledby="syncConflictsTitle" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title" id="syncConflictsTitle">冲突裁决</h2>
+            <p class="panel-desc">选择多台设备同时修改同一字段时保留的最终结果</p>
+          </div>
+        </div>
+
+        <div class="backup-grid settings-content-wide">
           <div class="card">
-            <h3 class="card-title">冲突裁决</h3>
-            <p class="card-desc">多台设备同时修改同一字段时保留双方候选值，由你选择最终结果。</p>
+            <div class="card-heading-row card-heading-row--between">
+              <div>
+                <h3 class="card-title card-title--plain">待裁决项目</h3>
+                <p class="card-desc">分别比较本机与云端候选值，裁决后结果会写入同步队列。</p>
+              </div>
+              <span class="status-pill" id="syncConflictsPageCount">0 项</span>
+            </div>
             <div id="syncConflictsList" class="sync-list">
-              <p class="sync-empty">当前没有待裁决的冲突 🎉</p>
+              <p class="sync-empty">当前没有待裁决的冲突</p>
             </div>
           </div>
+        </div>
+      </section>
 
-          <!-- 3. 设备管理 -->
+      <section id="tab-sync-maintenance" class="tab-panel" role="tabpanel" aria-labelledby="syncMaintenanceTitle" hidden>
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title" id="syncMaintenanceTitle">设备与恢复</h2>
+            <p class="panel-desc">管理同步设备，并在远端数据异常时执行恢复</p>
+          </div>
+        </div>
+
+        <div class="backup-grid settings-content-wide">
           <div class="card">
             <h3 class="card-title">设备管理</h3>
-            <p class="card-desc">连续 90 天未同步的设备会自动退役；也可以在此手动提前退役。</p>
+            <p class="card-desc">连续 90 天未同步的设备会自动退役，也可以在此手动提前退役。</p>
             <div id="syncDevicesList" class="sync-list">
               <p class="sync-empty">尚未获取设备列表</p>
             </div>
           </div>
 
-          <!-- 4. 数据损坏恢复 -->
-          <div class="card" id="syncRecoveryCard">
-            <h3 class="card-title">数据损坏恢复</h3>
+          <div class="card danger-zone" id="syncRecoveryCard">
+            <div class="danger-header">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="danger-icon" aria-hidden="true">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+              <h3 class="card-title card-title--plain danger-title">数据损坏恢复</h3>
+            </div>
             <p class="card-desc">远端清单或快照校验失败时，可回退上一份快照，或用本机快照从头重建同步状态。</p>
-            <p id="syncRecoveryMessage" class="sync-status-message"></p>
+            <p id="syncRecoveryMessage" class="sync-recovery-message" aria-live="polite"></p>
             <div class="btn-group">
               <button id="btnSyncFallbackSnapshot" class="btn btn-secondary" type="button" disabled>回退上一份快照</button>
               <button id="btnSyncRebuildFromScratch" class="btn btn-danger" type="button" disabled>从本地快照重建</button>

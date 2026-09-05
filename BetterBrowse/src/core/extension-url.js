@@ -21,6 +21,32 @@ export function isOwnOptionsUrl(rawUrl) {
 }
 
 /**
+ * 判断 URL 是否为当前扩展的独立新标签页。
+ * 必须与 options.html 严格区分，避免被 pinned-tab-guard 误认为固定小标签。
+ * @param {unknown} rawUrl
+ * @returns {boolean}
+ */
+export function isOwnNewTabUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return false;
+
+  const extensionUrl = globalThis.chrome?.runtime?.getURL?.('src/newtab/newtab.html');
+  if (!extensionUrl) return false;
+
+  return rawUrl === extensionUrl
+    || rawUrl.startsWith(`${extensionUrl}#`)
+    || rawUrl.startsWith(`${extensionUrl}?`);
+}
+
+/**
+ * 判断 URL 是否为当前扩展内部页面（选项管理中心或独立新标签页）。
+ * @param {unknown} rawUrl
+ * @returns {boolean}
+ */
+export function isOwnExtensionPageUrl(rawUrl) {
+  return isOwnOptionsUrl(rawUrl) || isOwnNewTabUrl(rawUrl);
+}
+
+/**
  * 判断 URL 是否为浏览器新标签页或无内容空白页。
  * @param {unknown} rawUrl
  * @returns {boolean}
@@ -45,7 +71,7 @@ export function isNewTabUrl(rawUrl) {
  */
 export function isExcludedFromTabCounting(tab) {
   const rawUrl = tab?.url;
-  return !rawUrl || isOwnOptionsUrl(rawUrl) || isNewTabUrl(rawUrl);
+  return !rawUrl || isOwnOptionsUrl(rawUrl) || isOwnNewTabUrl(rawUrl) || isNewTabUrl(rawUrl);
 }
 
 /**

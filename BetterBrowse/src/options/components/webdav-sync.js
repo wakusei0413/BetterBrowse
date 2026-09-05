@@ -45,11 +45,16 @@ export class WebdavSyncComponent {
     this.$pendingCount = document.getElementById('syncPendingCount');
     this.$conflictCount = document.getElementById('syncConflictCount');
     this.$lastAt = document.getElementById('syncLastAt');
+    this.$conflictsSummary = document.getElementById('syncConflictsSummary');
+    this.$conflictsPageCount = document.getElementById('syncConflictsPageCount');
+    this.$maintenanceSummary = document.getElementById('syncMaintenanceSummary');
     this.$conflictsList = document.getElementById('syncConflictsList');
     this.$devicesList = document.getElementById('syncDevicesList');
     this.$recoveryMessage = document.getElementById('syncRecoveryMessage');
     this.$btnFallbackSnapshot = document.getElementById('btnSyncFallbackSnapshot');
     this.$btnRebuildFromScratch = document.getElementById('btnSyncRebuildFromScratch');
+    this.deviceCount = 0;
+    this.recoveryNeedsAttention = false;
     this.init();
   }
 
@@ -171,9 +176,13 @@ export class WebdavSyncComponent {
   async loadConflicts() {
     const res = await MessageBus.sendToBackground(ActionTypes.LIST_SYNC_CONFLICTS);
     const conflicts = res?.success && Array.isArray(res.data) ? res.data : [];
+    if (this.$conflictsSummary) {
+      this.$conflictsSummary.textContent = conflicts.length > 0 ? `${conflicts.length} 项等待处理` : '当前没有待裁决冲突';
+    }
+    if (this.$conflictsPageCount) this.$conflictsPageCount.textContent = `${conflicts.length} 项`;
     if (!this.$conflictsList) return;
     if (conflicts.length === 0) {
-      this.$conflictsList.innerHTML = '<p class="sync-empty">当前没有待裁决的冲突 🎉</p>';
+      this.$conflictsList.innerHTML = '<p class="sync-empty">当前没有待裁决的冲突</p>';
       return;
     }
     this.$conflictsList.innerHTML = '';
@@ -224,6 +233,8 @@ export class WebdavSyncComponent {
   async loadDevices() {
     const res = await MessageBus.sendToBackground(ActionTypes.LIST_SYNC_DEVICES);
     const devices = res?.success && Array.isArray(res.data) ? res.data : [];
+    this.deviceCount = devices.length;
+    this.updateMaintenanceSummary();
     if (!this.$devicesList) return;
     if (devices.length === 0) {
       this.$devicesList.innerHTML = '<p class="sync-empty">尚未获取设备列表（首次同步后出现）</p>';
@@ -274,6 +285,8 @@ export class WebdavSyncComponent {
     const isCorrupt = status === 'corrupt' || info.corrupt === true;
     const hasLocalSnapshot = info.hasLocalSnapshot === true;
     const enableActions = isCorrupt || hasLocalSnapshot;
+    this.recoveryNeedsAttention = isCorrupt;
+    this.updateMaintenanceSummary();
 
     if (this.$recoveryMessage) {
       if (isCorrupt) {
@@ -286,6 +299,13 @@ export class WebdavSyncComponent {
     }
     if (this.$btnFallbackSnapshot) this.$btnFallbackSnapshot.disabled = !enableActions;
     if (this.$btnRebuildFromScratch) this.$btnRebuildFromScratch.disabled = !enableActions;
+  }
+
+  updateMaintenanceSummary() {
+    if (!this.$maintenanceSummary) return;
+    this.$maintenanceSummary.textContent = this.recoveryNeedsAttention
+      ? '检测到数据异常，需要处理恢复'
+      : `${this.deviceCount} 台设备 · 当前无需恢复`;
   }
 
   async fallbackPreviousSnapshot() {

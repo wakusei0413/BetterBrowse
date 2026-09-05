@@ -532,9 +532,12 @@ export class StashTabComponent {
         paginated: true
       });
       if (token !== this.filterToken) return;
-      const hits = Array.isArray(res?.data) ? res.data : (Array.isArray(res?.data?.items) ? res.data.items : []);
+      const rawHits = Array.isArray(res)
+        ? res
+        : (Array.isArray(res?.items) ? res.items : (Array.isArray(res?.data) ? res.data : (Array.isArray(res?.data?.items) ? res.data.items : [])));
+      const hits = (res?.success !== false) ? rawHits : [];
       const hitsByGroup = new Map();
-      for (const hit of res?.success ? hits : []) {
+      for (const hit of hits) {
         if (!hit?.groupId || !inTimeRange(hit.groupId)) continue;
         if (!hitsByGroup.has(hit.groupId)) hitsByGroup.set(hit.groupId, []);
         hitsByGroup.get(hit.groupId).push({
@@ -589,6 +592,58 @@ export class StashTabComponent {
 
   getSearchQuery() {
     return this.searchInput?.value.toLowerCase().trim() || '';
+  }
+
+  /**
+   * 在时间线中精准定位并高亮指定收纳组卡片
+   * @param {string} groupId
+   */
+  async locateGroup(groupId) {
+    if (!groupId) return;
+    if (!this.groups || this.groups.length === 0) {
+      await this.loadData();
+    }
+    // 如果当前搜索词过滤导致目标组未显示，重置筛选
+    if (this.searchInput?.value) {
+      this.searchInput.value = '';
+      this.activeTimeRangeFilter = null;
+      await this.filterAndRender();
+    }
+
+    const highlightCard = (card) => {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const origOutline = card.style.outline;
+      const origTransition = card.style.transition;
+      card.style.transition = 'outline 0.2s ease, box-shadow 0.2s ease';
+      card.style.outline = '2px solid var(--color-primary, #6366f1)';
+      card.style.boxShadow = '0 0 16px rgba(99, 102, 241, 0.35)';
+      setTimeout(() => {
+        card.style.outline = origOutline;
+        card.style.boxShadow = '';
+        card.style.transition = origTransition;
+      }, 2000);
+    };
+
+    const existingCard = this.container?.querySelector(`.stash-group-card[data-group-id="${CSS.escape(groupId)}"]`);
+    if (existingCard) {
+      highlightCard(existingCard);
+      return;
+    }
+
+    // 虚拟窗口未挂载该卡片时，滚动至估算位置后触发挂载
+    const groupIndex = this.filteredGroups.findIndex((g) => g.id === groupId);
+    if (groupIndex >= 0 && this.mainColumn) {
+      let estimatedTop = 0;
+      for (let i = 0; i < groupIndex; i++) {
+        estimatedTop += this.measuredCardHeights.get(this.filteredGroups[i].id) || 120;
+      }
+      this.mainColumn.scrollTop = estimatedTop;
+      this.syncListWindow();
+      setTimeout(() => {
+        const card = this.container?.querySelector(`.stash-group-card[data-group-id="${CSS.escape(groupId)}"]`);
+        if (card) highlightCard(card);
+      }, 100);
+    }
   }
 
   /**
@@ -889,14 +944,16 @@ export class StashTabComponent {
   renderItemRowHtml(groupId, tab) {
     const safeGroupId = this.escapeHTML(groupId);
     const safeTabId = this.escapeHTML(tab.id);
-    // 优先用已持久化的图标 URL；缺失时（OneTab 导入、剔除图标的备份快照等历史数据）
-    // 回退用页面 URL，由后台按域名推导 /favicon.ico，避免这些条目永远停在默认图标
+    // 同时带上真实 favIconUrl 与页面 URL：后台优先抓取 Chrome 记录的图标资源，
+    // 缺失时（OneTab 导入、剔除图标的备份快照）再按页面域名回退 /favicon.ico。
     const faviconSrc = tab.favIconUrl || tab.url || '';
+    const pageUrl = tab.url || '';
     const faviconAttr = faviconSrc ? ` data-favicon-url="${this.escapeHTML(faviconSrc)}"` : '';
+    const pageUrlAttr = pageUrl ? ` data-page-url="${this.escapeHTML(pageUrl)}"` : '';
     return `
         <li class="stash-item-row" data-group-id="${safeGroupId}" data-item-id="${safeTabId}">
           <div class="stash-item-main">
-            <svg class="tab-favicon tab-favicon-fallback"${faviconAttr} viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg class="tab-favicon tab-favicon-fallback"${faviconAttr}${pageUrlAttr} viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="10"></circle>
               <line x1="2" y1="12" x2="22" y2="12"></line>
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
@@ -1165,7 +1222,7 @@ export class StashTabComponent {
       if (!url) continue;
       svg.setAttribute('data-resolved', '1');
       count += 1;
-      this.applyFavicon(svg, url);
+      this.applyFavicon(svg, url, svg.getAttribute('data-page-url') || '');
     }
   }
 
@@ -1173,8 +1230,9 @@ export class StashTabComponent {
    * 应用单个站点图标：命中缓存直接替换，否则经后台代取（同 URL 并发合并）
    * @param {SVGElement} svg - 占位图标元素
    * @param {string} url - 网页或图标 URL
+   * @param {string} [pageUrl] - 页面对应的 http(s) 地址，用于按站点域名回退
    */
-  async applyFavicon(svg, url) {
+  async applyFavicon(svg, url, pageUrl = '') {
     if (this.faviconCache.has(url)) {
       const cached = this.faviconCache.get(url);
       if (cached) this.replaceFaviconPlaceholder(svg, cached);
@@ -1183,7 +1241,10 @@ export class StashTabComponent {
     if (this.faviconInFlight.has(url)) return;
     this.faviconInFlight.add(url);
     try {
-      const res = await MessageBus.sendToBackground(ActionTypes.RESOLVE_FAVICON_DATA_URL, { url });
+      const res = await MessageBus.sendToBackground(ActionTypes.RESOLVE_FAVICON_DATA_URL, {
+        url,
+        pageUrl
+      });
       // 后台返回值被 MessageBus 包装在 data 中：{ success: true, data: { success, dataUrl } }
       const payload = res?.data || {};
       const dataUrl = res?.success && payload.success ? payload.dataUrl : '';

@@ -95,6 +95,17 @@ export const DefaultConfig = {
     tierStepSeconds: 60,      // 每级将"最近访问"保护窗口缩短的秒数（默认 60 秒/级）
     ultimateFallback: true,   // 终极兜底：软性保护全部放宽后仍超标时，按重要度从低到高强制回收
     targetSafetyMargin: 0     // 达标安全余量：降到阈值以下后再额外多收纳的标签页数量
+  },
+
+  // === 主页与新标签页偏好配置（保持本地，不进入跨设备同步）===
+  home: {
+    searchEngine: 'google',           // 默认主搜索引擎: 'google' | 'bing' | 'baidu' | 'duckduckgo'
+    enableExternalSuggest: false,     // 外部联想建议总开关（默认关闭，需要主动同意）
+    suggestEngine: 'google',          // 联想建议服务源: 'google' | 'bing'
+    externalSuggestAgreed: false,     // 是否已明确主动同意向第三方外部引擎发送输入内容（本地敏感项，不导出、不同步）
+    showRecentStash: true,            // 是否在主页展示近期收纳
+    showHistoryRecommendations: true, // 是否在主页展示历史记录推荐（需 optional 权限）
+    showWindowTabStats: true          // 是否在主页展示当前窗口标签/阈值/收纳统计
   }
 };
 
