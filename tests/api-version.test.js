@@ -106,12 +106,13 @@ Deno.test('API 版本：大响应分块携带统一裸整数', () => {
   }
 });
 
-Deno.test('API 版本：宿主与客户端不定义第二个硬编码版本', async () => {
+Deno.test('API 版本：宿主与 Python 客户端不定义第二个硬编码版本', async () => {
   const host = await Deno.readTextFile(new URL('../BetterBrowse/native-host/bb_native_host.js', import.meta.url));
-  const client = await Deno.readTextFile(new URL('../skills/better-browse/scripts/bb-bridge-client.js', import.meta.url));
+  const client = await Deno.readTextFile(new URL('../skills/BetterBrowse/scripts/betterbrowse_client.py', import.meta.url));
   assertEquals(host.includes("from '../src/constants/api-version.js'"), true);
   assertEquals(/\b(?:AI_BRIDGE_PROTO|PROTOCOL_VERSION)\b/.test(host), false);
-  assertEquals(/\b(?:AI_BRIDGE_PROTO|PROTOCOL_VERSION)\b/.test(client), false);
-  assertEquals(/\b(?:const|let|var)\s+API_VERSION\s*=/.test(host + client), false);
-  assertEquals(client.includes('info.apiVersion'), true);
+  assertEquals(/^\s*(?:API_VERSION|PROTOCOL_VERSION|AI_BRIDGE_PROTO)\s*=/m.test(client), false);
+  assertEquals(/\b(?:const|let|var)\s+API_VERSION\s*=/.test(host), false);
+  assertEquals(/["']apiVersion["']\s*:\s*\d+/.test(client), false);
+  assertEquals(/info\[["']apiVersion["']\]/.test(client), true);
 });

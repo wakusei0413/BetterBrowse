@@ -8,3 +8,5 @@ Thumbs.db
 .zcode/
 .tmp-verify/
 .thumbnails/
+__pycache__/
+*.py[cod]

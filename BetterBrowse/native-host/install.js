@@ -181,7 +181,7 @@ async function main() {
   console.log('后续步骤：');
   console.log('  1. 在 chrome://extensions 重载 BetterBrowse 扩展；');
   console.log('  2. 在选项页「AI 桥接」Tab 开启总开关；');
-  console.log('  3. 运行 skills/better-browse/scripts/bb-bridge-client.js status 验证连通。');
+  console.log('  3. 使用 Python 3.9+ 运行 skills/BetterBrowse/scripts/betterbrowse_client.py doctor 验证连通。');
 }
 
 await main();

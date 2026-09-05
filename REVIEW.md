@@ -7,7 +7,7 @@
 # BetterBrowse 诊断报告
 
 审查日期：2026-09-01  
-范围：`BetterBrowse/src`、`scripts`、`native-host`、仓库根目录 `tests/`、扩展配置、文档、`skills/better-browse`  
+范围：`BetterBrowse/src`、`scripts`、`native-host`、仓库根目录 `tests/`、扩展配置、文档、`skills/BetterBrowse`  
 工作树现状：消息来源鉴权已落地；测试目录从 `BetterBrowse/tests` 挪到仓库根 `tests/`；选项页大改版；右键增加「收纳当前标签分组」；30 天回收站 UI/action 已撤，墓碑写入仍留给 WebDAV。  
 本报告只诊断，不改业务代码。过度工程项是候选清理，不能直接删。
 

@@ -16,7 +16,7 @@
 
 ```
 [AI Agent 终端（ZCode / Codex / 任意可执行命令的 Agent）]
-  │  deno run bb-bridge-client.js <命令>            skills/better-browse/scripts/
+  │  python betterbrowse_client.py <命令>            skills/BetterBrowse/scripts/
   ▼
 [本机宿主 native-host/bb_native_host.js]           ← Chrome 经 Native Messaging 按需拉起
   │  ① stdio：4 字节小端长度前缀 + UTF-8 JSON（Chrome Native Messaging 协议）
@@ -56,8 +56,10 @@
 任一方向、任一传输层上，逻辑消息超过 **200000 字符**时自动分块，信封统一为：
 
 ```json
-{"apiVersion":1, "id":"<消息id>", "chunk":{"i":0,"n":3}, "part":"<完整 JSON 的字符串片段>"}
+{"apiVersion":<会话版本>, "id":"<消息id>", "chunk":{"i":0,"n":3}, "part":"<完整 JSON 的字符串片段>"}
 ```
+
+客户端的会话版本必须从 `bridge.json.apiVersion` 读取，禁止在客户端源代码中硬编码。
 
 接收方按 `id` 拼齐 `part` 后 `JSON.parse` 得到完整消息。分块对上层透明。
 
@@ -71,11 +73,11 @@
 
 ### 3.3 TCP 侧信道会话流程
 
-1. Agent 读取自发现文件 `bridge.json`：`{"port":52341,"token":"<64hex>","pid":1234,"extensionId":"<32位id>","apiVersion":1,"startedAt":...}`。
+1. Agent 读取自发现文件 `bridge.json`：`{"port":52341,"token":"<64hex>","pid":1234,"extensionId":"<32位id>","apiVersion":<正整数>,"startedAt":...}`。
    - Windows 路径：`%LOCALAPPDATA%\BetterBrowse\bridge.json`
    - macOS/Linux 路径：`$XDG_STATE_HOME/better-browse/bridge.json`（缺省 `~/.local/state/better-browse/bridge.json`）
-2. Agent 连接 TCP 后首行发送握手：`{"apiVersion":1,"token":"<token>"}`。
-3. 宿主校验令牌与 API 编号，成功回 `{"apiVersion":1,"ok":true,"extensionId":"...","host":"com.betterbrowse.bridge"}`；编号不一致时返回本地和对端值并断开。接收端仅为兼容旧组件读取历史 `proto` 字段。
+2. Agent 连接 TCP 后首行发送握手：`{"apiVersion":<从 bridge.json 读取>,"token":"<token>"}`。
+3. 宿主校验令牌与 API 编号，成功回 `{"apiVersion":<宿主版本>,"ok":true,"extensionId":"...","host":"com.betterbrowse.bridge"}`；编号不一致时返回本地和对端值并断开。接收端仅为兼容旧组件读取历史 `proto` 字段。
 4. 之后每行一条请求：`{"id":"<uuid>","action":"<ActionType>","payload":{...}}`；
    每行一条响应：`{"id":"<uuid>","success":true,"data":...}` 或 `{"id":"<uuid>","success":false,"error":"<中文错误>"}`。
 5. 宿主同时只服务一个 Agent 连接（排队语义），请求**串行**转发扩展，避免写锁竞争。
@@ -83,7 +85,7 @@
 ### 3.4 内部控制消息（不走 action 管道）
 
 - 宿主维护定时器（25s）负责在途请求超时与队列自身健康检查；**只有存在在途请求时才向扩展发 `{"internal":"ping"}`**，扩展回 `{"internal":"pong"}`。空闲时不再周期唤醒 MV3 Service Worker。
-- 扩展连接成功即发 `{"internal":"hello","apiVersion":1}`，宿主校验后回 `{"internal":"ready","apiVersion":1,"compatible":true}`。
+- 扩展连接成功即发 `{"internal":"hello","apiVersion":<会话版本>}`，宿主校验后回 `{"internal":"ready","apiVersion":<会话版本>,"compatible":true}`。此处 `apiVersion` 必须与当前会话版本一致（扩展与宿主从 `src/constants/api-version.js` 导入），禁止在示例或实现中硬编码为 `1`。
 
 ## 4. 生命周期
 
@@ -126,6 +128,7 @@
 | 备份 Tab 导入导出 | `EXPORT_FULL_BACKUP` `RESTORE_FULL_BACKUP` `IMPORT_THIRD_PARTY_DATA` `IMPORT_STASH_DATA` `EXPORT_STASH_DATA` `EXPORT_ONETAB_TEXT`（AI 增强：`LIST/RESTORE/DELETE_AUTO_BACKUP`） |
 | 收纳设置 / 规则 Tab | `GET_CONFIG` `UPDATE_CONFIG` `RESET_CONFIG` `GET_TAB_ACTIVITY_STATS` |
 | 弹窗/右键菜单 | `OPEN_PINNED_STASH_TAB` `OPEN_OPTIONS_PAGE` `GET_TAB_COUNT_INFO` `GET_COUNTDOWN_STATUS` `CANCEL_AUTO_STASH` `CONFIRM_AUTO_STASH` `OPEN_TAB_BACKGROUND` `OPEN_ONE_TAB` |
+| 主页与新标签页 | `GET_SEARCH_SUGGESTIONS` `GET_BROWSER_HISTORY` `GET_HISTORY_RECOMMENDATIONS` `GET_HOME_STATS` `CHECK_HISTORY_PERMISSION` |
 | WebDAV 同步 Tab | `GET_SYNC_STATUS` `SAVE_WEBDAV_CREDENTIALS` `TEST_WEBDAV_CONNECTION` `RUN_SYNC_NOW` `LIST_SYNC_CONFLICTS` `RESOLVE_SYNC_CONFLICT` `LIST_SYNC_DEVICES` `RETIRE_SYNC_DEVICE` `GET_SYNC_RECOVERY_INFO` `FALLBACK_PREVIOUS_SNAPSHOT` `REBUILD_SYNC_FROM_SCRATCH` |
 | 桥自身与运行日志 | `GET_AI_CAPABILITIES` `GET_AI_BRIDGE_STATUS` `QUERY_RUNTIME_LOGS` `CLEAR_RUNTIME_LOGS` |
 
@@ -139,17 +142,28 @@
 | 扩展 | 选项页「AI 桥接」与「运行日志」Tab | 软件版本 / API 版本 / 开关 / 状态 / 扩展 ID / 审计查询 |
 | 宿主 | `native-host/bb_native_host.js` + `run-host.cmd|.sh` | Deno 宿主（纯标准库） |
 | 宿主 | `native-host/install.js` / `uninstall.js` | 三平台注册（Windows 注册表 / macOS、Linux 目录）+ `deno task ai-host-install|uninstall` |
-| Skill | `skills/better-browse/` | `SKILL.md` + `scripts/bb-bridge-client.js` + `references/protocol.md` |
+| Skill | `skills/BetterBrowse/` | `SKILL.md` + `scripts/betterbrowse_client.py`（Python 3.9+ 标准库）+ `references/protocol.md` |
 
 ## 8. 安装与配对（一次）
 
 1. 选项页「AI 桥接」Tab 开启总开关，复制扩展 ID。
 2. `deno task ai-host-install -- --ext-id=<扩展ID>`（Windows 写 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.betterbrowse.bridge`，可选 `--browser edge`；macOS/Linux 写对应 `NativeMessagingHosts` 目录）。
-3. 重载扩展 → 状态变"宿主已连接"，`bridge.json` 出现 → Agent 即可 `bb-bridge-client.js status` 验证。
+3. 重载扩展 → 状态变“宿主已连接”，`bridge.json` 出现 → Agent 先运行 `python skills/BetterBrowse/scripts/betterbrowse_client.py doctor` 完整诊断，再以 `status` 验证。
 
-## 9. 测试与验收
+## 9. 客户端使用约定
+
+- 唯一客户端为 `skills/BetterBrowse/scripts/betterbrowse_client.py`，需要 Python 3.9+，仅依赖标准库。
+- 首次连接或排障先运行 `doctor`；大段 JSON/文本使用 `--file` 或 `--stdin`，两者不能同时使用。
+- 多条 action 使用 `batch --file operations.json` 在同一连接中串行执行，遇到首个失败即停止。
+- 大数据读取继续使用分页与分块导出：`stash-list` 自动续页，`backup-export --output <文件>` 边读边写。
+
+## 10. 测试与验收
 
 - `tests/ai-bridge.test.js`：令牌/握手、确认位拒绝、凭据出口复查、尺寸限制、审计写入、**parity 断言**（人类 UI 使用的 action 全集 ⊆ 能力清单）。
+- `tests/api-version.test.js`：宿主导入唯一 API 版本事实源，Python 客户端从 `bridge.json.apiVersion` 读取且不定义第二个硬编码版本。
+- `tests/python-client.test.js`：由 Deno 测试驱动 `tests/python/` 下的 Python unittest，已纳入 `deno task test`；`deno task verify` 会跑同一套测试。
+- `tests/python/test_betterbrowse_client.py`：Python 客户端解析、诊断、输入方式、批处理与传输行为单元测试（由上一文件发现执行）。
+- `tests/bridge-client-e2e.test.js`：真实 Deno 宿主与 Python 客户端的普通请求、分块响应及退出清理链路。
 - `tests/stash-item-ops.test.js`：条目增改的幂等、持锁、修订号广播、outbox 同事务。
 - 端到端：安装宿主 → 启用 → Agent 列组/建组/改配置/触发同步 → 选项页经 `bb_stash_revision` 0 刷新呈现且审计可见；关闭开关后请求被拒。
-- `deno task verify` 全绿（含 content-bundle 一致性与 UTF-8 校验）。
+- `deno task verify` 全绿；静态门禁会检查 Python 文件存在、无 BOM 的 UTF-8、Python 3.9+ 语法，并使用内存编译避免生成 `__pycache__`。

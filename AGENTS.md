@@ -10,7 +10,7 @@
 - **规范标准**：Chrome Extensions **Manifest V3**
 - **软件版本**：由 `manifest.json` 的 `version` / `version_name` 独立管理，面向安装包、发布和用户展示
 - **API 版本**：内部裸正整数；当前值以 `src/constants/api-version.js` 为唯一事实源
-- **开发运行时与工具链**：**纯 JavaScript (原生 ESM) + Deno 2.x 原生驱动**（彻底告别 Node.js/npm 体系）
+- **开发运行时与工具链**：扩展与宿主使用**纯 JavaScript（原生 ESM）+ Deno 2.x 原生驱动**（不使用 Node.js/npm）；BetterBrowse Skill 唯一客户端使用 **Python 3.9+ 标准库**
 - **API 版本规则**（⚠️ **内部跨组件契约编号**）：
   - `API_VERSION` 只允许在 `src/constants/api-version.js` 定义，采用裸正整数，不加 `v`、小数或 Milestone 名称。
   - 仅当扩展、宿主与桥接客户端之间发生不兼容的接口契约变化时，执行 `deno task api-version-bump`；普通软件发布、UI 更新和兼容性修复不递增 API 版本。
@@ -36,11 +36,11 @@ BetterBrowse/
 ├── .gitignore                     # Git 忽略配置
 ├── deno.json                      # 根工作区 Deno 配置文件
 │
-├── skills/                        # AI Agent 技能库（阶段三：better-browse 技能 + 桥接 CLI 客户端）
-│   └── better-browse/
+├── skills/                        # AI Agent 技能库（阶段三：BetterBrowse 技能 + 桥接 CLI 客户端）
+│   └── BetterBrowse/
 │       ├── SKILL.md               # 技能入口（快速开始、安全规则、CDP 回退）
 │       ├── scripts/
-│       │   └── bb-bridge-client.js # Agent 命令行客户端 (NDJSON + 令牌握手 + 分块重组)
+│       │   └── betterbrowse_client.py # Python 3.9+ Agent 客户端（诊断、NDJSON、分块、文件/标准输入/批处理）
 │       └── references/
 │           └── protocol.md        # 线协议与排障参考
 │
@@ -60,6 +60,8 @@ BetterBrowse/
 │   ├── runtime-log.test.js        # 运行时日志仓储与格式化测试
 │   ├── extension-url.test.js      # 扩展页面 URL 判定测试
 │   ├── api-version.test.js        # 内部 API 版本契约测试
+│   ├── python-client.test.js      # Deno 驱动 Python unittest（纳入 deno task test / verify）
+│   ├── python/                    # Python 客户端 unittest（由 python-client.test.js 发现执行）
 │   └── webdav-two-device.test.js  # WebDAV 双设备端到端测试
 │
 └── BetterBrowse/                  # 📦 Chrome 扩展根目录 (纯原生扩展产物)
@@ -148,6 +150,15 @@ BetterBrowse/
     │   │   ├── frame-content-bundle.js # iframe 轻量能力自包含产物
     │   │   ├── frame-index.js          # iframe 轻量入口（表单探测 + 点击拦截 + 模式同步）
     │   │   └── index.js                # 顶层内容脚本源码入口
+    │   │
+    │   ├── home/                  # 主页与新标签页共享核心模块 (原生 ESM/CSS，蓝色扁平主题)
+    │   │   ├── home-view.js           # 共享核心视图控制器 (聚合联想/分页检索/历史推荐/状态概览)
+    │   │   └── home.css               # 扁平深浅自适应样式
+    │   │
+    │   ├── newtab/                # 独立轻量新标签页 (接管 chrome_url_overrides.newtab，无侧栏)
+    │   │   ├── newtab.html
+    │   │   ├── newtab.css
+    │   │   └── newtab.js
     │   │
     │   ├── popup/                 # 弹出控制台 (极简扁平化 UI)
     │   │   ├── popup.html
@@ -318,8 +329,8 @@ BetterBrowse/
 ### 3.5 AI 桥接控制流 (阶段三 M4：人机能力对等)
 
 ```
-[本机 AI Agent] (skills/better-browse/scripts/bb-bridge-client.js)
-  │  读 bridge.json (端口+一次性令牌) → TCP 127.0.0.1 握手 → NDJSON {id, action, payload}
+[本机 AI Agent] (skills/BetterBrowse/scripts/betterbrowse_client.py，Python 3.9+)
+  │  读 bridge.json（端口+一次性令牌+API 版本）→ TCP 127.0.0.1 握手 → NDJSON {id, action, payload}
   ▼
 【本机宿主】(native-host/bb_native_host.js，Chrome 经 Native Messaging 按需拉起，非常驻)
   │  每 25s 内部 ping 保活 MV3 SW；请求串行转发；大消息 512KB 级自动分块
@@ -415,7 +426,7 @@ BetterBrowse/
 本项目完全由 **Deno 原生驱动**，无需安装 Node.js：
 
 ```bash
-# 1. 运行全套自动化测试 (Deno 原生测试)
+# 1. 运行全套自动化测试（含 tests/python-client.test.js 驱动的 Python unittest）
 deno task test
 
 # 定向运行单个测试文件或按关键词过滤测试用例
@@ -454,7 +465,7 @@ deno task ai-host-uninstall
 - [`docs/06-versioning.md`](docs/06-versioning.md): 五套版本号的事实源、迁移边界与递增规则
 - [`docs/07-content-scripts.md`](docs/07-content-scripts.md): 双 bundle、主世界/隔离世界与 iframe 维护约束
 - [`docs/08-subsystem-runbook.md`](docs/08-subsystem-runbook.md): AI 桥接与 WebDAV 子系统排障手册
-- [`skills/better-browse/references/protocol.md`](skills/better-browse/references/protocol.md): AI Agent 桥接客户端与本机宿主线协议详细规范
+- [`skills/BetterBrowse/references/protocol.md`](skills/BetterBrowse/references/protocol.md): AI Agent 桥接客户端与本机宿主线协议详细规范
 
 ---
 
@@ -478,7 +489,7 @@ deno task ai-host-uninstall
    - `GET_PAGE_LINK_CONTEXT` 只向内容脚本返回 `{ effectiveMode }`；后台不得把整份域名规则表或完整配置复制到每个框架。
    - 后台读取模式时必须优先使用 `sender.url`（iframe 自身 URL），不要用 `sender.tab.url`，否则跨域 iframe 会继承顶层页面的跳转模式。
    - 域名规则变更只通知受影响的 `tabId + frameId`；全局规则、清空规则、重置/恢复配置与云端合并才更新全部 HTTP(S) 框架，并在通知里直接携带新的 `effectiveMode`。
-   - 表单保护必须聚合标签页所有 HTTP(S) 框架的 `CHECK_FORM_INPUT` 结果（任一框架有输入或探测失败即保留标签），不能只依赖一次不带 `frameId` 的 `chrome.tabs.sendMessage()`。
+   - 表单保护必须聚合标签页所有 HTTP(S) 框架的 `CHECK_FORM_INPUT` 结果：任一框架确认有输入即保留标签；**顶层框架**探测失败才 fail-closed 保留；子框架无接收端或超时必须跳过（广告/沙箱 iframe 普遍无法注入，不得把整页判为受保护）。不能只依赖一次不带 `frameId` 的 `chrome.tabs.sendMessage()`。
    - 收纳数据变更不再广播给普通网页，扩展页面统一以 `bb_stash_revision` 修订号为通知源。倒计时卡片只投递顶层框架（`frameId: 0`）。
 6. **IndexedDB 与旧存储双数据源**：
    - 收纳数据自本地数据修订 5 起、配置/规则/备份/活跃度自修订 7 起以 IndexedDB 为主库，**任何新功能严禁绕过 `LocalStashRepository` / `StorageAdapter` 门面直接读写 `bb_stash_groups`、`bb_user_config` 或 IndexedDB**；
@@ -510,7 +521,8 @@ deno task ai-host-uninstall
    - **AI 请求串行**：桥接请求经 `AIBridgeManager` 队列串行派发（`sender=null`），handler 内**严禁**假设消息来自标签页或要求 `sender.tab` 存在；
    - **配置联动**：`aiBridge.enabled` 为设备本地偏好，**严禁**加入 `SYNC_CONFIG_NESTED_KEYS` 或 `AccountConfigSync.slice` 白名单；开关变化经 `UPDATE_CONFIG`/`RESET_CONFIG` handler 内的 `aiBridge.onConfigUpdated()` 钩子即时生效；
    - **API 版本唯一来源**：`src/constants/api-version.js` 的 `API_VERSION` 是唯一内部 API 契约编号；软件发布版本继续由 Manifest 独立管理。扩展与宿主直接导入 API 版本，客户端从 `bridge.json.apiVersion` 读取。新消息只写 `apiVersion`，接收端可兼容读取历史 `proto` / `protocol` / `v`；编号不一致必须明确报告本地与对端值并拒绝连接；
-   - **宿主协议**：`native-host/bb_native_host.js` 的 stdout 是 Native Messaging 协议通道，**任何日志必须走 stderr**；改动线协议（分块、握手、bridge.json 字段）必须同步更新 `docs/03-ai-skill-bridge.md`、`skills/better-browse/references/protocol.md` 与客户端；
+   - **Python 客户端门禁**：唯一客户端是 `skills/BetterBrowse/scripts/betterbrowse_client.py`（Python 3.9+ 标准库）；`deno task test` 通过 `tests/python-client.test.js` 驱动 Python unittest，`deno task verify` 会跑同一套测试，无需再单独手工跑 unittest 才能合入；verify 的静态检查覆盖存在性、无 BOM UTF-8、语法和 API 版本非硬编码，语法检查使用内存编译，禁止生成或提交 `__pycache__` / `.pyc`；
+   - **宿主协议**：`native-host/bb_native_host.js` 的 stdout 是 Native Messaging 协议通道，**任何日志必须走 stderr**；改动线协议（分块、握手、bridge.json 字段）必须同步更新 `docs/03-ai-skill-bridge.md`、`skills/BetterBrowse/references/protocol.md` 与客户端；
    - **启动包装必须纯 ASCII**：cmd.exe 按 ANSI 代码页解析批处理，UTF-8 中文注释会把行解析成乱码命令导致宿主秒退（"Native host has exited"）；中文文档写在 `bb_native_host.js` 文件头；
    - **扩展来源参数不是最后一个**：新版 Chrome 给宿主追加 `--parent-window=<句柄>` 等参数，宿主必须**扫描全部启动参数**寻找 `chrome-extension://<ID>/`，不能只看末位参数；
    - **启动器不依赖 PATH**：Chrome 是长驻进程，其子进程环境可能滞后于当前 shell（装完 deno 未重启 Chrome 时 `deno` 解析失败）；安装器把 `Deno.execPath()` 绝对路径烘焙进生成的启动器；
@@ -520,3 +532,10 @@ deno task ai-host-uninstall
    - **审计绝不阻塞响应**：`_appendAudit` 为发射后不管（内部串行队列防丢条目），await 审计会在存储层挂起时饿死响应与整个请求队列；
    - **IDB 自愈**：`MigrationManager.repairMissingObjectStores` 在启动时重建"有库无表"的残留库并从旧存储回填；`INDEXED_DB_SCHEMA_REVISION` 只能单调递增（IndexedDB 拒绝用更低修订号打开），裸抬高修订号不建表会制造出需要再次提升修订号才能修复的空库。
    - **五套版本号分工**：Manifest 软件版本、`API_VERSION`、`LOCAL_DATA_SCHEMA_REVISION`、`INDEXED_DB_SCHEMA_REVISION` 与备份/WebDAV 格式修订互不替代；新增 IndexedDB 仓储或索引必须同步 `onupgradeneeded`，详见 `docs/06-versioning.md`。`deno task verify` 已自动检查主要边界，但“这次变更是否真的不兼容”仍需人工判断。
+11. **主页与独立新标签页（Home & NewTab）约束**：
+   - **共享与独立边界**：核心控制器与展示由 `src/home/` 统一承载；独立新标签页 `src/newtab/` 仅含极简壳层（通过 `chrome_url_overrides.newtab` 直接接管），**绝不加载 OptionsApp 或侧边栏**；管理中心原 `search-home` 作为轻量宿主适配器挂载共享视图，导航更名为「主页」，路由兼容 `#search` 与 `#home`，且不改变默认 `#stash` 入口；
+   - **打开目标分流**：独立页中点击链接或结果在**当前标签页（current）**打开；管理中心内以**新标签页（new）**打开；收纳组跳转直接访问，**绝不删除已收纳条目**；
+   - **守护隔离与计数排除**：`extension-url.js` 中 `isOwnNewTabUrl` 必须与 `isOwnOptionsUrl` 严格分离；`pinned-tab-guard` 绝不能将 `newtab.html` 误认为 options 固定常驻或执行顺序重排；`isExcludedFromTabCounting` 必须剔除 `newtab.html`，防止被窗口关闭或自动阈值误收纳；
+   - **外部联想安全与隐私**：Google/Bing 外部联想默认关闭，必须经用户明确主动同意（`externalSuggestAgreed: true`）；请求限定白名单 URL 并使用 `credentials: 'omit'`，配置 3000ms 超时与 100 条/5分钟有界缓存；网络异常安全隔离；**严禁在审计日志中记录搜索词**；
+   - **同意状态本地隔离**：`externalSuggestAgreed` 属于敏感设备偏好，**严禁**被全量备份导出或进入 WebDAV 快照，也绝不进入 `chrome.storage.sync` 账号镜像；
+   - **可选权限与隐身保护**：浏览历史属于 `optional_permissions`（`history`），仅在用户点击交互时申请；真实权限以 `chrome.permissions.contains` 为准，随时支持撤销；隐身模式下严禁读取普通历史记录；历史推荐明确标注候选范围（近 7 天/近 30 天）与 `visitCount` 访问次数（非时长）。

@@ -5,7 +5,7 @@
 ## 1. 组件与发现
 
 ```
-Agent CLI（本目录 scripts/bb-bridge-client.js）
+Agent CLI（本目录 `scripts/betterbrowse_client.py`，Python 3.9+）
   ↕ TCP 127.0.0.1:<port> + NDJSON + 一次性令牌
 本机宿主（BetterBrowse/native-host/bb_native_host.js，由 Chrome 按需拉起）
   ↕ Native Messaging stdio 帧（4 字节小端长度 + UTF-8 JSON）
@@ -19,12 +19,12 @@ Agent CLI（本目录 scripts/bb-bridge-client.js）
 | Windows | `%LOCALAPPDATA%\BetterBrowse\bridge.json` |
 | macOS/Linux | `$XDG_STATE_HOME/better-browse/bridge.json`（缺省 `~/.local/state/better-browse/bridge.json`） |
 
-内容：`{"port":..., "token":"<64hex>", "pid":..., "extensionId":"...", "apiVersion":1, "startedAt":...}`。`apiVersion` 是裸正整数，由扩展唯一事实源生成；客户端不得另行硬编码。
+内容：`{"port":..., "token":"<64hex>", "pid":..., "extensionId":"...", "apiVersion":<正整数>, "startedAt":...}`。`apiVersion` 是裸正整数，由扩展唯一事实源生成；Python 客户端从该文件读取并用于握手，不得另行硬编码。可用 `python scripts/betterbrowse_client.py doctor` 一次检查 Python 版本、文件有效性、端口、握手与 API 版本。
 
 ## 2. TCP 会话
 
-1. 连接后首行发送握手 `{"apiVersion":1,"token":"<token>"}`；
-2. 宿主回 `{"apiVersion":1,"ok":true,"extensionId":"...","host":"com.betterbrowse.bridge"}` 或 `{"ok":false,"error":"..."}` 后断开；
+1. 连接后首行发送握手 `{"apiVersion":<从 bridge.json 读取>,"token":"<token>"}`；
+2. 宿主回 `{"apiVersion":<宿主版本>,"ok":true,"extensionId":"...","host":"com.betterbrowse.bridge"}` 或 `{"ok":false,"error":"..."}` 后断开；
 3. 客户端、宿主与扩展的 API 编号必须一致，不一致时错误会同时给出本地和对端编号；接收端仅为兼容旧组件读取历史 `proto` 字段；
 4. 之后每行一条请求 `{"id":"<uuid>","action":"<ActionType>","payload":{...}}`；
 5. 每行一条响应 `{"id":"...","success":true,"data":...}` 或 `{"id":"...","success":false,"error":"<中文原因>"}`；
@@ -35,7 +35,7 @@ Agent CLI（本目录 scripts/bb-bridge-client.js）
 任一方向、任一传输层，逻辑消息超过 **200000 字符**时按信封切分，两端透明重组：
 
 ```json
-{"apiVersion":1, "id":"<消息id>", "chunk":{"i":0,"n":3}, "part":"<完整 JSON 的字符串片段>"}
+{"apiVersion":<会话版本>, "id":"<消息id>", "chunk":{"i":0,"n":3}, "part":"<完整 JSON 的字符串片段>"}
 ```
 
 - 客户端 → 宿主：分块信封整行发送（每行一个 chunk），切分的是完整 `{id, action, payload}` 请求 JSON，`id` 即请求 `id`；
@@ -59,6 +59,7 @@ Agent CLI（本目录 scripts/bb-bridge-client.js）
   `state` 取值：`disabled` / `connecting` / `connected` / `incompatible` / `reconnecting` / `host_missing` / `error` / `unsupported`。
 - `host_missing`：宿主未注册。执行 `deno task ai-host-install --ext-id=<ID>` 并重载扩展。
 - bridge.json 存在但连接被拒：宿主进程已退出（浏览器关闭），重载扩展触发重新拉起。
+- 复杂 payload 可用 `--file` 或 `--stdin` 输入；多条 action 用 `batch --file operations.json` 在单会话中串行执行。`--file` 与 `--stdin` 不得同时使用。
 - 扩展侧日志：`chrome://extensions` → BetterBrowse → Service Worker 控制台；宿主日志在 stderr（`native-host` 启动的终端或 Chrome 宿主日志）。
 
 ## 6. 扩展指引

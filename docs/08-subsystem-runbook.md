@@ -4,11 +4,12 @@
 
 ## AI 桥接排障
 
-1. **显示“宿主缺失”**：确认已执行 `deno task ai-host-install --ext-id=<扩展ID>`，检查 Native Messaging 注册项/清单路径。
-2. **宿主秒退**：确认 `run-host.cmd` 只有 ASCII；中文说明只能放在 `bb_native_host.js`。查看宿主 stderr，Native host 的 stdout 只能是协议帧。
-3. **安装后仍找不到 deno**：重启 Chrome；安装器应把 `Deno.execPath()` 绝对路径写入启动包装，不能依赖长驻 Chrome 的旧 PATH。
-4. **连接但请求卡住**：检查 `bridge.json` 的端口、一次性令牌和 `apiVersion`；大响应要确认分块重组后仍回填 reqId。
-5. **“Native host has exited”**：检查 stdin EOF 清理、宿主 stderr、90 秒 pong 看门狗和 120 秒在途超时；Service Worker 的 setTimeout 不能作为唯一保活依据。
+1. **先跑统一诊断**：使用 Python 3.9+ 执行 `python skills/BetterBrowse/scripts/betterbrowse_client.py doctor`，一次检查解释器、`bridge.json`、宿主端口、握手和 API 版本。
+2. **显示“宿主缺失”**：确认已执行 `deno task ai-host-install --ext-id=<扩展ID>`，检查 Native Messaging 注册项/清单路径，并在 `chrome://extensions` 重载扩展。
+3. **宿主秒退**：确认 `run-host.cmd` 只有 ASCII；中文说明只能放在 `bb_native_host.js`。查看宿主 stderr，Native host 的 stdout 只能是协议帧。
+4. **安装后仍找不到 deno**：重启 Chrome；安装器应把 `Deno.execPath()` 绝对路径写入启动包装，不能依赖长驻 Chrome 的旧 PATH。
+5. **连接但请求卡住**：检查 `bridge.json` 的端口、一次性令牌和 `apiVersion`；Python 客户端必须从该文件读取 API 版本，大响应要确认分块重组后仍回填 reqId。
+6. **“Native host has exited”**：检查 stdin EOF 清理、宿主 stderr、90 秒 pong 看门狗和 120 秒在途超时；Service Worker 的 setTimeout 不能作为唯一保活依据。
 
 ## WebDAV 排障
 
@@ -20,7 +21,7 @@
 
 ## 改动前检查清单
 
-- 改线协议：同时更新扩展、Native Host、桥接客户端和 `docs/03-ai-skill-bridge.md` / `skills/better-browse/references/protocol.md`。
+- 改线协议：同时更新扩展、Native Host、Python 桥接客户端和 `docs/03-ai-skill-bridge.md` / `skills/BetterBrowse/references/protocol.md`；客户端 API 版本只能从 `bridge.json` 读取。
 - 改同步实体：先确认实体写入与 outbox/操作日志/时钟在同一事务；大批量仍按 500 条分批。
 - 改写锁：`DeviceEventLog.append` 自持锁，不能在已持锁临界区调用；禁止嵌套 `withWriteLock`。
 - 改账号镜像：`chrome.storage.sync` 只允许 `bb_account_config`，缺失时跳过，不回退 local。
@@ -34,7 +35,8 @@
 | stdout 仅协议、日志走 stderr | ✅ 宿主日志使用 stderr |
 | 25 秒 ping、90 秒 pong 看门狗、120 秒请求超时 | ✅ 宿主与扩展侧均有对应保护；Service Worker 另有闹钟兜底 |
 | stdin EOF 关闭 TCP 监听器 | ✅ 宿主退出清理路径包含监听器关闭 |
-| 分块重组回填 reqId | ✅ 宿主与 `bb-bridge-client.js` 均回填 |
+| 分块重组回填 reqId | ✅ 宿主与 `betterbrowse_client.py` 均回填 |
+| 客户端运行时与 API 来源 | ✅ Python 3.9+ 标准库；从 `bridge.json.apiVersion` 读取，不硬编码 |
 | 安装器烘焙 Deno 绝对路径 | ✅ `install.js` 使用 `Deno.execPath()` |
 | 启动包装纯 ASCII | ✅ `run-host.cmd` / `run-host.sh` 未放中文注释 |
 | outbox 与实体同事务 | ✅ `SyncOutbox.enqueueInTx` 由同步事务调用 |

@@ -530,6 +530,8 @@ export class AIBridgeManager {
    */
   _buildAuditSummary(action, payload) {
     if (action === 'SAVE_WEBDAV_CREDENTIALS') return '保存 WebDAV 凭据（内容不记录）';
+    if (action === 'GET_SEARCH_SUGGESTIONS') return '获取搜索联想（搜索词不记录审计）';
+    if (action === 'GET_BROWSER_HISTORY') return '搜索历史记录（搜索词不记录审计）';
     const parts = [];
     for (const field of AUDIT_SAFE_FIELDS) {
       if (payload && payload[field] !== undefined) {

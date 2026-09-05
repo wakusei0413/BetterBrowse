@@ -122,7 +122,13 @@ const HUMAN_UI_ACTIONS = [
   ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT,
   ActionTypes.REBUILD_SYNC_FROM_SCRATCH,
   ActionTypes.QUERY_RUNTIME_LOGS,
-  ActionTypes.CLEAR_RUNTIME_LOGS
+  ActionTypes.CLEAR_RUNTIME_LOGS,
+  // 主页与新标签页
+  ActionTypes.GET_SEARCH_SUGGESTIONS,
+  ActionTypes.GET_BROWSER_HISTORY,
+  ActionTypes.GET_HISTORY_RECOMMENDATIONS,
+  ActionTypes.GET_HOME_STATS,
+  ActionTypes.CHECK_HISTORY_PERMISSION
 ];
 
 /** 构建最小依赖的共享处理映射（不触发真实服务调用） */
@@ -363,12 +369,14 @@ Deno.test("图标解析：候选返回 HTML 时跳过，继续回退到下一个
   const { requested, restore } = withFaviconRoutes(new Map([
     // 站点把 404/登录页以 200 + text/html 返回，旧实现会将其当成图标
     ['https://example.com/favicon.ico', { type: 'text/html; charset=utf-8', body: new Uint8Array([60, 104, 116, 109, 108]) }],
-    ['https://www.google.com/s2/favicons?sz=32&domain=example.com', { type: 'image/png' }]
+    ['https://icons.duckduckgo.com/ip3/example.com.ico', { type: 'image/png' }]
   ]));
   try {
     const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: 'https://example.com/page' });
     assertEquals(res.success, true);
     assertStringIncludes(res.dataUrl, 'data:image/png;base64,');
+    assertEquals(requested[0], 'https://example.com/favicon.ico');
+    assertEquals(requested[1], 'https://icons.duckduckgo.com/ip3/example.com.ico');
     assertEquals(requested.length, 2);
   } finally {
     restore();
@@ -404,6 +412,86 @@ Deno.test("图标解析：全部候选失败时返回 success=false 而非抛出
     const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: 'https://example.com/page' });
     assertEquals(res.success, false);
     assertEquals(res.dataUrl, '');
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("图标解析：优先抓取 Chrome 记录的 CDN 图标，失败时回退页面域名而非 CDN 根路径", async () => {
+  const handlers = buildHandlers();
+  const iconBody = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const cdnIcon = 'https://cdn.example.com/static/icon-32.png';
+  const pageUrl = 'https://www.example.com/posts/42';
+
+  const hit = withFaviconRoutes(new Map([
+    [cdnIcon, { type: 'image/png', body: iconBody }]
+  ]));
+  try {
+    const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: cdnIcon, pageUrl });
+    assertEquals(res.success, true);
+    assertEquals(hit.requested[0], cdnIcon);
+    assertEquals(hit.requested.includes('https://cdn.example.com/favicon.ico'), false);
+    assertEquals(hit.requested.includes(pageUrl), false);
+  } finally {
+    hit.restore();
+  }
+
+  const fallback = withFaviconRoutes(new Map([
+    [cdnIcon, { ok: false }],
+    ['https://www.example.com/favicon.ico', { type: 'image/x-icon', body: iconBody }]
+  ]));
+  try {
+    const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: cdnIcon, pageUrl });
+    assertEquals(res.success, true);
+    assertEquals(fallback.requested.includes('https://www.example.com/favicon.ico'), true);
+    assertEquals(fallback.requested.includes('https://cdn.example.com/favicon.ico'), false);
+  } finally {
+    fallback.restore();
+  }
+});
+
+Deno.test("图标解析：接受 SVG 图标，并还原 chrome://favicon2 内部地址", async () => {
+  const handlers = buildHandlers();
+  const svgBody = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+  const svgHit = withFaviconRoutes(new Map([
+    ['https://github.githubassets.com/favicons/favicon.svg', { type: 'image/svg+xml', body: svgBody }]
+  ]));
+  try {
+    const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({
+      url: 'https://github.githubassets.com/favicons/favicon.svg',
+      pageUrl: 'https://github.com/foo/bar'
+    });
+    assertEquals(res.success, true);
+    assertStringIncludes(res.dataUrl, 'data:image/svg+xml;base64,');
+    assertEquals(svgHit.requested[0], 'https://github.githubassets.com/favicons/favicon.svg');
+  } finally {
+    svgHit.restore();
+  }
+
+  const unwrap = withFaviconRoutes(new Map([
+    ['https://example.com/favicon.ico', { type: 'image/x-icon' }]
+  ]));
+  try {
+    const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({
+      url: 'chrome://favicon2/?pageUrl=https%3A%2F%2Fexample.com%2Fpage&size=16'
+    });
+    assertEquals(res.success, true);
+    assertEquals(unwrap.requested[0], 'https://example.com/favicon.ico');
+  } finally {
+    unwrap.restore();
+  }
+});
+
+Deno.test("图标解析：application/octet-stream 的 ICO 可按魔数识别", async () => {
+  const handlers = buildHandlers();
+  const icoBody = new Uint8Array([0x00, 0x00, 0x01, 0x00, 0x01, 0x00]);
+  const { restore } = withFaviconRoutes(new Map([
+    ['https://example.com/favicon.ico', { type: 'application/octet-stream', body: icoBody }]
+  ]));
+  try {
+    const res = await handlers[ActionTypes.RESOLVE_FAVICON_DATA_URL]({ url: 'https://example.com/page' });
+    assertEquals(res.success, true);
+    assertStringIncludes(res.dataUrl, 'data:image/x-icon;base64,');
   } finally {
     restore();
   }
