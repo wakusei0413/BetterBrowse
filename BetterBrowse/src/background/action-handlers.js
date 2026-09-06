@@ -633,6 +633,8 @@ export function createActionHandlers(deps) {
     [ActionTypes.UPDATE_CONFIG]: async (payload) => {
       const partial = payload || {};
       const res = await StorageAdapter.updateUserConfig(partial);
+      // 写入失败保持布尔返回契约，不广播尚未持久化的配置。
+      if (!res) return false;
       const config = await StorageAdapter.getUserConfig();
       aiBridge?.onConfigUpdated(config);
       SyncScheduler.onConfigUpdated(config);
@@ -868,21 +870,20 @@ export function createActionHandlers(deps) {
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), SUGGEST_TIMEOUT_MS);
-        let res;
+        let data;
         try {
-          res = await fetch(url, {
+          const res = await fetch(url, {
             credentials: 'omit',
             signal: controller.signal
           });
+          if (!res.ok) {
+            return { success: false, agreed: true, engine, query, suggestions: [], error: `联想服务响应异常 (${res.status})` };
+          }
+          // 超时覆盖响应体读取，避免仅收到响应头后长期挂起。
+          data = await res.json();
         } finally {
           clearTimeout(timer);
         }
-
-        if (!res.ok) {
-          return { success: false, agreed: true, engine, query, suggestions: [], error: `联想服务响应异常 (${res.status})` };
-        }
-
-        const data = await res.json();
         // 外部关闭在途返回保护：请求完成时再次复核配置，若用户在请求在途期间关闭则绝不返回
         const latestConfig = await StorageAdapter.getUserConfig();
         if (!latestConfig.home?.enableExternalSuggest || !latestConfig.home?.externalSuggestAgreed) {
@@ -1056,12 +1057,27 @@ export function createActionHandlers(deps) {
         const config = await StorageAdapter.getUserConfig();
         const stashStats = await LocalStashRepository.getStashStats();
 
+        // 本周收纳统计复用既有周分桶；失败时归零，不影响主统计。
+        let weekGroupCount = 0;
+        let weekItemCount = 0;
+        try {
+          const now = new Date();
+          const weekday = now.getDay() || 7;
+          const weekStartAt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - weekday + 1).getTime();
+          const buckets = await LocalStashRepository.listTimelineBuckets();
+          const bucket = buckets.find((b) => b.startAt === weekStartAt);
+          weekGroupCount = bucket?.groupCount || 0;
+          weekItemCount = bucket?.itemCount || 0;
+        } catch {}
+
         return {
           success: true,
           currentWindowCount: countableTabs.length,
           threshold: config.tabThreshold || 15,
-          totalGroups: stashStats.totalGroups || 0,
-          totalItems: stashStats.totalItems || 0
+          totalGroups: stashStats.groupCount || 0,
+          totalItems: stashStats.itemCount || 0,
+          weekGroupCount,
+          weekItemCount
         };
       } catch (err) {
         return {
@@ -1070,6 +1086,8 @@ export function createActionHandlers(deps) {
           threshold: 15,
           totalGroups: 0,
           totalItems: 0,
+          weekGroupCount: 0,
+          weekItemCount: 0,
           error: err?.message || '获取主页统计失败'
         };
       }

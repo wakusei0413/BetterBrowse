@@ -109,6 +109,14 @@ test('DefaultConfig 与 StorageAdapter: 主页偏好深度合并与增量更新'
   assert.equal(customMerged.home.searchEngine, 'bing');
   assert.equal(customMerged.home.enableExternalSuggest, true);
   assert.equal(customMerged.home.externalSuggestAgreed, false, '未声明同意状态保留默认值');
+
+  // 钉选网站：默认空数组，部分更新时必须整体替换而非与默认值合并
+  assert.deepEqual(StorageAdapter.mergeUserConfig({}).home.pinnedSites, []);
+  const pinnedMerged = StorageAdapter.mergeUserConfig({
+    home: { pinnedSites: [{ title: '示例', url: 'https://example.com/' }] }
+  });
+  assert.equal(pinnedMerged.home.pinnedSites.length, 1);
+  assert.equal(pinnedMerged.home.pinnedSites[0].url, 'https://example.com/');
 });
 
 test('隐私隔离: externalSuggestAgreed 绝不进入备份导出、WebDAV 快照与账号同步', async () => {
@@ -288,6 +296,8 @@ test('主页统计 Action: 准确统计当前窗口可计数标签与收纳总�
   assert.equal(stats.success, true);
   assert.equal(stats.currentWindowCount, 2, '仅保留 github.com 与 ycombinator.com 两个普通网页');
   assert.equal(stats.threshold, 15);
+  assert.equal(typeof stats.weekGroupCount, 'number', '本周收纳组数必须始终为数字');
+  assert.equal(typeof stats.weekItemCount, 'number', '本周收纳条数必须始终为数字');
 });
 
 test('组件打开行为与环境适配: 独立页当前页打开，管理中心新标签打开', () => {
@@ -454,6 +464,133 @@ test('安全边界: 权限撤销在途泄漏防护与外部联想关闭在途返
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+test('parseNavigationIntent: 网址直达与搜索分流', async () => {
+  const { parseNavigationIntent } = await import('../BetterBrowse/src/home/home-view.js');
+
+  assert.equal(parseNavigationIntent('').kind, 'empty');
+  assert.equal(parseNavigationIntent('容器查询').kind, 'search');
+  assert.equal(parseNavigationIntent('hello world').kind, 'search');
+  assert.equal(parseNavigationIntent('readme.md').kind, 'search', '常见文件名不得误判为网址');
+  assert.equal(parseNavigationIntent('index.html').kind, 'search');
+
+  const site = parseNavigationIntent('github.com');
+  assert.equal(site.kind, 'url');
+  assert.equal(site.url, 'https://github.com/');
+  assert.equal(site.display, 'github.com');
+
+  const path = parseNavigationIntent('developer.mozilla.org/zh-CN/docs');
+  assert.equal(path.kind, 'url');
+  assert.match(path.url, /^https:\/\/developer\.mozilla\.org\//);
+
+  const explicit = parseNavigationIntent('https://example.com/a?q=1');
+  assert.equal(explicit.kind, 'url');
+  assert.equal(explicit.url, 'https://example.com/a?q=1');
+
+  const chromePage = parseNavigationIntent('chrome://extensions');
+  assert.equal(chromePage.kind, 'url');
+  assert.equal(chromePage.url, 'chrome://extensions');
+
+  const local = parseNavigationIntent('localhost:5173');
+  assert.equal(local.kind, 'url');
+  assert.equal(local.url, 'https://localhost:5173/');
+
+  const ipv4 = parseNavigationIntent('127.0.0.1:8080');
+  assert.equal(ipv4.kind, 'url');
+  assert.equal(ipv4.url, 'https://127.0.0.1:8080/');
+
+  assert.equal(parseNavigationIntent('javascript:alert(1)').kind, 'search', '危险协议必须降为搜索');
+});
+
+test('movePinnedSite: 越界保持原序，合法偏移交换位置', async () => {
+  const { movePinnedSite } = await import('../BetterBrowse/src/home/home-view.js');
+  const list = [{ url: 'https://a.example/' }, { url: 'https://b.example/' }, { url: 'https://c.example/' }];
+
+  assert.equal(movePinnedSite(list, 0, -1), list);
+  assert.equal(movePinnedSite(list, 2, 1), list);
+  assert.equal(movePinnedSite(list, -1, 1), list);
+
+  const up = movePinnedSite(list, 2, -1);
+  assert.notEqual(up, list);
+  assert.deepEqual(up.map((site) => site.url), ['https://a.example/', 'https://c.example/', 'https://b.example/']);
+  assert.deepEqual(list.map((site) => site.url), ['https://a.example/', 'https://b.example/', 'https://c.example/'], '原数组不得被原地修改');
+});
+
+test('主页快捷操作: EXECUTE_STASH 全量语义与 RESTORE_STASH_GROUP 结果契约', async () => {
+  setupEnvironment();
+  let stashOptions = null;
+  const handlers = createActionHandlers({
+    stashService: {
+      executeStash: async (_stats, options) => {
+        stashOptions = options;
+        return { success: true, stashedCount: 5 };
+      }
+    },
+    activityTracker: { getStats: () => ({}) },
+    thresholdMonitor: {},
+    broadcastToTabs: async () => {},
+    aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }
+  });
+
+  // 1. 缺省 payload 必须等价 forceAll: true（与弹窗「收纳本窗口全部标签」同一语义）
+  const res = await handlers[ActionTypes.EXECUTE_STASH]({});
+  assert.equal(stashOptions?.forceAll, true, '主页一键收纳必须走全量收纳路径');
+  assert.equal(res.success, true);
+  assert.equal(res.stashedCount, 5);
+
+  // 2. forceAll: false 显式走智能收纳路径（保留 P0~P3 规则）
+  await handlers[ActionTypes.EXECUTE_STASH]({ forceAll: false });
+  assert.equal(stashOptions.forceAll, false);
+
+  // 3. RESTORE_STASH_GROUP 对不存在的组必须返回 false，主页恢复按钮依赖该语义提示失败
+  const restored = await handlers[ActionTypes.RESTORE_STASH_GROUP]({ groupId: 'not-exist-group' });
+  assert.equal(restored, false);
+
+  // 4. 撤销收纳必须显式 removeAfterRestore: true，不受 UI 恢复后保留设置影响
+  let restoreArgs = null;
+  const originalRestore = (await import('../BetterBrowse/src/core/stash/stash-service.js')).StashService.restoreGroup;
+  const { StashService } = await import('../BetterBrowse/src/core/stash/stash-service.js');
+  StashService.restoreGroup = async (...args) => { restoreArgs = args; return true; };
+  try {
+    const undo = await handlers[ActionTypes.RESTORE_STASH_GROUP]({ groupId: 'stash_grp_undo', removeAfterRestore: true });
+    assert.equal(undo, true);
+    assert.deepEqual(restoreArgs, ['stash_grp_undo', true]);
+  } finally {
+    StashService.restoreGroup = originalRestore;
+  }
+});
+
+test('requestHome: 信封与业务结果双层解包，false 与业务失败必须抛错', async () => {
+  setupEnvironment();
+  const { requestHome } = await import('../BetterBrowse/src/home/home-view.js');
+
+  const respondWith = (envelope) => {
+    globalThis.chrome.runtime.sendMessage = (_message, cb) => {
+      cb?.(envelope);
+      return Promise.resolve(envelope);
+    };
+  };
+
+  // 1. 正常信封直接解包业务数据
+  respondWith({ success: true, data: { totalGroups: 3 } });
+  assert.deepEqual(await requestHome('X', {}), { totalGroups: 3 });
+
+  // 2. 外层信封失败必须抛错
+  respondWith({ success: false, error: '后台拒绝' });
+  await assert.rejects(() => requestHome('X', {}), /后台拒绝/);
+
+  // 3. 业务层 success: false 必须抛错并携带业务错误信息
+  respondWith({ success: true, data: { success: false, error: '业务失败' } });
+  await assert.rejects(() => requestHome('X', {}), /业务失败/);
+
+  // 4. data === false（如恢复不存在的收纳组）必须抛出通用错误
+  respondWith({ success: true, data: false });
+  await assert.rejects(() => requestHome('X', {}), /操作未成功/);
+
+  // 5. 空数据必须抛错，避免视图拿到 undefined 渲染出空白
+  respondWith({ success: true, data: null });
+  await assert.rejects(() => requestHome('X', {}), /未返回有效数据/);
 });
 
 test('SEARCH_STASH 规范化: 兼容 query/keyword 并返回一致的 items/data/nextCursor 结构', async () => {

@@ -202,7 +202,8 @@ export class StashService {
 
       return {
         success: true,
-        stashedCount: closedCount
+        stashedCount: closedCount,
+        groupId: createRes.group?.id || null
       };
     } catch (err) {
       console.error('[StashService] 全量收纳执行异常:', err);
@@ -410,7 +411,8 @@ export class StashService {
       stashedCount: closedCount,
       keptCount: tabsToKeep.length,
       tierLevel: finalTierLevel,
-      reachedTarget
+      reachedTarget,
+      groupId: createRes.group?.id || null
     };
   }
 

@@ -504,6 +504,16 @@ a:focus-visible,
   display: flex;
 }
 
+/* 主页不是「吸顶标题 + 内列滚动」，整页内容必须由面板自己滚动。
+   若沿用 .tab-panel 的 overflow:hidden + flex 列，内容会被裁切且无法往下滚。 */
+#tab-search.tab-panel.search-panel.active {
+  display: block;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
 /* 顶部吸顶面板标题栏 (Sticky Header) */
 .panel-header {
   display: flex;

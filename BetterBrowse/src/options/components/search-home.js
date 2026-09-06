@@ -31,6 +31,8 @@ export class SearchHomeComponent {
         }
       }
     });
+    // 共享视图在管理中心中默认挂载但不抢焦点，由宿主显式激活。
+    this.view.ready?.then(() => this.view.activate()).catch(() => {});
   }
 
   /**

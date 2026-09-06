@@ -40,3 +40,13 @@ Deno.test('管理中心导航与主页结构：侧栏显示主页且兼容 #sear
   assert(html.includes('id="tab-search"'), '主页面板必须使用 tab-search 承载');
   assert(html.includes('id="tab-stash"'), '默认时间线面板结构完整');
 });
+
+Deno.test('管理中心主页必须允许面板滚动，不得继承时间线 overflow:hidden', async () => {
+  const cssPath = resolve(root, '../BetterBrowse/src/options/options.css');
+  const css = await Deno.readTextFile(cssPath);
+  const start = css.indexOf('#tab-search.tab-panel.search-panel.active');
+  assert(start >= 0, '必须单独覆盖主页面板滚动，不能沿用 .tab-panel 的 overflow:hidden');
+  const block = css.slice(start, start + 280);
+  assert(block.includes('overflow-y: auto'), '主页面板必须允许纵向滚动');
+  assert(block.includes('display: block'), '主页面板不得以 flex 列裁切整页内容');
+});

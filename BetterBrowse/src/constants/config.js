@@ -105,7 +105,8 @@ export const DefaultConfig = {
     externalSuggestAgreed: false,     // 是否已明确主动同意向第三方外部引擎发送输入内容（本地敏感项，不导出、不同步）
     showRecentStash: true,            // 是否在主页展示近期收纳
     showHistoryRecommendations: true, // 是否在主页展示历史记录推荐（需 optional 权限）
-    showWindowTabStats: true          // 是否在主页展示当前窗口标签/阈值/收纳统计
+    showWindowTabStats: true,         // 是否在主页展示当前窗口标签/阈值/收纳统计
+    pinnedSites: []                   // 主页钉选网站（[{title,url}]，最多 12 个；仅 http/https，设备本地偏好）
   }
 };
 

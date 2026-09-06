@@ -1,1539 +1,762 @@
 /**
  * @file home-view.js
- * @description BetterBrowse 主页与新标签页共享核心视图控制器
- * 支持外部联想（Google/Bing，需主动同意）、本地收纳分页检索、optional history 搜索与推荐、
- * 当前窗口/收纳统计与近期收纳快速跳转。
+ * @description 主页共享视图：独立数据源、可取消的搜索与设备本地隐私设置。
  * @encoding UTF-8
  */
-
 import { ActionTypes } from '../constants/action-types.js';
 import { MessageBus } from '../core/bus/message-bus.js';
-import { StorageAdapter } from '../core/storage/storage-adapter.js';
 
-/** 默认搜索引擎地址映射 */
-const SEARCH_ENGINES = {
-  google: 'https://www.google.com/search?q=',
-  baidu: 'https://www.baidu.com/s?wd=',
-  bing: 'https://www.bing.com/search?q=',
-  duckduckgo: 'https://duckduckgo.com/?q='
-};
+const ENGINES = { google: ['Google', 'https://www.google.com/search?q='], bing: ['Bing', 'https://www.bing.com/search?q='], baidu: ['百度', 'https://www.baidu.com/s?wd='], duckduckgo: ['DuckDuckGo', 'https://duckduckgo.com/?q='] };
+/** 允许导航/渲染为链接的协议白名单（openUrl 与 createItemElement 共用）。 */
+const SAFE_PROTOCOLS = ['http:', 'https:', 'file:', 'chrome:', 'edge:', 'about:', 'chrome-extension:'];
+const MODULES = { showWindowTabStats: ['浏览概览', 'homeStats'], showRecentStash: ['近期收纳', 'homeRecent'], showHistoryRecommendations: ['常访网站与继续浏览', 'homeHistory'] };
+const LOOKS_LIKE_IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:[/?#].*)?$/;
+const LOOKS_LIKE_HOST = /^(?:localhost|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})(?::\d+)?(?:[/?#].*)?$/i;
+const FILEISH_NAME = /\.(html?|js|mjs|ts|json|md|txt|css|png|jpe?g|gif|svg|pdf|zip)$/i;
+const SCHEME_PREFIX = /^([a-zA-Z][a-zA-Z0-9+.-]*):/;
+const SCHEMES_WITHOUT_SLASH = new Set(['about', 'chrome', 'edge', 'file', 'chrome-extension']);
 
-/** 引擎显示名 */
-const ENGINE_NAMES = {
-  google: 'Google',
-  baidu: '百度',
-  bing: 'Bing',
-  duckduckgo: 'DuckDuckGo'
-};
+/** 仅把真实协议（含 chrome/about 或带 ://）视为显式网址，避免把 localhost:端口误判成协议。 */
+function hasExplicitProtocol(query) {
+  const match = String(query).match(SCHEME_PREFIX);
+  if (!match) return false;
+  const scheme = match[1].toLowerCase();
+  if (query.slice(match[1].length + 1, match[1].length + 3) === '//') return true;
+  return SCHEMES_WITHOUT_SLASH.has(scheme);
+}
+
+/**
+ * 将输入识别为打开网址或网页搜索。含空格、无点主机名与常见文件名视为搜索。
+ * @param {string} raw
+ * @returns {{ kind: 'empty' } | { kind: 'search', query: string } | { kind: 'url', url: string, display: string }}
+ */
+export function parseNavigationIntent(raw) {
+  const query = String(raw ?? '').trim();
+  if (!query) return { kind: 'empty' };
+  if (/\s/.test(query)) return { kind: 'search', query };
+  if (hasExplicitProtocol(query)) {
+    try {
+      const parsed = new URL(query);
+      if (!SAFE_PROTOCOLS.includes(parsed.protocol)) return { kind: 'search', query };
+      return { kind: 'url', url: parsed.href, display: query };
+    } catch {
+      return { kind: 'search', query };
+    }
+  }
+  if (FILEISH_NAME.test(query) && !query.includes('/')) return { kind: 'search', query };
+  if (LOOKS_LIKE_IPV4.test(query) || LOOKS_LIKE_HOST.test(query)) {
+    try {
+      const parsed = new URL(`https://${query}`);
+      return { kind: 'url', url: parsed.href, display: query };
+    } catch {
+      return { kind: 'search', query };
+    }
+  }
+  return { kind: 'search', query };
+}
+
+/**
+ * 按偏移调整钉选顺序；越界或非法下标时返回原数组引用。
+ * @param {Array} list
+ * @param {number} index
+ * @param {number} delta
+ * @returns {Array}
+ */
+export function movePinnedSite(list, index, delta) {
+  if (!Array.isArray(list)) return [];
+  const from = Number(index), to = from + Number(delta);
+  if (![from, to].every(Number.isInteger) || from < 0 || to < 0 || from >= list.length || to >= list.length) return list;
+  const next = list.slice(), [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+const icon = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>';
+const node = (tag, className, text) => { const el = document.createElement(tag); el.className = className; if (text !== undefined) el.textContent = text; return el; };
+
+/** 消息总线返回外层信封，业务结果可能另有 success 标志。 */
+export async function requestHome(action, payload = {}) {
+  const envelope = await MessageBus.sendToBackground(action, payload);
+  if (!envelope || envelope.success !== true) throw new Error(envelope?.error || '后台连接失败，请重试');
+  const data = envelope.data;
+  if (data === false || data?.success === false) throw new Error(data?.error || '操作未成功，请重试');
+  if (data === undefined || data === null) throw new Error('后台未返回有效数据');
+  return data;
+}
 
 export class HomeView {
-  /**
-   * @param {object} options
-   * @param {HTMLElement} options.container - 挂载容器元素
-   * @param {'current' | 'new'} [options.openTarget='current'] - 链接打开目标（独立新标签页用 current，管理中心用 new）
-   * @param {boolean} [options.isStandalone=false] - 是否为独立新标签页环境
-   * @param {() => void} [options.onNavigateToStash] - 管理中心内跳转到时间线的回调
-   */
   constructor(options = {}) {
     this.container = options.container;
     this.openTarget = options.openTarget || 'current';
     this.isStandalone = Boolean(options.isStandalone);
-    this.onNavigateToStash = options.onNavigateToStash || null;
-
-    // 状态管理
-    this.config = null;
+    this.onNavigateToStash = options.onNavigateToStash;
+    this.config = { home: {} };
     this.currentEngine = 'google';
-    this.hasHistoryPermission = false;
+    this.scope = 'all';
     this.searchSeq = 0;
-    this.debounceTimer = null;
-    this.isComposing = false;
+    this.dataSeq = 0;
+    this.configSeq = 0;
+    this.currentOptions = [];
     this.activeOptionIndex = -1;
-    this.currentOptions = []; // 当前下拉列表中可选的项
-
-    // 收纳分页游标缓存
-    this.stashNextCursor = null;
-    this.lastSearchQuery = '';
-
-    // 事件解绑清理器列表
+    this.active = false;
+    this.destroyed = false;
     this._cleanups = [];
-
-    this.init();
+    this._liveCleanups = [];
+    this.sources = {};
+    this.ready = this.init();
   }
 
-  /**
-   * 初始化主页 DOM 骨架与事件
-   */
   async init() {
     if (!this.container) return;
+    this.container.innerHTML = `<div class="bb-home-container">
+      <header class="bb-home-header"><div class="bb-home-brand"><span class="bb-home-brand-mark" aria-hidden="true">${icon}</span><div><strong>BetterBrowse</strong><p id="homeDate"></p></div></div><nav aria-label="主页操作"><button data-command="destination">${this.isStandalone ? '管理中心' : '独立主页'} <span aria-hidden="true">↗</span></button><button data-command="customize">自定义</button></nav></header>
+      <section class="bb-home-hero" aria-labelledby="homeTitle"><p class="bb-home-eyebrow" id="homeGreeting">你好</p><p class="bb-home-clock" id="homeClock">--:--</p><h1 id="homeTitle">从这里继续。</h1>
+        <div class="bb-home-search-stage"><div class="bb-home-search-label"><label for="homeSearchInput">搜索或打开网址</label><div class="bb-home-engines" role="group" aria-label="网页搜索引擎">${Object.entries(ENGINES).map(([key, [name]]) => `<button type="button" data-engine="${key}" aria-pressed="false">${name}</button>`).join('')}</div></div>
+          <form id="homeSearchForm" class="bb-home-search-box">${icon}<input id="homeSearchInput" type="text" placeholder="搜索网页、收纳，或直接输入网址" autocomplete="off" inputmode="search" enterkeyhint="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="homeResultList" aria-describedby="homeScopeHint"><button type="button" id="homeClear" data-command="clear" aria-label="清空搜索" hidden>清空</button><button class="bb-home-primary" type="submit">搜索</button></form>
+          <div class="bb-home-scopes" role="group" aria-label="搜索范围"><span>搜索范围</span><button data-scope="all" aria-pressed="true">全部</button><button data-scope="stash" aria-pressed="false">收纳</button><button data-scope="history" aria-pressed="false">浏览记录</button><small id="homeScopeHint">回车搜索网页 · 方向键选择 · 按 <kbd>/</kbd> 或 <kbd>Ctrl</kbd>+<kbd>K</kbd> 快速聚焦</small></div>
+          <div id="homeResults" class="bb-home-results" hidden><div id="homeResultList" role="listbox" aria-label="搜索结果"></div><div id="homeResultActions" class="bb-home-result-actions"></div></div>
+        </div>
+      </section>
+      <div id="homeFeedback" class="bb-home-feedback" role="status" aria-live="polite"></div>
+      <section id="homeFrequent" class="bb-home-frequent" aria-labelledby="homeFrequentTitle"><div class="bb-home-section-heading"><h2 id="homeFrequentTitle">常访网站</h2><span>钉选优先 · 其余按近 30 天访问次数</span></div><div id="homeShortcuts" class="bb-home-shortcuts"></div></section>
+      <div class="bb-home-grid"><main class="bb-home-main"><section id="homeHistory"><div class="bb-home-section-heading"><h2>继续浏览</h2><span>最近访问 · 近 7 天</span></div><div id="homeRecentHistory" class="bb-home-history-list"></div></section><section id="homeRecent"><div class="bb-home-section-heading"><div><h2>近期收纳</h2><p>直接访问页面，保留原收纳条目</p></div><button data-command="stash">全部收纳 <span aria-hidden="true">→</span></button></div><div id="homeStashList" class="bb-home-stash-list"></div></section></main>
+      <aside class="bb-home-aside"><section id="homeStats" class="bb-home-stats"><h2>浏览概览</h2><div id="homeStatsContent"></div></section><section class="bb-home-privacy"><h2>隐私，由你掌握</h2><p id="homePrivacyStatus"></p><p>收纳检索在本地完成。网站标识不请求远程图标。</p><button data-command="customize">管理隐私与展示 <span aria-hidden="true">→</span></button></section></aside></div>
+      <dialog id="homeCustomize" class="bb-home-dialog" aria-labelledby="homeCustomizeTitle"><div class="bb-home-section-heading"><h2 id="homeCustomizeTitle">自定义主页</h2><button data-command="close-dialog" aria-label="关闭自定义">关闭</button></div><p>保留你需要的内容，让主页适合你的习惯。</p><fieldset><legend>展示模块</legend>${Object.entries(MODULES).map(([key, [label]]) => `<label><input type="checkbox" data-pref="${key}"> ${label}</label>`).join('')}</fieldset><fieldset><legend>钉选网站</legend><div id="homePinnedList"></div><form id="homePinnedForm"><input id="homePinnedTitle" type="text" placeholder="名称（可选）" maxlength="60" aria-label="钉选名称"><input id="homePinnedUrl" type="url" placeholder="https://example.com" aria-label="钉选网址" required><button type="submit">添加钉选</button></form><p>钉选固定展示在常访网站最前，不依赖浏览记录权限，仅保存在本设备配置中。</p></fieldset><fieldset><legend>搜索偏好</legend><label>默认网页引擎 <select data-setting="searchEngine">${this.engineOptions()}</select></label><label><input type="checkbox" id="homeSuggestConsent"> 我同意开启外部搜索联想</label><p>开启后，输入内容会发送给所选 Google 或 Bing 联想服务，不携带凭据、不记录搜索词审计。关闭即停止发送。</p><label>联想服务 <select data-setting="suggestEngine"><option value="google">Google</option><option value="bing">Bing</option></select></label><p>联想服务与网页搜索引擎独立；选择联想后使用默认网页引擎搜索。</p></fieldset><fieldset><legend>浏览记录权限</legend><p id="homePermissionStatus"></p><button data-command="permission" id="homePermissionButton">开启浏览记录</button><p>仅在此设备使用，可随时撤销。隐身模式不读取普通浏览记录。</p></fieldset><p id="homeDialogFeedback" role="status" aria-live="polite"></p></dialog>
+    </div>`;
+    this.input = this.$('#homeSearchInput');
+    this.dropdown = this.$('#homeResults');
+    this.updateClock();
+    this.listen(this.container, 'click', e => this.onClick(e));
+    this.listen(this.container, 'change', e => this.onChange(e));
+    this.listen(this.input, 'input', () => { this.updateSubmitLabel(); this.scheduleSearch(); });
+    this.listen(this.input, 'compositionstart', () => { this.isComposing = true; this.invalidateSearch(); });
+    this.listen(this.input, 'compositionend', () => { this.isComposing = false; this.scheduleSearch(); });
+    this.listen(this.input, 'keydown', e => this.onKeyDown(e));
+    this.listen(this.$('#homeSearchForm'), 'submit', e => { e.preventDefault(); this.handleEnterKey(e); });
+    this.listen(this.$('#homePinnedForm'), 'submit', e => { e.preventDefault(); this.addPinnedSite(); });
+    this.listen(this.$('#homeCustomize'), 'close', () => { if (this.active) this.dialogOpener?.focus(); });
+    this.listen(document, 'visibilitychange', () => {
+      if (document.hidden) this.deactivate();
+      else if (this.isStandalone || !this.container.closest('[hidden]') && this.container.getClientRects().length) this.activate();
+    });
+    if (this.isStandalone && !document.hidden) await this.activate();
+  }
 
-    this.container.innerHTML = `
-      <div class="bb-home-container">
-        <!-- 头部品牌与统计药丸 -->
-        <header class="bb-home-header">
-          <div class="bb-home-brand">
-            <img src="${this.getIconUrl(48)}" alt="BetterBrowse Logo" class="bb-home-logo-img" />
-            <h1 class="bb-home-title">BetterBrowse<span class="bb-home-dot">.</span></h1>
-          </div>
-          <div class="bb-home-stats-pill" id="homeStatsPill" aria-label="运行状态概览">
-            <span class="stat-item">
-              <span>当前窗口:</span>
-              <span class="stat-highlight" id="homeStatWindowTabs">-</span>
-              <span id="homeStatThresholdLabel">/ - 标签</span>
-            </span>
-            <span class="stat-sep"></span>
-            <span class="stat-item">
-              <span>已收纳:</span>
-              <span class="stat-highlight" id="homeStatTotalGroups">-</span>
-              <span>组</span>
-              <span class="stat-highlight" id="homeStatTotalItems">-</span>
-              <span>页面</span>
-            </span>
-          </div>
-        </header>
+  $(selector) { return this.container.querySelector(selector); }
+  engineOptions() { return Object.entries(ENGINES).map(([key, [name]]) => `<option value="${key}">${name}</option>`).join(''); }
+  listen(target, event, handler, live = false) {
+    target?.addEventListener(event, handler);
+    (live ? this._liveCleanups : this._cleanups).push(() => target?.removeEventListener(event, handler));
+  }
+  feedback(message, error = false) {
+    const live = this.$('#homeFeedback');
+    const dialog = this.$('#homeDialogFeedback');
+    this._feedbackToken = message;
+    if (dialog) { dialog.textContent = message; dialog.classList.toggle('error', Boolean(error)); }
+    if (!live) return;
+    live.replaceChildren();
+    live.classList.toggle('error', Boolean(error));
+    if (!message) return;
+    live.append(node('span', '', message));
+    clearTimeout(this._feedbackTimer);
+    this._feedbackTimer = setTimeout(() => {
+      if (this.destroyed || this._feedbackToken !== message) return;
+      live.replaceChildren();
+    }, 5000);
+  }
+  onClick(e) {
+    const button = e.target.closest('button');
+    if (!button) return;
+    if (button.dataset.scope) { this.scope = button.dataset.scope; this.syncControls(); this.scheduleSearch(0); return; }
+    if (button.dataset.engine) { this.setEngine(button.dataset.engine); return; }
+    switch (button.dataset.command) {
+      case 'customize': this.invalidateSearch(); this.dialogOpener = button; this.$('#homeCustomize').showModal(); break;
+      case 'close-dialog': this.$('#homeCustomize').close(); break;
+      case 'clear': this.input.value = ''; this.scheduleSearch(); this.input.focus(); break;
+      case 'destination': this.isStandalone ? this.navigateToStash() : this.openUrl(chrome.runtime.getURL('src/newtab/newtab.html'), true); break;
+      case 'stash': this.navigateToStash(); break;
+      case 'stash-now': this.runManualStash(button, true); break;
+      case 'stash-smart': this.runManualStash(button, false); break;
+      case 'permission': this.hasHistoryPermission ? this.revokeHistoryPermission() : this.requestHistoryPermission(); break;
+    }
+  }
+  onChange(e) {
+    const el = e.target;
+    if (el.dataset.pref) this.saveHome({ [el.dataset.pref]: el.checked });
+    if (el.dataset.setting) this.saveHome({ [el.dataset.setting]: el.value });
+    if (el.id === 'homeSuggestConsent') this.saveHome({ enableExternalSuggest: el.checked, externalSuggestAgreed: el.checked });
+  }
+  syncControls() {
+    const home = this.config.home || {};
+    this.currentEngine = ENGINES[home.searchEngine] ? home.searchEngine : 'google';
+    this.container.querySelectorAll('[data-engine]').forEach(el => el.setAttribute('aria-pressed', String(el.dataset.engine === this.currentEngine)));
+    this.container.querySelectorAll('[data-pref]').forEach(el => { el.checked = home[el.dataset.pref] !== false; });
+    this.container.querySelectorAll('[data-setting]').forEach(el => { el.value = home[el.dataset.setting] || 'google'; });
+    this.$('#homeSuggestConsent').checked = Boolean(home.enableExternalSuggest && home.externalSuggestAgreed);
+    this.container.querySelectorAll('[data-scope]').forEach(el => el.setAttribute('aria-pressed', String(el.dataset.scope === this.scope)));
+    this.$('#homeScopeHint').innerHTML = this.scope === 'all' ? '回车搜索或打开网址 · 方向键选择 · 按 <kbd>/</kbd> 或 <kbd>Ctrl</kbd>+<kbd>K</kbd> 快速聚焦' : '仅检索本地内容 · 不跳转外部搜索';
+    this.renderPinnedList();
+    this.applyModulePreferences();
+    this.renderPrivacy();
+    this.updateSubmitLabel();
+  }
+  /** 输入像网址时把提交按钮改为「打开」。 */
+  updateSubmitLabel() {
+    const btn = this.$('#homeSearchForm .bb-home-primary');
+    const intent = parseNavigationIntent(this.input?.value);
+    if (btn) btn.textContent = intent.kind === 'url' ? '打开' : '搜索';
+    this.input?.setAttribute('enterkeyhint', intent.kind === 'url' ? 'go' : 'search');
+  }
+  applyModulePreferences() {
+    for (const [key, [, id]] of Object.entries(MODULES)) this.$(`#${id}`).hidden = this.config.home?.[key] === false;
+    this.$('#homeFrequent').hidden = this.config.home?.showHistoryRecommendations === false;
+  }
+  async loadConfig() {
+    const seq = ++this.configSeq;
+    try {
+      const config = await requestHome(ActionTypes.GET_CONFIG);
+      if (this.destroyed || seq !== this.configSeq) return;
+      this.config = config;
+      this.syncControls();
+    } catch (err) { if (!this.destroyed && seq === this.configSeq) this.feedback(`加载设置失败：${err.message}`, true); }
+  }
+  async saveHome(patch) {
+    this.invalidateSearch();
+    try {
+      await requestHome(ActionTypes.UPDATE_CONFIG, { home: patch });
+      if (this.destroyed) return;
+      this.config.home = { ...this.config.home, ...patch };
+      this.feedback('设置已保存');
+    } catch (err) { if (!this.destroyed) this.feedback(`保存失败，已恢复原设置：${err.message}`, true); }
+    finally { if (!this.destroyed) { this.syncControls(); if (this.active) { this.refreshAll(); this.scheduleSearch(0); } } }
+  }
+  setEngine(engine) { if (ENGINES[engine]) return this.saveHome({ searchEngine: engine }); }
 
-        <!-- 搜索主舞台 -->
-        <section class="bb-home-search-stage" aria-label="网页搜索">
-          <!-- 搜索引擎切换按钮组 -->
-          <div class="bb-home-engine-tabs" role="tablist" aria-label="搜索引擎选择">
-            <button type="button" class="bb-home-engine-btn active" data-engine="google" role="tab" aria-selected="true">Google</button>
-            <button type="button" class="bb-home-engine-btn" data-engine="bing" role="tab" aria-selected="false">Bing</button>
-            <button type="button" class="bb-home-engine-btn" data-engine="baidu" role="tab" aria-selected="false">百度</button>
-            <button type="button" class="bb-home-engine-btn" data-engine="duckduckgo" role="tab" aria-selected="false">DuckDuckGo</button>
-          </div>
+  /** 按当前时段返回问候语。 */
+  greetingFor(hour) {
+    if (hour < 5) return '夜深了';
+    if (hour < 11) return '早上好';
+    if (hour < 13) return '中午好';
+    if (hour < 18) return '下午好';
+    return '晚上好';
+  }
+  /** 更新页头日期时间与问候语；激活期间每 30 秒刷新。 */
+  updateClock() {
+    const now = new Date();
+    const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(now);
+    const time = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(now);
+    this.$('#homeDate').textContent = date;
+    const clock = this.$('#homeClock');
+    if (clock) {
+      clock.textContent = time;
+      clock.setAttribute('aria-label', `${date} ${time}`);
+    }
+    const greeting = this.$('#homeGreeting');
+    if (greeting) greeting.textContent = this.greetingFor(now.getHours());
+  }
+  startClock() { this.updateClock(); this.stopClock(); this._clockTimer = setInterval(() => this.updateClock(), 30000); }
+  stopClock() { if (this._clockTimer) { clearInterval(this._clockTimer); this._clockTimer = null; } }
+  /** 全局快捷键：/ 或 Ctrl/Cmd+K 将焦点移入搜索框。 */
+  handleGlobalKeydown(e) {
+    if (e.defaultPrevented || e.isComposing) return;
+    const isSlash = e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
+    const isCtrlK = (e.key === 'k' || e.key === 'K') && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey;
+    if (!isSlash && !isCtrlK) return;
+    if (e.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+    if (this.$('#homeCustomize')?.open) return;
+    if (!this.container.getClientRects().length) return;
+    e.preventDefault();
+    this.input?.focus(); this.input?.select();
+  }
 
-          <!-- 组合输入框 (WAI-ARIA Combobox) -->
-          <div class="bb-home-search-box">
-            <svg class="bb-home-search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="8"></circle>
-              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-            </svg>
-            <input
-              type="text"
-              id="homeSearchInput"
-              class="bb-home-search-input"
-              placeholder="输入关键词搜索网页、已收纳标签或历史记录..."
-              autocomplete="off"
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded="false"
-              aria-controls="homeComboboxDropdown"
-              aria-haspopup="listbox"
-            />
-            <div class="bb-home-search-actions">
-              <button type="button" id="btnHomeSearchClear" class="bb-home-btn-icon bb-hidden" title="清空" aria-label="清空输入框">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-              <button type="button" id="btnHomeSearchSubmit" class="bb-home-btn-submit">搜索</button>
-            </div>
-          </div>
+  /** 按域名哈希返回字母标识的色调类，保证同一站点颜色稳定。 */
+  toneFor(url) {
+    let host = '';
+    try { host = new URL(url).hostname || url; } catch { host = String(url ?? ''); }
+    let hash = 0;
+    for (const ch of host) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+    return `bb-tone-${hash % 6}`;
+  }
 
-          <!-- 联想建议与聚合结果下拉列表 -->
-          <div id="homeComboboxDropdown" class="bb-home-combobox-dropdown bb-hidden" role="listbox" aria-label="搜索建议与本地检索">
-            <div id="homeSuggestGroup" class="bb-home-dropdown-group bb-hidden">
-              <div class="bb-home-dropdown-header">
-                <span id="homeSuggestHeaderTitle">搜索联想</span>
-              </div>
-              <div id="homeSuggestList"></div>
-            </div>
+  /** 读取钉选网站列表（配置缺省时返回空数组）。 */
+  getPinnedSites() {
+    const list = this.config.home?.pinnedSites;
+    return Array.isArray(list) ? list.filter(site => site && typeof site.url === 'string') : [];
+  }
 
-            <div id="homeStashGroup" class="bb-home-dropdown-group bb-hidden">
-              <div class="bb-home-dropdown-header">
-                <span>已收纳页面</span>
-              </div>
-              <div id="homeStashList"></div>
-              <button type="button" id="btnHomeLoadMoreStash" class="bb-home-load-more-btn bb-hidden">加载更多收纳匹配</button>
-            </div>
+  /** 渲染常访网站磁贴：钉选固定在前，其余按近 30 天访问次数补足；topVisited 为 null 表示无历史数据。 */
+  renderShortcuts(topVisited) {
+    const shortcuts = this.$('#homeShortcuts');
+    shortcuts.replaceChildren();
+    const seen = new Set();
+    for (const site of this.getPinnedSites()) {
+      if (shortcuts.children.length >= 8) break;
+      let host = '';
+      try { host = new URL(site.url).hostname; } catch { continue; }
+      const link = this.createItemElement({ url: site.url, title: site.title || host, extra: '已钉选' });
+      link.classList.add('bb-home-shortcut');
+      const remove = node('button', 'bb-home-pin-remove', '×');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', `移除钉选 ${site.title || host}`);
+      remove.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); this.removePinnedSiteByUrl(site.url); });
+      link.append(remove);
+      shortcuts.append(link); seen.add(host);
+    }
+    for (const item of Array.isArray(topVisited) ? topVisited : []) {
+      if (shortcuts.children.length >= 8) break;
+      const domain = this.formatHostname(item.url);
+      if (seen.has(domain)) continue; seen.add(domain);
+      const link = this.createItemElement({ ...item, extra: `访问 ${item.visitCount ?? 0} 次` });
+      link.classList.add('bb-home-shortcut');
+      shortcuts.append(link);
+    }
+    if (!shortcuts.children.length) {
+      this.state(shortcuts, Array.isArray(topVisited) ? '近 30 天暂无常访网站，继续浏览后会在这里出现。' : '钉选常用网站固定展示在这里；开启浏览记录后还会自动整理常访网站。');
+    }
+  }
 
-            <div id="homeHistoryGroup" class="bb-home-dropdown-group bb-hidden">
-              <div class="bb-home-dropdown-header">
-                <span>历史记录</span>
-              </div>
-              <div id="homeHistoryList"></div>
-            </div>
-          </div>
+  /** 渲染自定义弹窗中的钉选管理列表。 */
+  renderPinnedList() {
+    const box = this.$('#homePinnedList');
+    if (!box) return;
+    box.replaceChildren();
+    const pinned = this.getPinnedSites();
+    if (!pinned.length) { box.append(node('p', 'bb-home-pinned-empty', '暂无钉选网站')); return; }
+    pinned.forEach((site, index) => {
+      const row = node('div', 'bb-home-pinned-row');
+      const name = site.title || this.formatHostname(site.url);
+      row.append(node('span', 'bb-home-pinned-name', name), node('span', 'bb-home-pinned-url', this.formatHostname(site.url)));
+      const moves = node('div', 'bb-home-pinned-moves');
+      const moveButton = (label, delta, disabled) => {
+        const button = node('button', '', label);
+        button.type = 'button'; button.disabled = disabled;
+        button.setAttribute('aria-label', `将 ${name}${label}`);
+        button.addEventListener('click', () => this.reorderPinnedSite(index, delta));
+        return button;
+      };
+      moves.append(moveButton('上移', -1, index === 0), moveButton('下移', 1, index === pinned.length - 1));
+      const remove = node('button', 'bb-home-pinned-remove', '移除');
+      remove.type = 'button'; remove.addEventListener('click', () => this.removePinnedSite(index));
+      row.append(moves, remove);
+      box.append(row);
+    });
+  }
 
-          <!-- 外部联想同意确认通知栏 -->
-          <div id="homeSuggestConsentCard" class="bb-home-consent-card bb-hidden" role="region" aria-label="联想建议授权提示">
-            <span>开启外部联想？BetterBrowse 会将输入内容发送给 Google/Bing 以获取实时建议（搜索词不审计且不带凭据）。</span>
-            <div class="bb-home-consent-btns">
-              <button type="button" id="btnHomeAgreeSuggest" class="bb-btn-sm bb-btn-primary">同意并开启</button>
-              <button type="button" id="btnHomeDeclineSuggest" class="bb-btn-sm bb-btn-secondary">保持关闭</button>
-            </div>
-          </div>
-        </section>
+  /** 添加钉选网站：仅接受 http/https，去重并限制数量。 */
+  async addPinnedSite() {
+    const titleInput = this.$('#homePinnedTitle'), urlInput = this.$('#homePinnedUrl');
+    let parsed;
+    try { parsed = new URL(urlInput.value.trim()); } catch { this.feedback('网址格式无效，请检查后重试', true); return; }
+    if (!['http:', 'https:'].includes(parsed.protocol)) { this.feedback('钉选仅支持 http/https 网址', true); return; }
+    const pinned = this.getPinnedSites();
+    if (pinned.length >= 12) { this.feedback('钉选网站最多 12 个', true); return; }
+    if (pinned.some(site => site.url === parsed.href)) { this.feedback('该网址已在钉选列表中', true); return; }
+    await this.saveHome({ pinnedSites: [...pinned, { title: (titleInput.value || '').trim() || parsed.hostname, url: parsed.href }] });
+    titleInput.value = ''; urlInput.value = '';
+  }
 
-        <!-- 主页偏好设置轻量折叠面板 -->
-        <details class="bb-home-pref-panel" id="homePrefPanel">
-          <summary class="bb-home-pref-summary">
-            <span class="bb-home-pref-summary-title">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-              </svg>
-              <span>主页展示偏好</span>
-            </span>
-            <span id="homePrefFeedback" class="bb-home-pref-feedback bb-hidden" role="status"></span>
-            <svg class="bb-home-pref-summary-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </summary>
-          <div class="bb-home-pref-body">
-            <label class="bb-home-pref-checkbox-label">
-              <input type="checkbox" id="chkShowWindowTabStats" checked />
-              <span>显示当前窗口标签与阈值统计</span>
-            </label>
-            <label class="bb-home-pref-checkbox-label">
-              <input type="checkbox" id="chkShowRecentStash" checked />
-              <span>显示近期收纳模块</span>
-            </label>
-            <label class="bb-home-pref-checkbox-label">
-              <input type="checkbox" id="chkShowHistoryRecommendations" checked />
-              <span>显示历史记录推荐模块</span>
-            </label>
-            <div class="bb-home-pref-hint">
-              <span>提示：默认搜索引擎直接点击上方 Tab 即可自动保存。</span>
-            </div>
-          </div>
-        </details>
+  /** 用变换函数更新钉选列表，保持无效操作不触发写入。 */
+  updatePinnedSites(transform) {
+    const current = this.getPinnedSites();
+    const next = transform(current);
+    return next === current ? undefined : this.saveHome({ pinnedSites: next });
+  }
 
-        <!-- 下方内容网格：近期收纳 + 历史推荐 -->
-        <main class="bb-home-grid">
-          <!-- 卡片 1: 近期收纳 (不删除条目，直接访问) -->
-          <section class="bb-home-section-card" id="homeRecentStashCard" aria-labelledby="homeRecentStashTitle">
-            <div class="bb-home-section-header">
-              <div class="bb-home-section-title-wrap">
-                <svg class="bb-home-section-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path>
-                  <path d="m3.3 7 8.7 5 8.7-5"></path>
-                  <path d="M12 22V12"></path>
-                </svg>
-                <h2 id="homeRecentStashTitle" class="bb-home-section-title">近期收纳</h2>
-              </div>
-              <a href="#" id="homeLinkAllStash" class="bb-home-section-link">全部时间线 &rarr;</a>
-            </div>
-            <div id="homeRecentStashList" class="bb-home-list">
-              <div class="bb-home-empty">
-                <span>正在加载近期收纳...</span>
-              </div>
-            </div>
-          </section>
+  /** 按下标移除钉选网站。 */
+  removePinnedSite(index) {
+    return this.updatePinnedSites(current => {
+      if (!Number.isInteger(index) || index < 0 || index >= current.length) return current;
+      const next = current.slice(); next.splice(index, 1); return next;
+    });
+  }
 
-          <!-- 卡片 2: 浏览历史推荐 (最近访问 + 常访推荐；标注候选范围和 visitCount 访问次数) -->
-          <section class="bb-home-section-card" id="homeHistoryCard" aria-labelledby="homeHistoryTitle">
-            <div class="bb-home-section-header">
-              <div class="bb-home-section-title-wrap">
-                <svg class="bb-home-section-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <polyline points="12 6 12 12 16 14"></polyline>
-                </svg>
-                <h2 id="homeHistoryTitle" class="bb-home-section-title">历史推荐</h2>
-              </div>
-              <button type="button" id="btnHomeRevokeHistory" class="bb-home-section-link bb-hidden" title="撤销历史记录权限">撤销权限</button>
-            </div>
-            <div id="homeHistoryContainer" class="bb-home-list">
-              <!-- 动态装载历史权限引导卡片或推荐列表 -->
-              <div class="bb-home-empty">
-                <span>正在查询历史记录状态...</span>
-              </div>
-            </div>
-          </section>
-        </main>
-      </div>
-    `;
+  /** 按 URL 移除钉选网站（磁贴上的快捷移除入口）。 */
+  removePinnedSiteByUrl(url) {
+    return this.removePinnedSite(this.getPinnedSites().findIndex(site => site.url === url));
+  }
 
-    this.bindDomElements();
-    this.bindEvents();
+  /** 调整钉选顺序并写回设备本地配置。 */
+  reorderPinnedSite(index, delta) {
+    return this.updatePinnedSites(current => movePinnedSite(current, index, delta));
+  }
+
+
+  async activate() {
+    if (this.destroyed || document.hidden) return;
+    if (!this.active) {
+      this.active = true;
+      this.listen(document, 'click', e => { if (!this.$('.bb-home-search-stage').contains(e.target)) this.invalidateSearch(); }, true);
+      const configChanged = message => {
+        if (message?.action !== ActionTypes.NOTIFY_CONFIG_UPDATED) return;
+        this.invalidateSearch(); this.clearHistory(); ++this.dataSeq;
+        this.loadConfig().then(() => { if (this.active) { this.refreshAll(); this.scheduleSearch(0); } });
+      };
+      const permissionChanged = change => {
+        if (!change.permissions?.includes('history')) return;
+        this.invalidateSearch(); this.clearHistory(); ++this.dataSeq;
+        this.refreshAll();
+      };
+      for (const [event, fn] of [[chrome.runtime?.onMessage, configChanged], [chrome.permissions?.onRemoved, permissionChanged], [chrome.permissions?.onAdded, permissionChanged]]) {
+        event?.addListener(fn); this._liveCleanups.push(() => event?.removeListener(fn));
+      }
+      this.listen(document, 'keydown', e => this.handleGlobalKeydown(e), true);
+    }
+    this.startClock();
     await this.loadConfig();
+    if (this.active) await this.refreshAll();
+  }
+  deactivate() {
+    this.active = false; this.stopClock(); ++this.dataSeq; ++this.configSeq; this.invalidateSearch(); this.clearHistory();
+    this._pendingRestore = null; clearTimeout(this._pendingRestoreTimer); clearTimeout(this._feedbackTimer);
+    this.$('#homeCustomize')?.close();
+    for (const cleanup of this._liveCleanups.splice(0)) cleanup();
+  }
+  destroy() { this.deactivate(); this.destroyed = true; for (const cleanup of this._cleanups.splice(0)) cleanup(); this.container.replaceChildren(); }
+
+  async refreshAll() {
+    if (!this.active || this.destroyed) return;
+    const seq = ++this.dataSeq;
+    this.applyModulePreferences();
+    await Promise.allSettled([this.refreshStats(seq), this.refreshRecentStash(seq), this.refreshHistorySection(seq)]);
+  }
+  validData(seq) { return this.active && !this.destroyed && seq === this.dataSeq; }
+  state(container, message, retry, label = '重试') {
+    container.replaceChildren(node('p', 'bb-home-empty', message));
+    if (retry) { const b = node('button', 'bb-home-text-button', label); b.type = 'button'; b.addEventListener('click', retry); container.append(b); }
+  }
+  /** 以微光骨架占位替代"正在读取…"纯文本，降低感知等待。 */
+  renderSkeleton(container, lines = 3) {
+    if (!container) return;
+    container.replaceChildren();
+    const box = node('div', 'bb-home-skeleton');
+    box.setAttribute('aria-hidden', 'true');
+    const widths = ['', 'bb-w-75', 'bb-w-55'];
+    for (let i = 0; i < lines; i += 1) box.append(node('div', `bb-home-skeleton-line ${widths[i % widths.length]}`));
+    container.append(box);
+    const status = node('span', 'bb-home-sr', '正在加载…');
+    status.setAttribute('role', 'status');
+    container.append(status);
+  }
+  async refreshStats(seq = this.dataSeq) {
+    if (this.config.home?.showWindowTabStats === false) return;
+    const el = this.$('#homeStatsContent');
+    // 仅空容器显示骨架；刷新时保留旧内容等待新数据，避免收纳/配置变更后整卡闪烁
+    if (!el.children.length) this.renderSkeleton(el, 4);
+    try {
+      const stats = await requestHome(ActionTypes.GET_HOME_STATS);
+      if (!this.validData(seq)) return;
+      const over = stats.currentWindowCount >= stats.threshold;
+      el.innerHTML = `<div class="bb-home-window-count"><strong></strong><span>当前窗口标签</span></div><progress aria-label="当前窗口标签与收纳阈值"></progress><p class="bb-home-threshold"></p><div class="bb-home-totals"><div><strong></strong><span>收纳组</span></div><div><strong></strong><span>已收纳页面</span></div></div><p class="bb-home-week"></p><div class="bb-home-stash-actions">${over ? '<button type="button" data-command="stash-smart" class="bb-home-stash-now">智能收纳闲置标签</button>' : ''}<button type="button" data-command="stash-now" class="${over ? 'bb-home-stash-all' : 'bb-home-stash-now'}">收纳本窗口全部标签</button></div>`;
+      el.querySelector('.bb-home-window-count strong').textContent = String(stats.currentWindowCount);
+      const progress = el.querySelector('progress'); progress.max = Math.max(1, stats.threshold); progress.value = stats.currentWindowCount;
+      el.querySelector('.bb-home-threshold').textContent = `收纳阈值 ${stats.threshold} 个 · ${over ? '已达到阈值' : `还可浏览 ${stats.threshold - stats.currentWindowCount} 个`}`;
+      this.$('#homeStats').dataset.over = String(over);
+      const totals = el.querySelectorAll('.bb-home-totals strong'); totals[0].textContent = String(stats.totalGroups); totals[1].textContent = String(stats.totalItems);
+      el.querySelector('.bb-home-week').textContent = `本周收纳 ${stats.weekGroupCount ?? 0} 组 · ${stats.weekItemCount ?? 0} 条`;
+    } catch (err) { if (this.validData(seq)) this.state(el, `概览加载失败：${err.message}`, () => this.refreshStats()); }
+  }
+  /** 主页快捷收纳：默认全量；达到阈值时提供智能收纳（forceAll: false）。 */
+  async runManualStash(button, forceAll = true) {
+    if (!button || button.disabled) return;
+    const buttons = [...this.container.querySelectorAll('[data-command="stash-now"], [data-command="stash-smart"]')];
+    const originals = new Map(buttons.map(el => [el, el.textContent]));
+    for (const el of buttons) { el.disabled = true; }
+    button.textContent = '正在收纳…';
+    try {
+      const res = await requestHome(ActionTypes.EXECUTE_STASH, { forceAll });
+      const count = Number(res?.stashedCount) || 0;
+      const groupId = res?.groupId || null;
+      if (!count) {
+        this.feedback(res?.note || (forceAll ? '当前窗口没有可收纳的网页' : '当前没有可收纳的闲置标签'));
+      } else {
+        this.feedback(`已收纳 ${count} 个标签页至时间线`);
+        if (groupId) {
+          const live = this.$('#homeFeedback');
+          const undo = node('button', 'bb-home-feedback-action', '撤销');
+          undo.type = 'button';
+          undo.addEventListener('click', () => { live.replaceChildren(); this.undoRecentStash(groupId); });
+          live?.append(undo);
+          clearTimeout(this._feedbackTimer);
+          this._feedbackTimer = setTimeout(() => { if (!this.destroyed && live?.contains(undo)) live.replaceChildren(); }, 10000);
+        }
+      }
+    } catch (err) { this.feedback(`收纳失败：${err.message}`, true); }
+    finally {
+      if (this.destroyed) return;
+      for (const el of buttons) { el.disabled = false; el.textContent = originals.get(el) || el.textContent; }
+      if (this.active) { this.refreshStats(); this.refreshRecentStash(); }
+    }
+  }
+  /** 撤销刚刚创建的收纳组：恢复标签并删除该组。 */
+  async undoRecentStash(groupId) {
+    if (!groupId) return;
+    try {
+      await requestHome(ActionTypes.RESTORE_STASH_GROUP, { groupId, removeAfterRestore: true });
+      this.feedback('已撤销本次收纳，标签页已恢复');
+    } catch (err) { this.feedback(`撤销失败：${err.message}`, true); }
+    if (this.active) { this.refreshStats(); this.refreshRecentStash(); }
+  }
+  async refreshRecentStash(seq = this.dataSeq) {
+    if (this.config.home?.showRecentStash === false) return;
+    const el = this.$('#homeStashList');
+    if (!el.children.length) this.renderSkeleton(el, 3);
+    try {
+      const result = await requestHome(ActionTypes.GET_STASH_GROUP_SUMMARIES_PAGE, { limit: 3, previewLimit: 3 });
+      if (!this.validData(seq)) return;
+      if (!result.items?.length) { this.state(el, '还没有收纳组。收纳闲置标签后，可以从这里继续。', () => this.navigateToStash(), '前往收纳箱'); return; }
+      el.replaceChildren();
+      for (const group of result.items) {
+        const box = node('article', 'bb-home-stash-group');
+        const heading = node('div', 'bb-home-group-heading');
+        const title = node('div', ''); title.append(node('h3', '', group.title || group.name || '未命名收纳组'), node('p', '', `${group.itemCount ?? group.tabs?.length ?? 0} 个页面 · ${this.formatTimeAgo(group.createdAt)}`));
+        const actions = node('div', 'bb-home-group-actions');
+        const viewButton = node('button', '', '查看组'); viewButton.addEventListener('click', () => this.navigateToStash(group.groupId || group.id));
+        const restore = node('button', 'bb-home-group-restore', '恢复');
+        restore.title = '恢复整组标签页；若设置为恢复后移除条目，需再次确认';
+        restore.addEventListener('click', () => this.restoreStashGroup(group, restore));
+        actions.append(viewButton, restore);
+        heading.append(title, actions); box.append(heading);
+        for (const tab of (group.tabs || []).slice(0, 3)) box.append(this.createItemElement(tab));
+        el.append(box);
+      }
+    } catch (err) { if (this.validData(seq)) this.state(el, `近期收纳加载失败：${err.message}`, () => this.refreshRecentStash()); }
+  }
+  /** 主页快捷恢复整组标签页（恢复后条目处置遵循收纳箱 restoreBehavior 设置）。 */
+  async restoreStashGroup(group, button) {
+    const groupId = group?.groupId || group?.id;
+    if (!groupId || !button || button.disabled) return;
+    const removes = this.config.stashSettings?.restoreBehavior === 'remove';
+    if (removes && this._pendingRestore !== groupId) {
+      this._pendingRestore = groupId;
+      button.dataset.originalLabel = button.textContent;
+      button.textContent = '确认恢复';
+      button.classList.add('bb-home-confirming');
+      clearTimeout(this._pendingRestoreTimer);
+      this._pendingRestoreTimer = setTimeout(() => {
+        if (this._pendingRestore !== groupId || this.destroyed) return;
+        this._pendingRestore = null;
+        button.textContent = button.dataset.originalLabel || '恢复';
+        button.classList.remove('bb-home-confirming');
+      }, 4000);
+      return;
+    }
+    this._pendingRestore = null;
+    clearTimeout(this._pendingRestoreTimer);
+    button.disabled = true;
+    const original = button.dataset.originalLabel || button.textContent;
+    button.classList.remove('bb-home-confirming');
+    button.textContent = '恢复中…';
+    try {
+      await requestHome(ActionTypes.RESTORE_STASH_GROUP, { groupId });
+      this.feedback(`已恢复「${group.title || group.name || '未命名收纳组'}」的标签页`);
+    } catch (err) {
+      this.feedback(`恢复失败：${err.message}`, true);
+      button.disabled = false; button.textContent = original;
+      return;
+    }
+    if (this.active) { this.refreshStats(); this.refreshRecentStash(); }
+  }
+  async checkHistoryPermission() {
+    if (chrome.extension?.inIncognitoContext) return false;
+    return Boolean(await chrome.permissions?.contains({ permissions: ['history'] }));
+  }
+  clearHistory() {
+    this.hasHistoryPermission = false;
+    for (const selector of ['#homeShortcuts', '#homeRecentHistory']) this.$(selector)?.replaceChildren();
+    this.renderPrivacy();
+  }
+  renderPrivacy() {
+    const incognito = Boolean(globalThis.chrome?.extension?.inIncognitoContext);
+    const history = incognito ? '隐身模式：不读取浏览记录' : this.hasHistoryPermission ? '浏览记录已授权，仅在此设备使用' : '浏览记录未授权';
+    const suggest = this.config.home?.enableExternalSuggest && this.config.home?.externalSuggestAgreed ? `外部联想已开启 · ${this.config.home.suggestEngine === 'bing' ? 'Bing' : 'Google'}` : '外部联想已关闭';
+    this.$('#homePrivacyStatus').textContent = `${history}。${suggest}。`;
+    this.$('#homePermissionStatus').textContent = history;
+    const button = this.$('#homePermissionButton'); button.textContent = this.hasHistoryPermission ? '撤销浏览记录权限' : '开启浏览记录'; button.disabled = incognito;
+  }
+  async refreshHistorySection(seq = this.dataSeq) {
+    const recent = this.$('#homeRecentHistory'), shortcuts = this.$('#homeShortcuts');
+    try {
+      const granted = await this.checkHistoryPermission();
+      if (!this.validData(seq)) return;
+      this.hasHistoryPermission = granted; this.renderPrivacy();
+      if (!granted) { this.renderUngrantedHistory(recent); return; }
+      if (this.config.home?.showHistoryRecommendations === false) return;
+      if (!recent.children.length) this.renderSkeleton(recent, 3);
+      if (!shortcuts.children.length) this.renderSkeleton(shortcuts, 4);
+      const result = await requestHome(ActionTypes.GET_HISTORY_RECOMMENDATIONS, { limit: 8 });
+      if (!this.validData(seq)) return;
+      if (result.granted === false) { this.clearHistory(); this.renderUngrantedHistory(recent); return; }
+      recent.replaceChildren();
+      for (const item of (result.recent || []).slice(0, 4)) recent.append(this.createItemElement({ ...item, extra: this.formatTimeAgo(item.lastVisitTime) }));
+      this.renderShortcuts(result.topVisited || []);
+      if (!recent.children.length) this.state(recent, '近 7 天没有可展示的浏览记录。');
+    } catch (err) { if (this.validData(seq)) { this.state(recent, `浏览记录加载失败：${err.message}`, () => this.refreshHistorySection()); this.state(shortcuts, '常访网站暂不可用。', () => this.refreshHistorySection()); } }
+  }
+  /** 无浏览记录权限时的引导渲染（本地预检与后台响应复查共用一条路径）。 */
+  renderUngrantedHistory(recent) {
+    const incognito = chrome.extension?.inIncognitoContext;
+    this.state(recent, incognito ? '隐身模式不读取普通浏览记录。' : '开启后可找回近 7 天访问的页面，也能在搜索中检索浏览记录。', incognito ? null : () => this.requestHistoryPermission(), '开启浏览记录');
+    this.renderShortcuts(null);
+  }
+  async requestHistoryPermission() {
+    try { const granted = await chrome.permissions.request({ permissions: ['history'] }); this.feedback(granted ? '浏览记录权限已开启' : '未开启浏览记录权限'); this.invalidateSearch(); await this.refreshAll(); }
+    catch (err) { this.feedback(`开启失败：${err.message}`, true); }
+  }
+  async revokeHistoryPermission() {
+    this.invalidateSearch(); ++this.dataSeq; this.clearHistory();
+    try { const removed = await chrome.permissions.remove({ permissions: ['history'] }); if (!removed) throw new Error('浏览器未撤销权限'); this.feedback('浏览记录权限已撤销'); }
+    catch (err) { this.feedback(`撤销失败：${err.message}`, true); }
     await this.refreshAll();
   }
 
-  /**
-   * 绑定 DOM 引用
-   */
-  bindDomElements() {
-    this.input = this.container.querySelector('#homeSearchInput');
-    this.btnClear = this.container.querySelector('#btnHomeSearchClear');
-    this.btnSubmit = this.container.querySelector('#btnHomeSearchSubmit');
-    this.engineBtns = this.container.querySelectorAll('.bb-home-engine-btn');
-    this.dropdown = this.container.querySelector('#homeComboboxDropdown');
-    this.suggestGroup = this.container.querySelector('#homeSuggestGroup');
-    this.suggestList = this.container.querySelector('#homeSuggestList');
-    this.suggestHeaderTitle = this.container.querySelector('#homeSuggestHeaderTitle');
-    this.stashGroup = this.container.querySelector('#homeStashGroup');
-    this.stashList = this.container.querySelector('#homeStashList');
-    this.btnLoadMoreStash = this.container.querySelector('#btnHomeLoadMoreStash');
-    this.historyGroup = this.container.querySelector('#homeHistoryGroup');
-    this.historyList = this.container.querySelector('#homeHistoryList');
-    this.consentCard = this.container.querySelector('#homeSuggestConsentCard');
-    this.btnAgreeSuggest = this.container.querySelector('#btnHomeAgreeSuggest');
-    this.btnDeclineSuggest = this.container.querySelector('#btnHomeDeclineSuggest');
-    this.statsWindowTabs = this.container.querySelector('#homeStatWindowTabs');
-    this.statsThresholdLabel = this.container.querySelector('#homeStatThresholdLabel');
-    this.statsTotalGroups = this.container.querySelector('#homeStatTotalGroups');
-    this.statsTotalItems = this.container.querySelector('#homeStatTotalItems');
-    this.recentStashList = this.container.querySelector('#homeRecentStashList');
-    this.historyContainer = this.container.querySelector('#homeHistoryContainer');
-    this.btnRevokeHistory = this.container.querySelector('#btnHomeRevokeHistory');
-    this.linkAllStash = this.container.querySelector('#homeLinkAllStash');
-    this.statsPill = this.container.querySelector('#homeStatsPill');
-    this.recentStashCard = this.container.querySelector('#homeRecentStashCard');
-    this.historyCard = this.container.querySelector('#homeHistoryCard');
-    this.homeGrid = this.container.querySelector('.bb-home-grid');
-    this.prefPanel = this.container.querySelector('#homePrefPanel');
-    this.prefFeedback = this.container.querySelector('#homePrefFeedback');
-    this.chkStats = this.container.querySelector('#chkShowWindowTabStats');
-    this.chkRecentStash = this.container.querySelector('#chkShowRecentStash');
-    this.chkHistory = this.container.querySelector('#chkShowHistoryRecommendations');
+  invalidateSearch() {
+    ++this.searchSeq; clearTimeout(this.debounceTimer); this.stashNextCursor = null; this.loadingMore = false;
+    this.sources = {}; this.currentOptions = []; this.activeOptionIndex = -1;
+    if (this.dropdown) { this.dropdown.hidden = true; this.$('#homeResultList').replaceChildren(); this.$('#homeResultActions').replaceChildren(); }
+    this.input?.setAttribute('aria-expanded', 'false'); this.input?.removeAttribute('aria-activedescendant');
   }
-
-  /**
-   * 同步偏好设置面板的复选框勾选状态
-   */
-  syncCheckboxStates() {
-    const home = this.config?.home || {};
-    if (this.chkStats) this.chkStats.checked = home.showWindowTabStats !== false;
-    if (this.chkRecentStash) this.chkRecentStash.checked = home.showRecentStash !== false;
-    if (this.chkHistory) this.chkHistory.checked = home.showHistoryRecommendations !== false;
+  scheduleSearch(delay = 180) {
+    this.invalidateSearch(); this.$('#homeClear').hidden = !this.input.value;
+    if (!this.active || this.isComposing || !this.input.value.trim()) return;
+    this.debounceTimer = setTimeout(() => this.executeSearch(this.input.value.trim()), delay);
   }
-
-  /**
-   * 应用模块可见性偏好（当前窗口统计、近期收纳卡片、历史推荐卡片）
-   */
-  applyModulePreferences() {
-    const home = this.config?.home || {};
-    const showStats = home.showWindowTabStats !== false;
-    const showRecent = home.showRecentStash !== false;
-    const showHistory = home.showHistoryRecommendations !== false;
-
-    if (this.statsPill) this.statsPill.classList.toggle('bb-hidden', !showStats);
-    if (this.recentStashCard) this.recentStashCard.classList.toggle('bb-hidden', !showRecent);
-    if (this.historyCard) this.historyCard.classList.toggle('bb-hidden', !showHistory);
-    if (this.homeGrid) this.homeGrid.classList.toggle('bb-hidden', !showRecent && !showHistory);
-  }
-
-  /**
-   * 绑定界面交互事件
-   */
-  bindEvents() {
-    const addListener = (element, event, handler) => {
-      if (!element) return;
-      element.addEventListener(event, handler);
-      this._cleanups.push(() => element.removeEventListener(event, handler));
-    };
-
-    // 1. 搜索引擎切换
-    this.engineBtns.forEach((btn) => {
-      addListener(btn, 'click', () => {
-        const engine = btn.dataset.engine;
-        if (engine && SEARCH_ENGINES[engine]) {
-          this.setEngine(engine);
-          this.input?.focus();
-        }
-      });
-    });
-
-    // 2. 搜索输入防抖、IME 组合与清空
-    addListener(this.input, 'compositionstart', () => {
-      this.isComposing = true;
-    });
-
-    addListener(this.input, 'compositionend', () => {
-      this.isComposing = false;
-      this.scheduleSearch();
-    });
-
-    addListener(this.input, 'input', () => {
-      if (this.btnClear) {
-        this.btnClear.classList.toggle('bb-hidden', !this.input.value);
-      }
-      if (this.isComposing) return;
-      this.scheduleSearch();
-    });
-
-    addListener(this.btnClear, 'click', () => {
-      if (this.input) {
-        this.input.value = '';
-        this.input.focus();
-      }
-      this.btnClear?.classList.add('bb-hidden');
-      this.closeDropdown();
-    });
-
-    // 3. 键盘 Combobox 导航（ArrowUp/Down, Enter, Escape, 修饰键与输入法保护）
-    addListener(this.input, 'keydown', (e) => {
-      if (this.isComposing || e.isComposing || e.keyCode === 229) return;
-
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        this.moveActiveOption(1);
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        this.moveActiveOption(-1);
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        this.handleEnterKey(e);
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        this.closeDropdown();
-      }
-    });
-
-    // 4. 点击搜索按钮（支持修饰键新标签页打开）
-    addListener(this.btnSubmit, 'click', (e) => {
-      this.submitWebSearch(this.input.value.trim(), Boolean(e?.ctrlKey || e?.metaKey));
-    });
-
-    // 5. 点击其他区域关闭下拉层
-    const handleDocumentClick = (e) => {
-      if (!this.container?.contains(e.target)) {
-        this.closeDropdown();
-      }
-    };
-    document.addEventListener('click', handleDocumentClick);
-    this._cleanups.push(() => document.removeEventListener('click', handleDocumentClick));
-
-    // 6. 收纳加载更多
-    addListener(this.btnLoadMoreStash, 'click', (e) => {
-      e.stopPropagation();
-      this.loadMoreStashResults();
-    });
-
-    // 7. 外部联想同意流程（拒绝时立即清空并收起已有建议）
-    addListener(this.btnAgreeSuggest, 'click', async () => {
-      await this.setExternalSuggestAgreed(true);
-      this.consentCard?.classList.add('bb-hidden');
-      this.scheduleSearch(0);
-    });
-
-    addListener(this.btnDeclineSuggest, 'click', async () => {
-      await this.setExternalSuggestAgreed(false);
-      this.consentCard?.classList.add('bb-hidden');
-      if (this.suggestGroup) {
-        this.suggestGroup.classList.add('bb-hidden');
-        if (this.suggestList) this.suggestList.innerHTML = '';
-      }
-    });
-
-    // 8. 撤销历史权限
-    addListener(this.btnRevokeHistory, 'click', async () => {
-      await this.revokeHistoryPermission();
-    });
-
-    // 9. 全部时间线跳转
-    addListener(this.linkAllStash, 'click', (e) => {
-      e.preventDefault();
-      this.navigateToStash();
-    });
-
-    // 10. 监听后台配置与偏好更新通知，即时响应模块开关变更
-    const handleRuntimeMessage = (message) => {
-      if (message?.action === ActionTypes.NOTIFY_CONFIG_UPDATED) {
-        this.loadConfig().then(() => this.refreshAll()).catch(() => {});
-      }
-    };
-    if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
-      chrome.runtime.onMessage.addListener(handleRuntimeMessage);
-      this._cleanups.push(() => {
-        try {
-          chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
-        } catch {}
-      });
-    }
-
-    // 11. 主页模块偏好复选框切换（通过 UPDATE_CONFIG 统一持久化与广播）
-    addListener(this.chkStats, 'change', () => {
-      this.updateModulePreference('showWindowTabStats', this.chkStats.checked, this.chkStats);
-    });
-    addListener(this.chkRecentStash, 'change', () => {
-      this.updateModulePreference('showRecentStash', this.chkRecentStash.checked, this.chkRecentStash);
-    });
-    addListener(this.chkHistory, 'change', () => {
-      this.updateModulePreference('showHistoryRecommendations', this.chkHistory.checked, this.chkHistory);
-    });
-  }
-
-  /**
-   * 加载用户偏好
-   */
-  async loadConfig() {
-    try {
-      this.config = await StorageAdapter.getUserConfig();
-      if (this.config?.home?.searchEngine && SEARCH_ENGINES[this.config.home.searchEngine]) {
-        this.setEngine(this.config.home.searchEngine, false);
-      }
-      this.syncCheckboxStates();
-    } catch {
-      this.config = null;
-    }
-  }
-
-  /**
-   * 更新主页模块展示偏好（调用 UPDATE_CONFIG 保证持久化，失败自动回滚并提示）
-   * @param {string} key
-   * @param {boolean} value
-   * @param {HTMLInputElement} [checkboxEl]
-   */
-  async updateModulePreference(key, value, checkboxEl) {
-    try {
-      const res = await MessageBus.sendToBackground(ActionTypes.UPDATE_CONFIG, {
-        home: {
-          ...(this.config?.home || {}),
-          [key]: value
-        }
-      });
-      if (!res) throw new Error('配置更新未成功');
-      if (this.config) {
-        this.config.home = {
-          ...(this.config.home || {}),
-          [key]: value
-        };
-      }
-      this.applyModulePreferences();
-      this.showPrefFeedback('偏好已保存', 'success');
-    } catch (err) {
-      if (checkboxEl) checkboxEl.checked = !value;
-      this.showPrefFeedback(`保存失败: ${err?.message || '配置更新异常'}`, 'error');
-    }
-  }
-
-  /**
-   * 展示偏好面板轻量状态反馈提示
-   * @param {string} text
-   * @param {'success'|'error'} [type='success']
-   */
-  showPrefFeedback(text, type = 'success') {
-    if (!this.prefFeedback) return;
-    clearTimeout(this.prefFeedbackTimer);
-    this.prefFeedback.textContent = text;
-    this.prefFeedback.className = `bb-home-pref-feedback ${type}`;
-    this.prefFeedback.classList.remove('bb-hidden');
-    this.prefFeedbackTimer = setTimeout(() => {
-      this.prefFeedback?.classList.add('bb-hidden');
-    }, 2500);
-  }
-
-  /**
-   * 刷新整个主页数据（统计、近期收纳、历史权限与推荐；遵循模块偏好开关）
-   */
-  async refreshAll() {
-    this.applyModulePreferences();
-    const home = this.config?.home || {};
-    const tasks = [];
-    if (home.showWindowTabStats !== false) tasks.push(this.refreshStats());
-    if (home.showRecentStash !== false) tasks.push(this.refreshRecentStash());
-    if (home.showHistoryRecommendations !== false) tasks.push(this.refreshHistorySection());
-    await Promise.allSettled(tasks);
-  }
-
-  /**
-   * 刷新标签与收纳统计
-   */
-  async refreshStats() {
-    try {
-      const stats = await MessageBus.sendToBackground(ActionTypes.GET_HOME_STATS);
-      if (stats && stats.success) {
-        if (this.statsWindowTabs) this.statsWindowTabs.textContent = String(stats.currentWindowCount ?? 0);
-        if (this.statsThresholdLabel) this.statsThresholdLabel.textContent = `/ ${stats.threshold ?? 15} 标签`;
-        if (this.statsTotalGroups) this.statsTotalGroups.textContent = String(stats.totalGroups ?? 0);
-        if (this.statsTotalItems) this.statsTotalItems.textContent = String(stats.totalItems ?? 0);
-      }
-    } catch {
-      // 忽略统计读取异常
-    }
-  }
-
-  /**
-   * 刷新近期收纳卡片（使用摘要分页轻量读取，避免全库读取；不删除条目，直接打开）
-   */
-  async refreshRecentStash() {
-    if (!this.recentStashList) return;
-    try {
-      const pageRes = await MessageBus.sendToBackground(ActionTypes.GET_STASH_GROUP_SUMMARIES_PAGE, {
-        limit: 3,
-        previewLimit: 3
-      });
-      const topGroups = Array.isArray(pageRes?.items) ? pageRes.items : [];
-      if (topGroups.length === 0) {
-        this.renderEmptyList(this.recentStashList, '目前没有已收纳的标签页');
-        return;
-      }
-
-      this.recentStashList.innerHTML = '';
-
-      topGroups.forEach((group) => {
-        const box = document.createElement('div');
-        box.className = 'bb-home-stash-group-box';
-
-        const header = document.createElement('div');
-        header.className = 'bb-home-stash-group-header';
-
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'bb-home-stash-group-name';
-        nameSpan.textContent = group.title || group.name || this.formatDate(group.createdAt);
-
-        const timeSpan = document.createElement('span');
-        const count = group.itemCount ?? (group.tabs || []).length;
-        timeSpan.textContent = `${count} 个页面 · ${this.formatTimeAgo(group.createdAt)}`;
-
-        header.appendChild(nameSpan);
-        header.appendChild(timeSpan);
-        box.appendChild(header);
-
-        const itemsContainer = document.createElement('div');
-        itemsContainer.className = 'bb-home-stash-group-items';
-
-        // 每个组显示前 3 个条目
-        const previewTabs = (group.tabs || []).slice(0, 3);
-        previewTabs.forEach((tab) => {
-          const itemEl = this.createItemElement({
-            url: tab.url,
-            title: tab.title || tab.url,
-            favIconUrl: tab.favIconUrl,
-            extra: ''
-          });
-          itemsContainer.appendChild(itemEl);
-        });
-
-        box.appendChild(itemsContainer);
-        this.recentStashList.appendChild(box);
-      });
-    } catch (err) {
-      this.renderEmptyList(this.recentStashList, '加载近期收纳失败');
-    }
-  }
-
-  /**
-   * 刷新历史推荐区（真实权限检查、按需引导与推荐展示）
-   */
-  async refreshHistorySection() {
-    if (!this.historyContainer) return;
-
-    // 1. 真实权限检查（真实权限为准）
-    let granted = false;
-    try {
-      if (typeof chrome !== 'undefined' && chrome.permissions?.contains) {
-        granted = await chrome.permissions.contains({ permissions: ['history'] });
-      }
-    } catch {
-      granted = false;
-    }
-    this.hasHistoryPermission = granted;
-
-    if (this.btnRevokeHistory) {
-      this.btnRevokeHistory.classList.toggle('bb-hidden', !granted);
-    }
-
-    // 2. 未授权：渲染权限申请引导卡片
-    if (!granted) {
-      this.historyContainer.innerHTML = '';
-      const banner = document.createElement('div');
-      banner.className = 'bb-home-permission-banner';
-
-      const iconSvg = document.createElement('div');
-      iconSvg.className = 'bb-home-permission-icon';
-      iconSvg.innerHTML = `
-        <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
-      `;
-
-      const text = document.createElement('div');
-      text.className = 'bb-home-permission-text';
-      text.textContent = '开启可选历史记录权限后，主页可显示近 7 天最近访问与近 30 天高频访问推荐，并在搜索时匹配历史记录。';
-
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'bb-btn-sm bb-btn-primary';
-      btn.textContent = '授权历史记录权限';
-      btn.addEventListener('click', () => this.requestHistoryPermission());
-
-      banner.appendChild(iconSvg);
-      banner.appendChild(text);
-      banner.appendChild(btn);
-      this.historyContainer.appendChild(banner);
-      return;
-    }
-
-    // 3. 已授权：读取推荐数据（最近近 7 天 / 常访近 30 天；标注访问次数 visitCount 非时长）
-    try {
-      const res = await MessageBus.sendToBackground(ActionTypes.GET_HISTORY_RECOMMENDATIONS, { limit: 5 });
-      if (!res || !res.success || (!res.recent?.length && !res.topVisited?.length)) {
-        this.renderEmptyList(this.historyContainer, '暂无可用历史记录');
-        return;
-      }
-
-      this.historyContainer.innerHTML = '';
-
-      // 优先展示常访页面 (Top Visited)
-      if (Array.isArray(res.topVisited) && res.topVisited.length > 0) {
-        const titleDiv = document.createElement('div');
-        titleDiv.className = 'bb-home-dropdown-header';
-        titleDiv.textContent = '常访推荐（近 30 天 · 按访问次数）';
-        this.historyContainer.appendChild(titleDiv);
-
-        res.topVisited.forEach((item) => {
-          const itemEl = this.createItemElement({
-            url: item.url,
-            title: item.title,
-            extra: `访问 ${item.visitCount || 1} 次`
-          });
-          this.historyContainer.appendChild(itemEl);
-        });
-      }
-
-      // 展示最近访问页面 (Recent)
-      if (Array.isArray(res.recent) && res.recent.length > 0) {
-        const titleDiv = document.createElement('div');
-        titleDiv.className = 'bb-home-dropdown-header';
-        titleDiv.style.marginTop = '10px';
-        titleDiv.textContent = '最近访问（近 7 天）';
-        this.historyContainer.appendChild(titleDiv);
-
-        res.recent.forEach((item) => {
-          const itemEl = this.createItemElement({
-            url: item.url,
-            title: item.title,
-            extra: this.formatTimeAgo(item.lastVisitTime)
-          });
-          this.historyContainer.appendChild(itemEl);
-        });
-      }
-    } catch {
-      this.renderEmptyList(this.historyContainer, '读取历史推荐失败');
-    }
-  }
-
-  /**
-   * 请求 Optional History 权限（必须由用户手势触发）
-   */
-  async requestHistoryPermission() {
-    try {
-      if (typeof chrome !== 'undefined' && chrome.permissions?.request) {
-        const granted = await chrome.permissions.request({ permissions: ['history'] });
-        if (granted) {
-          this.hasHistoryPermission = true;
-          await this.refreshHistorySection();
-        }
-      }
-    } catch (err) {
-      console.warn('[HomeView] 请求历史权限异常:', err);
-    }
-  }
-
-  /**
-   * 撤销 Optional History 权限
-   */
-  async revokeHistoryPermission() {
-    try {
-      this.hasHistoryPermission = false;
-      if (this.historyGroup) {
-        this.historyGroup.classList.add('bb-hidden');
-        if (this.historyList) this.historyList.innerHTML = '';
-      }
-      if (typeof chrome !== 'undefined' && chrome.permissions?.remove) {
-        await chrome.permissions.remove({ permissions: ['history'] });
-      }
-      await this.refreshHistorySection();
-    } catch (err) {
-      console.warn('[HomeView] 撤销历史权限异常:', err);
-    }
-  }
-
-  /**
-   * 调度统一搜索查询（250ms 防抖 + 请求序号保护）
-   * @param {number} [delay=250]
-   */
-  scheduleSearch(delay = 250) {
-    clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
-      const query = this.input ? this.input.value.trim() : '';
-      this.executeSearch(query);
-    }, delay);
-  }
-
-  /**
-   * 执行聚合搜索（外部联想 + 本地收纳分页 + 历史搜索；错误隔离）
-   * @param {string} query
-   */
   async executeSearch(query) {
-    if (!query) {
-      this.closeDropdown();
-      return;
-    }
-
-    this.lastSearchQuery = query;
-    this.stashNextCursor = null;
-    const seq = ++this.searchSeq;
-
-    // 打开下拉层
-    this.openDropdown();
-
-    // 并行获取三大数据源，错误彼此隔离
-    const tasks = [
-      this.fetchSuggestions(query),
-      this.fetchStashResults(query, 5, null),
-      this.fetchHistoryResults(query)
-    ];
-
-    const [suggestRes, stashRes, historyRes] = await Promise.allSettled(tasks);
-
-    // 检查响应序号，丢弃过期的过时请求
-    if (seq !== this.searchSeq) return;
-
-    this.currentOptions = [];
-    this.activeOptionIndex = -1;
-
-    // 1. 渲染外部联想建议
-    this.renderSuggestionsSection(suggestRes.status === 'fulfilled' ? suggestRes.value : null);
-
-    // 2. 渲染本地收纳检索
-    this.renderStashSection(stashRes.status === 'fulfilled' ? stashRes.value : null);
-
-    // 3. 渲染历史记录搜索
-    this.renderHistorySection(historyRes.status === 'fulfilled' ? historyRes.value : null);
-
-    // 若全部为空，显示空结果提示
-    if (this.currentOptions.length === 0) {
-      this.renderNoResults();
-    }
+    this.invalidateSearch();
+    if (!query || !this.active || this.isComposing) return;
+    const seq = this.searchSeq; this.lastSearchQuery = query;
+    const wanted = this.scope === 'all' ? ['suggest', 'stash', 'history'] : [this.scope];
+    for (const source of wanted) this.sources[source] = { state: 'loading', items: [] };
+    this.renderSearch();
+    await Promise.allSettled(wanted.map(async source => {
+      try {
+        let result;
+        if (source === 'stash') result = await this.fetchStashResults(query);
+        if (source === 'suggest') {
+          if (!this.config.home?.enableExternalSuggest || !this.config.home?.externalSuggestAgreed) result = { state: 'disabled', items: [] };
+          else { const data = await requestHome(ActionTypes.GET_SEARCH_SUGGESTIONS, { query, engine: this.config.home.suggestEngine || 'google' }); result = { items: [...new Set(data.suggestions || [])].map(text => ({ title: text, text })) }; }
+        }
+        if (source === 'history') {
+          if (!await this.checkHistoryPermission()) result = { state: 'permission', items: [] };
+          else { const data = await requestHome(ActionTypes.GET_BROWSER_HISTORY, { query, limit: 8 }); result = data.granted === false ? { state: 'permission', items: [] } : { items: data.items || [] }; }
+        }
+        if (!this.validSearch(seq)) return;
+        this.sources[source] = { state: 'ready', ...result };
+        if (source === 'stash') this.stashNextCursor = result.hasMore ? result.nextCursor : null;
+      } catch (err) { if (!this.validSearch(seq)) return; this.sources[source] = { state: 'error', items: [], error: err.message }; }
+      this.renderSearch();
+    }));
   }
-
-  /**
-   * 获取外部联想建议
-   */
-  async fetchSuggestions(query) {
-    const isExternalEnabled = this.config?.home?.enableExternalSuggest && this.config?.home?.externalSuggestAgreed;
-    if (!isExternalEnabled) {
-      // 提示同意外部联想
-      if (this.consentCard && !this.config?.home?.externalSuggestAgreed) {
-        this.consentCard.classList.remove('bb-hidden');
-      }
-      return null;
-    }
-
-    try {
-      const res = await MessageBus.sendToBackground(ActionTypes.GET_SEARCH_SUGGESTIONS, {
-        query,
-        engine: this.config?.home?.suggestEngine || 'google'
-      });
-      return res?.success ? res.suggestions : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * 获取本地收纳分页匹配条目（含空页游标自进保护，避免首页空扫描导致收纳组静默隐藏）
-   */
+  validSearch(seq) { return this.active && !this.destroyed && seq === this.searchSeq; }
   async fetchStashResults(keyword, limit = 5, cursor = null) {
-    try {
-      let currentCursor = cursor;
-      let rounds = 0;
-      while (rounds < 5) {
-        rounds++;
-        const res = await MessageBus.sendToBackground(ActionTypes.SEARCH_STASH, {
-          keyword,
-          limit,
-          cursor: currentCursor,
-          paginated: true
-        });
-        const items = Array.isArray(res?.items)
-          ? res.items
-          : (Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []));
-        if (items.length > 0 || !res?.hasMore || !res?.nextCursor) {
-          return {
-            items,
-            nextCursor: res?.nextCursor || null,
-            hasMore: Boolean(res?.hasMore && res?.nextCursor)
-          };
-        }
-        currentCursor = res.nextCursor;
-      }
-      return { items: [], nextCursor: currentCursor, hasMore: true };
-    } catch {
-      return null;
+    let current = cursor;
+    for (let round = 0; round < 5; round++) {
+      const result = await requestHome(ActionTypes.SEARCH_STASH, { keyword, limit, cursor: current, paginated: true });
+      const items = result.items || result.data || [];
+      if (items.length || !result.hasMore || !result.nextCursor) return { items, hasMore: Boolean(result.hasMore && result.nextCursor), nextCursor: result.nextCursor || null };
+      current = result.nextCursor;
     }
+    return { items: [], hasMore: true, nextCursor: current };
   }
-
-  /**
-   * 获取历史搜索结果
-   */
-  async fetchHistoryResults(query) {
-    if (!this.hasHistoryPermission) return null;
-    try {
-      const res = await MessageBus.sendToBackground(ActionTypes.GET_BROWSER_HISTORY, {
-        query,
-        limit: 5
-      });
-      return res?.success ? res.items : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * 渲染外部联想列表
-   */
-  renderSuggestionsSection(suggestions) {
-    if (!this.suggestGroup || !this.suggestList) return;
-    this.suggestList.innerHTML = '';
-
-    const isExternalEnabled = this.config?.home?.enableExternalSuggest && this.config?.home?.externalSuggestAgreed;
-    if (!isExternalEnabled || !Array.isArray(suggestions) || suggestions.length === 0) {
-      this.suggestGroup.classList.add('bb-hidden');
-      return;
-    }
-
-    const engineLabel = (this.config?.home?.suggestEngine === 'bing') ? 'Bing' : 'Google';
-    if (this.suggestHeaderTitle) {
-      this.suggestHeaderTitle.textContent = `${engineLabel} 搜索联想`;
-    }
-
-    suggestions.forEach((text) => {
-      const optId = `home-option-${this.currentOptions.length}`;
-      const optionEl = document.createElement('div');
-      optionEl.className = 'bb-home-option';
-      optionEl.id = optId;
-      optionEl.setAttribute('role', 'option');
-      optionEl.setAttribute('aria-selected', 'false');
-
-      const icon = document.createElement('div');
-      icon.className = 'bb-home-option-icon';
-      icon.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`;
-
-      const body = document.createElement('div');
-      body.className = 'bb-home-option-body';
-
-      const title = document.createElement('span');
-      title.className = 'bb-home-option-title';
-      title.textContent = text;
-
-      body.appendChild(title);
-      optionEl.appendChild(icon);
-      optionEl.appendChild(body);
-
-      const optionObj = {
-        id: optId,
-        element: optionEl,
-        type: 'suggestion',
-        text,
-        action: (forceNewTab = false) => this.submitWebSearch(text, forceNewTab)
-      };
-
-      optionEl.addEventListener('click', (e) => optionObj.action(Boolean(e?.ctrlKey || e?.metaKey)));
-      this.suggestList.appendChild(optionEl);
-      this.currentOptions.push(optionObj);
-    });
-
-    this.suggestGroup.classList.remove('bb-hidden');
-  }
-
-  /**
-   * 渲染本地收纳检索列表与分页按钮
-   */
-  renderStashSection(stashRes) {
-    if (!this.stashGroup || !this.stashList) return;
-    this.stashList.innerHTML = '';
-
-    const items = Array.isArray(stashRes?.items)
-      ? stashRes.items
-      : (Array.isArray(stashRes?.data) ? stashRes.data : (Array.isArray(stashRes) ? stashRes : []));
-    if (items.length === 0) {
-      this.stashGroup.classList.add('bb-hidden');
-      return;
-    }
-
-    this.stashNextCursor = stashRes?.nextCursor || null;
-    const hasMore = Boolean(stashRes?.hasMore && this.stashNextCursor);
-
-    items.forEach((item) => {
-      const optId = `home-option-${this.currentOptions.length}`;
-      const optionEl = document.createElement('div');
-      optionEl.className = 'bb-home-option';
-      optionEl.id = optId;
-      optionEl.setAttribute('role', 'option');
-      optionEl.setAttribute('aria-selected', 'false');
-
-      const icon = document.createElement('div');
-      icon.className = 'bb-home-option-icon';
-      icon.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path></svg>`;
-
-      const body = document.createElement('div');
-      body.className = 'bb-home-option-body';
-
-      const title = document.createElement('span');
-      title.className = 'bb-home-option-title';
-      title.textContent = item.title || item.url;
-
-      const sub = document.createElement('span');
-      sub.className = 'bb-home-option-sub';
-      sub.textContent = item.url;
-
-      body.appendChild(title);
-      body.appendChild(sub);
-
-      const badge = document.createElement('span');
-      badge.className = 'bb-home-option-badge';
-      badge.textContent = '查看组';
-      badge.title = '在时间线中查看所属收纳组';
-      badge.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.navigateToStash(item.groupId);
-      });
-
-      optionEl.appendChild(icon);
-      optionEl.appendChild(body);
-      optionEl.appendChild(badge);
-
-      const optionObj = {
-        id: optId,
-        element: optionEl,
-        type: 'stash',
-        url: item.url,
-        action: (forceNewTab = false) => this.openUrl(item.url, forceNewTab)
-      };
-
-      optionEl.addEventListener('click', (e) => optionObj.action(Boolean(e?.ctrlKey || e?.metaKey)));
-      this.stashList.appendChild(optionEl);
-      this.currentOptions.push(optionObj);
-    });
-
-    if (this.btnLoadMoreStash) {
-      this.btnLoadMoreStash.classList.toggle('bb-hidden', !hasMore);
-    }
-    this.stashGroup.classList.remove('bb-hidden');
-  }
-
-  /**
-   * 加载更多收纳检索结果
-   */
   async loadMoreStashResults() {
-    if (!this.lastSearchQuery || !this.stashNextCursor) return;
+    if (this.loadingMore || !this.stashNextCursor) return;
+    const seq = this.searchSeq, cursor = this.stashNextCursor;
+    this.loadingMore = true; this.renderSearch();
     try {
-      const res = await this.fetchStashResults(this.lastSearchQuery, 5, this.stashNextCursor);
-      const newItems = Array.isArray(res?.items)
-        ? res.items
-        : (Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []));
-      if (!newItems || newItems.length === 0) return;
-
-      this.stashNextCursor = res?.nextCursor || null;
-      const hasMore = Boolean(res?.hasMore && this.stashNextCursor);
-
-      newItems.forEach((item) => {
-        const optId = `home-option-${this.currentOptions.length}`;
-        const optionEl = document.createElement('div');
-        optionEl.className = 'bb-home-option';
-        optionEl.id = optId;
-        optionEl.setAttribute('role', 'option');
-        optionEl.setAttribute('aria-selected', 'false');
-
-        const icon = document.createElement('div');
-        icon.className = 'bb-home-option-icon';
-        icon.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path></svg>`;
-
-        const body = document.createElement('div');
-        body.className = 'bb-home-option-body';
-
-        const title = document.createElement('span');
-        title.className = 'bb-home-option-title';
-        title.textContent = item.title || item.url;
-
-        const sub = document.createElement('span');
-        sub.className = 'bb-home-option-sub';
-        sub.textContent = item.url;
-
-        body.appendChild(title);
-        body.appendChild(sub);
-
-        const badge = document.createElement('span');
-        badge.className = 'bb-home-option-badge';
-        badge.textContent = '查看组';
-        badge.title = '在时间线中查看所属收纳组';
-        badge.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.navigateToStash(item.groupId);
-        });
-
-        optionEl.appendChild(icon);
-        optionEl.appendChild(body);
-        optionEl.appendChild(badge);
-
-        const optionObj = {
-          id: optId,
-          element: optionEl,
-          type: 'stash',
-          url: item.url,
-          action: (forceNewTab = false) => this.openUrl(item.url, forceNewTab)
-        };
-
-        optionEl.addEventListener('click', (e) => optionObj.action(Boolean(e?.ctrlKey || e?.metaKey)));
-        this.stashList.appendChild(optionEl);
-        this.currentOptions.push(optionObj);
-      });
-
-      if (this.btnLoadMoreStash) {
-        this.btnLoadMoreStash.classList.toggle('bb-hidden', !hasMore);
-      }
-    } catch {
-      // 忽略分页加载异常
-    }
+      const result = await this.fetchStashResults(this.lastSearchQuery, 5, cursor);
+      if (!this.validSearch(seq)) return;
+      const items = [...(this.sources.stash?.items || []), ...result.items];
+      this.sources.stash = { state: 'ready', ...result, items };
+      this.stashNextCursor = result.hasMore ? result.nextCursor : null;
+    } catch (err) { if (this.validSearch(seq)) this.sources.stash.error = `加载更多失败：${err.message}`; }
+    finally { if (this.validSearch(seq)) { this.loadingMore = false; this.renderSearch(); } }
   }
-
-  /**
-   * 渲染历史记录搜索列表
-   */
-  renderHistorySection(historyItems) {
-    if (!this.historyGroup || !this.historyList) return;
-    this.historyList.innerHTML = '';
-
-    if (!this.hasHistoryPermission || !Array.isArray(historyItems) || historyItems.length === 0) {
-      this.historyGroup.classList.add('bb-hidden');
-      return;
-    }
-
-    historyItems.forEach((item) => {
-      const optId = `home-option-${this.currentOptions.length}`;
-      const optionEl = document.createElement('div');
-      optionEl.className = 'bb-home-option';
-      optionEl.id = optId;
-      optionEl.setAttribute('role', 'option');
-      optionEl.setAttribute('aria-selected', 'false');
-
-      const icon = document.createElement('div');
-      icon.className = 'bb-home-option-icon';
-      icon.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`;
-
-      const body = document.createElement('div');
-      body.className = 'bb-home-option-body';
-
-      const title = document.createElement('span');
-      title.className = 'bb-home-option-title';
-      title.textContent = item.title || item.url;
-
-      const sub = document.createElement('span');
-      sub.className = 'bb-home-option-sub';
-      sub.textContent = item.url;
-
-      body.appendChild(title);
-      body.appendChild(sub);
-
-      const badge = document.createElement('span');
-      badge.className = 'bb-home-option-badge';
-      badge.textContent = `访问 ${item.visitCount || 1} 次`;
-
-      optionEl.appendChild(icon);
-      optionEl.appendChild(body);
-      optionEl.appendChild(badge);
-
-      const optionObj = {
-        id: optId,
-        element: optionEl,
-        type: 'history',
-        url: item.url,
-        action: (forceNewTab = false) => this.openUrl(item.url, forceNewTab)
-      };
-
-      optionEl.addEventListener('click', (e) => optionObj.action(Boolean(e?.ctrlKey || e?.metaKey)));
-      this.historyList.appendChild(optionEl);
-      this.currentOptions.push(optionObj);
-    });
-
-    this.historyGroup.classList.remove('bb-hidden');
-  }
-
-  /**
-   * 无匹配结果时渲染默认搜索引擎回车提示
-   */
-  renderNoResults() {
-    if (!this.suggestGroup || !this.suggestList) return;
-    this.suggestList.innerHTML = '';
-    if (this.suggestHeaderTitle) {
-      this.suggestHeaderTitle.textContent = '网页搜索';
-    }
-
-    const optId = `home-option-0`;
-    const optionEl = document.createElement('div');
-    optionEl.className = 'bb-home-option active';
-    optionEl.id = optId;
-    optionEl.setAttribute('role', 'option');
-    optionEl.setAttribute('aria-selected', 'true');
-
-    const icon = document.createElement('div');
-    icon.className = 'bb-home-option-icon';
-    icon.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`;
-
-    const body = document.createElement('div');
-    body.className = 'bb-home-option-body';
-
-    const title = document.createElement('span');
-    title.className = 'bb-home-option-title';
-    title.textContent = `在 ${ENGINE_NAMES[this.currentEngine] || '搜索引擎'} 中搜索 "${this.lastSearchQuery}"`;
-
-    body.appendChild(title);
-    optionEl.appendChild(icon);
-    optionEl.appendChild(body);
-
-    const optionObj = {
-      id: optId,
-      element: optionEl,
-      type: 'search',
-      action: (forceNewTab = false) => this.submitWebSearch(this.lastSearchQuery, forceNewTab)
+  renderSearch() {
+    const list = this.$('#homeResultList'), actions = this.$('#homeResultActions');
+    list.replaceChildren(); actions.replaceChildren(); this.currentOptions = []; this.activeOptionIndex = -1; this.input.removeAttribute('aria-activedescendant');
+    this.dropdown.hidden = false; this.input.setAttribute('aria-expanded', 'true');
+    const addOption = (parent, title, meta, action) => {
+      const el = node('div', 'bb-home-option'); el.id = `home-option-${this.currentOptions.length}`; el.setAttribute('role', 'option'); el.setAttribute('aria-selected', 'false');
+      el.append(node('span', 'bb-home-option-title', title), node('span', 'bb-home-option-meta', meta));
+      el.addEventListener('click', e => action(Boolean(e.ctrlKey || e.metaKey || e.shiftKey)));
+      parent.append(el); this.currentOptions.push({ id: el.id, element: el, action }); return el;
     };
-
-    optionEl.addEventListener('click', (e) => optionObj.action(Boolean(e?.ctrlKey || e?.metaKey)));
-    this.suggestList.appendChild(optionEl);
-    this.currentOptions.push(optionObj);
-    this.activeOptionIndex = 0;
-    this.suggestGroup.classList.remove('bb-hidden');
+    if (this.scope === 'all') {
+      const intent = parseNavigationIntent(this.lastSearchQuery);
+      if (intent.kind === 'url') {
+        addOption(list, `打开 ${intent.display}`, '网址', force => this.openUrl(intent.url, force)).classList.add('bb-home-option-primary');
+        addOption(list, `在 ${ENGINES[this.currentEngine][0]} 搜索“${this.lastSearchQuery}”`, '网页搜索', force => this.submitWebSearch(this.lastSearchQuery, force));
+      } else {
+        addOption(list, `在 ${ENGINES[this.currentEngine][0]} 搜索“${this.lastSearchQuery}”`, '网页搜索', force => this.submitWebSearch(this.lastSearchQuery, force)).classList.add('bb-home-option-primary');
+      }
+    }
+    const labels = { suggest: `${this.config.home?.suggestEngine === 'bing' ? 'Bing' : 'Google'} 联想`, stash: '已收纳页面', history: '浏览记录' };
+    for (const [source, data] of Object.entries(this.sources)) {
+      const group = node('div', 'bb-home-result-group'); group.setAttribute('role', 'group'); group.setAttribute('aria-label', labels[source]);
+      const countSuffix = data.state === 'ready' && data.items?.length ? ` · ${data.items.length} 条` : '';
+      group.append(node('div', 'bb-home-result-heading', labels[source] + countSuffix)); list.append(group);
+      const message = { loading: '正在搜索…', error: `加载失败：${data.error}`, disabled: '外部联想已关闭，可在自定义中主动开启。', permission: '未授权浏览记录，或当前处于隐身模式。' }[data.state];
+      if (message) group.append(node('p', 'bb-home-result-state', message));
+      const seen = new Set();
+      for (const item of data.items || []) {
+        const key = `${item.url || item.text}|${item.groupId || ''}`; if (seen.has(key)) continue; seen.add(key);
+        addOption(group, item.title || item.url, item.url ? `${this.formatHostname(item.url)}${source === 'stash' ? ` · ${item.groupName || item.groupTitle || '收纳组'}` : ` · ${this.formatTimeAgo(item.lastVisitTime)}`}` : `使用 ${ENGINES[this.currentEngine][0]} 搜索`, force => item.text ? this.submitWebSearch(item.text, force) : this.openUrl(item.url, force));
+        if (source === 'stash' && item.groupId) addOption(group, `查看组：${item.groupName || item.groupTitle || item.title || '所属收纳组'}`, '打开收纳时间线，不移除页面', () => this.navigateToStash(item.groupId));
+      }
+      if (data.state === 'ready' && !data.items?.length) group.append(node('p', 'bb-home-result-state', source === 'stash' && this.stashNextCursor ? '本批未匹配到页面，可继续检索后续收纳。' : '没有匹配结果。'));
+      if (data.state === 'error') { const retry = node('button', '', `重试${labels[source]}`); retry.addEventListener('click', () => this.executeSearch(this.input.value.trim())); actions.append(retry); }
+      if (source === 'stash' && data.error && data.state !== 'error') actions.append(node('p', 'error', data.error));
+      if (data.state === 'permission' && !chrome.extension?.inIncognitoContext) { const grant = node('button', '', '开启浏览记录'); grant.addEventListener('click', () => this.requestHistoryPermission()); actions.append(grant); }
+    }
+    if (this.stashNextCursor) { const more = node('button', '', this.loadingMore ? '正在继续检索…' : '继续检索收纳'); more.disabled = this.loadingMore; more.addEventListener('click', () => this.loadMoreStashResults()); actions.append(more); }
   }
-
-  /**
-   * 键盘 Combobox 高亮移动
-   * @param {number} delta - 1 下移, -1 上移
-   */
+  onKeyDown(e) {
+    if (this.isComposing || e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Escape') { if (this.dropdown.hidden) { this.input.blur(); } else { e.preventDefault(); this.invalidateSearch(); } }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); this.moveActiveOption(e.key === 'ArrowDown' ? 1 : -1); }
+    else if (e.key === 'Enter') { e.preventDefault(); this.handleEnterKey(e); }
+  }
   moveActiveOption(delta) {
-    if (this.currentOptions.length === 0) return;
-
-    // 清除前一个高亮
-    if (this.activeOptionIndex >= 0 && this.activeOptionIndex < this.currentOptions.length) {
-      const prev = this.currentOptions[this.activeOptionIndex];
-      prev.element?.classList.remove('active');
-      prev.element?.setAttribute('aria-selected', 'false');
-    }
-
-    this.activeOptionIndex += delta;
-    if (this.activeOptionIndex >= this.currentOptions.length) {
-      this.activeOptionIndex = 0;
-    } else if (this.activeOptionIndex < 0) {
-      this.activeOptionIndex = this.currentOptions.length - 1;
-    }
-
-    const current = this.currentOptions[this.activeOptionIndex];
-    if (current && current.element) {
-      current.element.classList.add('active');
-      current.element.setAttribute('aria-selected', 'true');
-      current.element.scrollIntoView({ block: 'nearest' });
-      this.input?.setAttribute('aria-activedescendant', current.id);
+    if (!this.currentOptions.length) { this.scheduleSearch(0); return; }
+    this.activeOptionIndex = (this.activeOptionIndex + delta + this.currentOptions.length) % this.currentOptions.length;
+    this.currentOptions.forEach((option, i) => { option.element.setAttribute('aria-selected', String(i === this.activeOptionIndex)); });
+    const option = this.currentOptions[this.activeOptionIndex]; this.input.setAttribute('aria-activedescendant', option.id); option.element.scrollIntoView({ block: 'nearest' });
+  }
+  handleEnterKey(e = {}) {
+    if (this.isComposing || e.isComposing) return;
+    const force = Boolean(e.ctrlKey || e.metaKey || e.shiftKey);
+    const option = this.currentOptions[this.activeOptionIndex];
+    if (option) option.action(force);
+    else {
+      const query = this.input.value.trim();
+      const intent = parseNavigationIntent(query);
+      if (this.scope === 'all' && intent.kind === 'url') this.openUrl(intent.url, force);
+      else if (this.scope === 'all') this.submitWebSearch(query, force);
+      else this.executeSearch(query);
     }
   }
-
-  /**
-   * 回车键激活当前选中项，或直接提交网页搜索（支持修饰键新标签页打开）
-   * @param {KeyboardEvent} [e]
-   */
-  handleEnterKey(e = null) {
-    const forceNewTab = Boolean(e?.ctrlKey || e?.metaKey);
-    if (this.activeOptionIndex >= 0 && this.activeOptionIndex < this.currentOptions.length) {
-      const current = this.currentOptions[this.activeOptionIndex];
-      current?.action?.(forceNewTab);
-      return;
-    }
-    const query = this.input ? this.input.value.trim() : '';
-    if (query) {
-      this.submitWebSearch(query, forceNewTab);
-    }
+  submitWebSearch(query, force = false) { if (query && this.scope === 'all') this.openUrl(ENGINES[this.currentEngine][1] + encodeURIComponent(query), force); }
+  openUrl(url, force = false) {
+    try { if (!SAFE_PROTOCOLS.includes(new URL(url).protocol)) return; } catch { return; }
+    const request = force || this.openTarget === 'new' ? chrome.tabs.create({ url, active: true }) : chrome.tabs.update({ url });
+    Promise.resolve(request).catch(err => this.feedback(`打开页面失败：${err.message}`, true));
   }
-
-  /**
-   * 提交外部搜索引擎查询
-   * @param {string} query
-   * @param {boolean} [forceNewTab=false]
-   */
-  submitWebSearch(query, forceNewTab = false) {
-    if (!query) return;
-    const base = SEARCH_ENGINES[this.currentEngine] || SEARCH_ENGINES.google;
-    const url = base + encodeURIComponent(query);
-    this.openUrl(url, forceNewTab);
-  }
-
-  /**
-   * 统一打开目标 URL（独立页在当前标签打开；管理中心在新标签打开；支持修饰键强制新标签）
-   * @param {string} url
-   * @param {boolean} [forceNewTab=false]
-   */
-  openUrl(url, forceNewTab = false) {
-    if (!url) return;
-    const targetIsNew = forceNewTab || this.openTarget === 'new';
-    if (!targetIsNew) {
-      if (typeof chrome !== 'undefined' && chrome.tabs?.update) {
-        chrome.tabs.update({ url });
-      } else {
-        window.location.href = url;
-      }
-    } else {
-      if (typeof chrome !== 'undefined' && chrome.tabs?.create) {
-        chrome.tabs.create({ url, active: true });
-      } else {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      }
-    }
-  }
-
-  /**
-   * 跳转到收纳时间线（可定位具体收纳组）
-   * @param {string} [groupId=null]
-   */
   navigateToStash(groupId = null) {
-    if (typeof this.onNavigateToStash === 'function') {
-      this.onNavigateToStash(groupId);
-      return;
-    }
+    if (this.onNavigateToStash) { this.onNavigateToStash(groupId); return; }
     const hash = groupId ? `#stash?groupId=${encodeURIComponent(groupId)}` : '#stash';
-    if (this.isStandalone) {
-      const optionsUrl = chrome.runtime.getURL(`src/options/options.html${hash}`);
-      if (chrome.tabs?.create) {
-        chrome.tabs.create({ url: optionsUrl, active: true });
-      } else {
-        window.location.href = optionsUrl;
-      }
-    } else {
-      window.location.hash = hash;
-    }
+    this.openUrl(chrome.runtime.getURL(`src/options/options.html${hash}`), true);
   }
-
-  /**
-   * 设置当前搜索引擎
-   * @param {string} engine
-   * @param {boolean} [persist=true]
-   */
-  async setEngine(engine, persist = true) {
-    if (!SEARCH_ENGINES[engine]) return;
-    this.currentEngine = engine;
-    this.engineBtns.forEach((btn) => {
-      const isSelected = btn.dataset.engine === engine;
-      btn.classList.toggle('active', isSelected);
-      btn.setAttribute('aria-selected', isSelected ? 'true' : 'false');
-    });
-
-    if (persist) {
-      try {
-        const res = await MessageBus.sendToBackground(ActionTypes.UPDATE_CONFIG, {
-          home: {
-            ...(this.config?.home || {}),
-            searchEngine: engine
-          }
-        });
-        if (!res) throw new Error('配置更新未成功');
-        if (this.config) {
-          this.config.home = { ...(this.config.home || {}), searchEngine: engine };
-        }
-        this.showPrefFeedback(`已设默认引擎为 ${ENGINE_NAMES[engine] || engine}`, 'success');
-      } catch (err) {
-        this.showPrefFeedback(`搜索引擎保存失败: ${err?.message || '更新异常'}`, 'error');
-      }
-    }
+  createItemElement({ url, title, extra = '' }) {
+    const link = node('a', 'bb-home-item');
+    try { if (!SAFE_PROTOCOLS.includes(new URL(url).protocol)) throw new Error(); link.href = url; } catch { link.href = '#'; }
+    link.addEventListener('click', e => { e.preventDefault(); this.openUrl(url, Boolean(e.ctrlKey || e.metaKey || e.shiftKey)); });
+    const domain = this.formatHostname(url), mark = node('span', `bb-home-site-mark ${this.toneFor(url)}`, (domain.replace(/^www\./, '')[0] || '·').toUpperCase()); mark.setAttribute('aria-hidden', 'true');
+    const info = node('span', 'bb-home-item-info'); info.append(node('span', 'bb-home-item-title', title || domain || '无标题页面'), node('span', 'bb-home-item-meta', domain));
+    link.append(mark, info); if (extra) link.append(node('span', 'bb-home-item-extra', extra)); return link;
   }
-
-  /**
-   * 更新外部联想同意偏好
-   * @param {boolean} agreed
-   */
-  async setExternalSuggestAgreed(agreed) {
-    try {
-      await StorageAdapter.updateUserConfig({
-        home: {
-          ...(this.config?.home || {}),
-          enableExternalSuggest: Boolean(agreed),
-          externalSuggestAgreed: Boolean(agreed),
-          suggestEngine: this.currentEngine === 'bing' ? 'bing' : 'google'
-        }
-      });
-      if (this.config) {
-        this.config.home = {
-          ...(this.config.home || {}),
-          enableExternalSuggest: Boolean(agreed),
-          externalSuggestAgreed: Boolean(agreed)
-        };
-      }
-    } catch {
-      // 忽略写入异常
-    }
-  }
-
-  /**
-   * 打开下拉层
-   */
-  openDropdown() {
-    if (!this.dropdown) return;
-    this.dropdown.classList.remove('bb-hidden');
-    this.input?.setAttribute('aria-expanded', 'true');
-  }
-
-  /**
-   * 关闭下拉层
-   */
-  closeDropdown() {
-    if (!this.dropdown) return;
-    this.dropdown.classList.add('bb-hidden');
-    this.input?.setAttribute('aria-expanded', 'false');
-    this.input?.removeAttribute('aria-activedescendant');
-    this.activeOptionIndex = -1;
-    this.currentOptions = [];
-  }
-
-  /**
-   * 构造通用条目元素（防止 XSS，全程 textContent）
-   */
-  createItemElement({ url, title, favIconUrl, extra = '' }) {
-    const a = document.createElement('a');
-    a.className = 'bb-home-item';
-    a.href = url || '#';
-
-    a.addEventListener('click', (e) => {
-      e.preventDefault();
-      this.openUrl(url);
-    });
-
-    const mainDiv = document.createElement('div');
-    mainDiv.className = 'bb-home-item-main';
-
-    const iconImg = document.createElement('img');
-    iconImg.className = 'bb-home-item-favicon';
-    iconImg.alt = '';
-    iconImg.src = favIconUrl || this.getDefaultFaviconUrl(url);
-    iconImg.onerror = () => {
-      iconImg.src = this.getDefaultFaviconUrl(url);
-    };
-
-    const infoDiv = document.createElement('div');
-    infoDiv.className = 'bb-home-item-info';
-
-    const titleSpan = document.createElement('span');
-    titleSpan.className = 'bb-home-item-title';
-    titleSpan.textContent = title || url || '无标题页面';
-
-    const metaSpan = document.createElement('span');
-    metaSpan.className = 'bb-home-item-meta';
-    metaSpan.textContent = this.formatHostname(url);
-
-    infoDiv.appendChild(titleSpan);
-    infoDiv.appendChild(metaSpan);
-    mainDiv.appendChild(iconImg);
-    mainDiv.appendChild(infoDiv);
-    a.appendChild(mainDiv);
-
-    if (extra) {
-      const extraSpan = document.createElement('span');
-      extraSpan.className = 'bb-home-item-extra';
-      extraSpan.textContent = extra;
-      a.appendChild(extraSpan);
-    }
-
-    return a;
-  }
-
-  /**
-   * 渲染空提示列表
-   */
-  renderEmptyList(container, message) {
-    if (!container) return;
-    container.innerHTML = '';
-    const div = document.createElement('div');
-    div.className = 'bb-home-empty';
-
-    const iconSvg = document.createElement('div');
-    iconSvg.className = 'bb-home-empty-icon';
-    iconSvg.innerHTML = `<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"></circle><line x1="8" y1="12" x2="16" y2="12"></line></svg>`;
-
-    const textSpan = document.createElement('span');
-    textSpan.textContent = message;
-
-    div.appendChild(iconSvg);
-    div.appendChild(textSpan);
-    container.appendChild(div);
-  }
-
-  /**
-   * 获取扩展内部图标路径
-   */
-  getIconUrl(size = 48) {
-    try {
-      if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
-        return chrome.runtime.getURL(`src/icons/icon${size}.png`);
-      }
-    } catch {}
-    return `../icons/icon${size}.png`;
-  }
-
-  /**
-   * 获取默认网站根图标或安全缺省图
-   */
-  getDefaultFaviconUrl(rawUrl) {
-    try {
-      const origin = new URL(rawUrl).origin;
-      return `${origin}/favicon.ico`;
-    } catch {
-      return this.getIconUrl(16);
-    }
-  }
-
-  /**
-   * 格式化主机名
-   */
-  formatHostname(rawUrl) {
-    try {
-      return new URL(rawUrl).hostname;
-    } catch {
-      return rawUrl || '';
-    }
-  }
-
-  /**
-   * 格式化时间戳为相对时间
-   */
+  formatHostname(url) { try { return new URL(url).hostname || new URL(url).protocol; } catch { return '未知网站'; } }
   formatTimeAgo(ts) {
-    const delta = Math.floor((Date.now() - (Number(ts) || 0)) / 1000);
-    if (delta < 60) return '刚刚';
-    if (delta < 3600) return `${Math.floor(delta / 60)} 分钟前`;
-    if (delta < 86400) return `${Math.floor(delta / 3600)} 小时前`;
-    if (delta < 86400 * 30) return `${Math.floor(delta / 86400)} 天前`;
-    return this.formatDate(ts);
-  }
-
-  /**
-   * 格式化日期
-   */
-  formatDate(ts) {
-    if (!ts) return '';
-    const d = new Date(Number(ts));
-    return `${d.getMonth() + 1}月${d.getDate()}日`;
-  }
-
-  /**
-   * 视图激活（进入前台时调用：聚焦搜索框、刷新最新统计与数据）
-   */
-  activate() {
-    setTimeout(() => this.input?.focus(), 60);
-    this.refreshAll().catch(() => {});
-  }
-
-  /**
-   * 视图停用（切走离开时调用：关闭下拉框、取消未决定时器）
-   */
-  deactivate() {
-    clearTimeout(this.debounceTimer);
-    this.closeDropdown();
-  }
-
-  /**
-   * 销毁组件：清理所有挂载的 DOM 监听器与定时器
-   */
-  destroy() {
-    this.deactivate();
-    clearTimeout(this.prefFeedbackTimer);
-    for (const cleanup of this._cleanups) {
-      try {
-        cleanup();
-      } catch {}
-    }
-    this._cleanups = [];
-    if (this.container) {
-      this.container.innerHTML = '';
-    }
+    if (!Number(ts)) return '时间未知';
+    const seconds = Math.max(0, (Date.now() - Number(ts)) / 1000);
+    if (seconds < 60) return '刚刚'; if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`; if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`; if (seconds < 2592000) return `${Math.floor(seconds / 86400)} 天前`;
+    return new Date(Number(ts)).toLocaleDateString('zh-CN');
   }
 }
