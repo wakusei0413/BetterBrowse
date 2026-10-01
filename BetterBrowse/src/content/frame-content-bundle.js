@@ -2,7 +2,7 @@
  * @file frame-content-bundle.js
  * @description BetterBrowse iframe 轻量内容脚本打包产物
  * @encoding UTF-8
- * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=60ffc4a6;src/core/link/link-matcher.js=25202d73;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=eeeb3c6c;src/content/frame-index.js=ecaaf4df
+ * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=60ffc4a6;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=5130ff18;src/content/frame-index.js=ecaaf4df
  */
 (function() {
   'use strict';
@@ -351,6 +351,46 @@ class LinkMatcher {
 }
 
 
+// ===== [模块: src/content/runtime-message.js] =====
+/**
+ * @file runtime-message.js
+ * @description 内容脚本向后台发消息的统一安全封装
+ * @encoding UTF-8
+ */
+
+/**
+ * 向后台发送消息，永不抛错：扩展重载后上下文失效、Service Worker 无接收端或超时都按 null 返回。
+ * 回调中显式消费 runtime.lastError，并吞掉 MV3 在回调模式下仍可能返回的拒绝 Promise，避免控制台错误噪音。
+ * @param {{ action: string, payload?: any }} message
+ * @param {number} [timeoutMs=0] - 大于 0 时超时按 null 返回（后台无响应时不让调用方永久等待）
+ * @returns {Promise<any>}
+ */
+function sendRuntimeMessage(message, timeoutMs = 0) {
+  return new Promise((resolve) => {
+    if (!chrome.runtime?.id) {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = timeoutMs > 0 ? setTimeout(() => finish(null), timeoutMs) : null;
+    try {
+      const result = chrome.runtime.sendMessage(message, (response) => {
+        finish(chrome.runtime.lastError ? null : response);
+      });
+      if (result != null && typeof result.then === 'function') result.then(() => {}, () => {});
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+
 // ===== [模块: src/content/form-detector.js] =====
 /**
  * @file form-detector.js
@@ -475,6 +515,7 @@ class FormDetector {
 
 
 
+
 class LinkInterceptor {
   constructor() {
     this.currentDomain = window.location.hostname.toLowerCase();
@@ -546,17 +587,7 @@ class LinkInterceptor {
   }
 
   safeSendMessage(message) {
-    if (!chrome.runtime?.id) return;
-    try {
-      const chromeResult = chrome.runtime.sendMessage(message, () => {
-        void chrome.runtime.lastError;
-      });
-      if (chromeResult != null && typeof chromeResult.then === 'function') {
-        chromeResult.then(() => {}, () => {});
-      }
-    } catch {
-      // 扩展重载后静默释放失效上下文
-    }
+    sendRuntimeMessage(message);
   }
 
   handleMainWorldOpen(event) {
@@ -594,20 +625,8 @@ class LinkInterceptor {
   }
 
   async refreshRulesCache() {
-    if (!chrome.runtime?.id) return;
     try {
-      const response = await new Promise((resolve) => {
-        const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT }, (result) => {
-          if (chrome.runtime.lastError) {
-            resolve(null);
-            return;
-          }
-          resolve(result);
-        });
-        if (chromeResult != null && typeof chromeResult.then === 'function') {
-          chromeResult.then(() => {}, () => {});
-        }
-      });
+      const response = await sendRuntimeMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT });
       const data = response?.data || response;
       this.applyEffectiveMode(data?.effectiveMode || data);
       if (this.normalizeMode(this.effectiveMode)) return;

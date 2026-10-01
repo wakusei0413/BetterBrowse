@@ -20,6 +20,7 @@ import {
 import { Toast } from './toast.js';
 import { TimeTreeBuilder, SingleLineTimelineScrollbar } from '../ui/time-tree.js';
 import { describeStashResult } from '../../core/stash/stash-result.js';
+import { formatStashTime } from '../../core/stash/group-title.js';
 
 export class StashTabComponent {
   /**
@@ -1013,14 +1014,7 @@ export class StashTabComponent {
 
     const createdAt = TimeTreeBuilder.getGroupTimestamp(group);
     const dateObj = new Date(createdAt);
-    const dateStr = new Intl.DateTimeFormat('zh-CN', {
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    }).format(dateObj);
+    const dateStr = formatStashTime(dateObj);
 
     const timeAgo = this.formatTimeAgo(createdAt);
     const tabCount = Number(group.itemCount) || 0;

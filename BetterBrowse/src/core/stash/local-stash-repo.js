@@ -11,6 +11,7 @@ import { OneTabConverter } from './onetab-converter.js';
 import { DefaultConfig } from '../../constants/config.js';
 import { IndexedDBManager } from '../storage/indexed-db.js';
 import { IndexedStashRepository } from './indexed-stash-repo.js';
+import { defaultGroupTitle } from './group-title.js';
 
 export class LocalStashRepository {
   // ============================================================
@@ -592,16 +593,7 @@ export class LocalStashRepository {
     if (normalizedItems.length === 0) return { success: true, group: null, skipped: tabItems.length };
 
     const now = Date.now();
-    const dateStr = new Intl.DateTimeFormat('zh-CN', {
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    }).format(new Date(now));
-
-    const defaultTitle = customTitle || `${dateStr} 收纳 (${normalizedItems.length} 个标签页)`;
+    const defaultTitle = customTitle || defaultGroupTitle(now, normalizedItems.length);
 
     const groupColor = typeof options === 'object' && typeof options.color === 'string' ? options.color : '';
 
@@ -633,26 +625,39 @@ export class LocalStashRepository {
   }
 
   /**
+   * 门面写入模板：写锁临界区内决策后端（决策不得移出锁外，否则会出现"决策后修订翻转"漏写）→
+   * 主库写入，失败显式返回 failValue、绝不降级写旧存储 → 写入有效则广播收纳修订号；
+   * 尚未进入主库时代（或已回退）则走旧存储实现。
+   * @template T
+   * @param {string} label - 失败日志中的操作名
+   * @param {(backend: typeof IndexedStashRepository) => Promise<T>} primary
+   * @param {() => Promise<T>} legacy
+   * @param {{ changed?: (result: T) => boolean, failValue?: T | ((err: Error) => T) }} [options]
+   * @returns {Promise<T>}
+   */
+  static async _write(label, primary, legacy, { changed = (result) => Boolean(result), failValue = false } = {}) {
+    return await IndexedDBManager.withWriteLock(async () => {
+      const backend = await this._getBackend();
+      if (!backend) return await legacy();
+      try {
+        const result = await primary(backend);
+        if (changed(result)) await this._notifyStashChanged();
+        return result;
+      } catch (err) {
+        console.error(`[LocalStashRepository] IndexedDB ${label}失败:`, err);
+        return typeof failValue === 'function' ? failValue(err) : failValue;
+      }
+    });
+  }
+
+  /**
    * 更新标签组属性（如标题、锁定、星标）
    * @param {string} groupId
    * @param {Partial<{ title: string, locked: boolean, starred: boolean }>} updates
    * @returns {Promise<boolean>}
    */
   static async updateGroup(groupId, updates) {
-    return await IndexedDBManager.withWriteLock(async () => {
-      const backend = await this._getBackend();
-      if (backend) {
-        try {
-          const ok = await backend.updateGroup(groupId, updates);
-          if (ok) await this._notifyStashChanged();
-          return ok;
-        } catch (err) {
-          console.error('[LocalStashRepository] IndexedDB 更新收纳组失败:', err);
-          return false;
-        }
-      }
-      return await this._legacyUpdateGroup(groupId, updates);
-    });
+    return await this._write('更新收纳组', (backend) => backend.updateGroup(groupId, updates), () => this._legacyUpdateGroup(groupId, updates));
   }
 
   /**
@@ -680,20 +685,7 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async deleteGroup(groupId, force = false) {
-    return await IndexedDBManager.withWriteLock(async () => {
-      const backend = await this._getBackend();
-      if (backend) {
-        try {
-          const ok = await backend.deleteGroup(groupId, force);
-          if (ok) await this._notifyStashChanged();
-          return ok;
-        } catch (err) {
-          console.error('[LocalStashRepository] IndexedDB 删除收纳组失败:', err);
-          return false;
-        }
-      }
-      return await this._legacyDeleteGroup(groupId, force);
-    });
+    return await this._write('删除收纳组', (backend) => backend.deleteGroup(groupId, force), () => this._legacyDeleteGroup(groupId, force));
   }
 
   /**
@@ -716,20 +708,7 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async deleteTabItem(groupId, itemId) {
-    return await IndexedDBManager.withWriteLock(async () => {
-      const backend = await this._getBackend();
-      if (backend) {
-        try {
-          const ok = await backend.deleteTabItem(groupId, itemId);
-          if (ok) await this._notifyStashChanged();
-          return ok;
-        } catch (err) {
-          console.error('[LocalStashRepository] IndexedDB 删除收纳条目失败:', err);
-          return false;
-        }
-      }
-      return await this._legacyDeleteTabItem(groupId, itemId);
-    });
+    return await this._write('删除收纳条目', (backend) => backend.deleteTabItem(groupId, itemId), () => this._legacyDeleteTabItem(groupId, itemId));
   }
 
   /**
@@ -766,21 +745,18 @@ export class LocalStashRepository {
       pinned: Boolean(tabItem.pinned)
     };
 
-    return await IndexedDBManager.withWriteLock(async () => {
-      const backend = await this._getBackend();
-      if (backend) {
-        try {
-          const config = await StorageAdapter.getUserConfig();
-          const res = await backend.addTabItemToGroup(groupId, normalized, config.stashSettings || {});
-          if (res?.success && res.added) await this._notifyStashChanged();
-          return res;
-        } catch (err) {
-          console.error('[LocalStashRepository] IndexedDB 追加收纳条目失败:', err);
-          return { success: false, error: err.message || '写入 IndexedDB 主库失败' };
-        }
+    return await this._write(
+      '追加收纳条目',
+      async (backend) => {
+        const config = await StorageAdapter.getUserConfig();
+        return await backend.addTabItemToGroup(groupId, normalized, config.stashSettings || {});
+      },
+      () => this._legacyAddTabItemToGroup(groupId, normalized),
+      {
+        changed: (res) => Boolean(res?.success && res.added),
+        failValue: (err) => ({ success: false, error: err.message || '写入 IndexedDB 主库失败' })
       }
-      return await this._legacyAddTabItemToGroup(groupId, normalized);
-    });
+    );
   }
 
   /**
@@ -833,20 +809,7 @@ export class LocalStashRepository {
     if (typeof updates.archived === 'boolean') normalized.archived = updates.archived;
     if (Object.keys(normalized).length === 0) return false;
 
-    return await IndexedDBManager.withWriteLock(async () => {
-      const backend = await this._getBackend();
-      if (backend) {
-        try {
-          const ok = await backend.updateTabItem(groupId, itemId, normalized);
-          if (ok) await this._notifyStashChanged();
-          return ok;
-        } catch (err) {
-          console.error('[LocalStashRepository] IndexedDB 编辑收纳条目失败:', err);
-          return false;
-        }
-      }
-      return await this._legacyUpdateTabItem(groupId, itemId, normalized);
-    });
+    return await this._write('编辑收纳条目', (backend) => backend.updateTabItem(groupId, itemId, normalized), () => this._legacyUpdateTabItem(groupId, itemId, normalized));
   }
 
   /**
@@ -871,20 +834,7 @@ export class LocalStashRepository {
    * @returns {Promise<boolean>}
    */
   static async clearAll(includeLocked = false) {
-    return await IndexedDBManager.withWriteLock(async () => {
-      const backend = await this._getBackend();
-      if (backend) {
-        try {
-          const ok = await backend.clearAll(includeLocked);
-          if (ok) await this._notifyStashChanged();
-          return ok;
-        } catch (err) {
-          console.error('[LocalStashRepository] IndexedDB 清空收纳数据失败:', err);
-          return false;
-        }
-      }
-      return await this._legacyClearAll(includeLocked);
-    });
+    return await this._write('清空收纳数据', (backend) => backend.clearAll(includeLocked), () => this._legacyClearAll(includeLocked));
   }
 
   /**
@@ -1388,14 +1338,6 @@ export class LocalStashRepository {
       const grp = parsedGroups[i];
       if (grp && Array.isArray(grp.tabs) && grp.tabs.length > 0) {
         const createdAt = typeof grp.createdAt === 'number' ? grp.createdAt : Date.now() - i * 1000;
-        const dateStr = new Intl.DateTimeFormat('zh-CN', {
-          year: 'numeric',
-          month: 'numeric',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false
-        }).format(new Date(createdAt));
 
         const validTabs = [];
         for (const t of grp.tabs) {
@@ -1418,7 +1360,7 @@ export class LocalStashRepository {
         const validGroup = {
           id: grp.id || `stash_grp_${createdAt}_${Math.random().toString(36).substring(2, 7)}`,
           createdAt: createdAt,
-          title: grp.title || `${dateStr} 收纳 (${validTabs.length} 个标签页)`,
+          title: grp.title || defaultGroupTitle(createdAt, validTabs.length),
           color: typeof grp.color === 'string' ? grp.color : '',
           locked: Boolean(grp.locked),
           starred: Boolean(grp.starred),

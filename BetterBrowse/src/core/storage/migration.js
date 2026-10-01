@@ -550,11 +550,24 @@ export class MigrationManager {
     if (Number(currentVersion) >= 7) {
       const settingsMigratedAt = await StorageAdapter.getChrome(StorageKeys.IDB_SETTINGS_MIGRATED_AT, 0);
       if (settingsMigratedAt && Date.now() - settingsMigratedAt >= retentionMs) {
-        await StorageAdapter.setChrome(StorageKeys.USER_CONFIG, {});
-        await StorageAdapter.setChrome(StorageKeys.LINK_RULES, {});
-        await StorageAdapter.setChrome(StorageKeys.AUTO_BACKUPS, []);
-        await StorageAdapter.setChrome(StorageKeys.ACTIVITY_STATS, {});
-        console.info('[MigrationManager] 旧版 chrome.storage.local 配置/规则/备份/活跃度已超过保留期，完成清理');
+        const legacyKeys = [
+          [StorageKeys.USER_CONFIG, {}],
+          [StorageKeys.LINK_RULES, {}],
+          [StorageKeys.AUTO_BACKUPS, []],
+          [StorageKeys.ACTIVITY_STATS, {}]
+        ];
+        // 只清理仍有残留的键：已清空的不再重写，避免保留期过后每次启动都写四次存储
+        let cleaned = 0;
+        for (const [key, emptyValue] of legacyKeys) {
+          const current = await StorageAdapter.getChrome(key, emptyValue);
+          const isEmpty = !current || (Array.isArray(current) ? current.length === 0 : Object.keys(current).length === 0);
+          if (isEmpty) continue;
+          await StorageAdapter.setChrome(key, emptyValue);
+          cleaned += 1;
+        }
+        if (cleaned > 0) {
+          console.info('[MigrationManager] 旧版 chrome.storage.local 配置/规则/备份/活跃度已超过保留期，完成清理');
+        }
       }
     }
   }

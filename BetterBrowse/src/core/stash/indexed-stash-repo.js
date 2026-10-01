@@ -12,6 +12,7 @@
 import { IndexedDBManager, IDBStores, STASH_ENTRY_POSITION_INDEX } from '../storage/indexed-db.js';
 import { SyncOutbox } from '../sync/outbox.js';
 import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS } from '../sync/sync-constants.js';
+import { defaultGroupTitle } from './group-title.js';
 
 /** 单批次写入的最大记录数（避免单次大事务被 Service Worker 休眠打断） */
 const WRITE_BATCH_SIZE = 500;
@@ -107,15 +108,7 @@ export class IndexedStashRepository {
    * @returns {string}
    */
   static _formatDefaultTitle(timestamp, count) {
-    const dateStr = new Intl.DateTimeFormat('zh-CN', {
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    }).format(new Date(timestamp));
-    return `${dateStr} 收纳 (${count} 个标签页)`;
+    return defaultGroupTitle(timestamp, count);
   }
 
   /**

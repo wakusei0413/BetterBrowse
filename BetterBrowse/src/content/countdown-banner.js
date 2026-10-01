@@ -5,6 +5,7 @@
  */
 
 import { ActionTypes } from '../constants/action-types.js';
+import { sendRuntimeMessage } from './runtime-message.js';
 
 export class CountdownBanner {
   static currentInstance = null;
@@ -493,20 +494,7 @@ export class CountdownBanner {
    */
   cancelAutoStash() {
     this.stopTimer();
-    try {
-      const chromeResult = chrome.runtime.sendMessage({
-        action: ActionTypes.CANCEL_AUTO_STASH,
-        payload: { nonce: this.nonce }
-      }, () => {
-        // 显式消费 lastError，避免扩展重载后产生未处理的错误噪音
-        void chrome.runtime.lastError;
-      });
-      if (chromeResult != null && typeof chromeResult.then === 'function') {
-        chromeResult.then(() => {}, () => {});
-      }
-    } catch {
-      // 忽略通信断开
-    }
+    sendRuntimeMessage({ action: ActionTypes.CANCEL_AUTO_STASH, payload: { nonce: this.nonce } });
     this.fadeOutAndRemove();
   }
 
@@ -532,31 +520,11 @@ export class CountdownBanner {
     }
 
     try {
-      const response = await new Promise((resolve) => {
-        const timeoutId = setTimeout(() => {
-          // 后台无响应（扩展重载/SW 休眠）时的超时兜底，避免卡片永久停留在"正在评估"
-          resolve(null);
-        }, 10000);
-        try {
-          const chromeResult = chrome.runtime.sendMessage({
-            action: ActionTypes.CONFIRM_AUTO_STASH,
-            payload: { nonce: this.nonce }
-          }, (res) => {
-            clearTimeout(timeoutId);
-            if (chrome.runtime.lastError) {
-              resolve(null);
-              return;
-            }
-            resolve(res);
-          });
-          if (chromeResult != null && typeof chromeResult.then === 'function') {
-            chromeResult.then(() => {}, () => {});
-          }
-        } catch {
-          clearTimeout(timeoutId);
-          resolve(null);
-        }
-      });
+      // 后台无响应（扩展重载/SW 休眠）时 10 秒超时兜底，避免卡片永久停留在"正在评估"
+      const response = await sendRuntimeMessage({
+        action: ActionTypes.CONFIRM_AUTO_STASH,
+        payload: { nonce: this.nonce }
+      }, 10000);
 
       // 统一消息响应为 { success, data } 双层结构：真正业务结果在 data.success
       const data = response && response.data ? response.data : null;

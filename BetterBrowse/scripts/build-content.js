@@ -19,6 +19,7 @@ export const BUNDLE_SPECS = [
       'src/constants/config.js',
       'src/core/logging/runtime-logger.js',
       'src/core/link/link-matcher.js',
+      'src/content/runtime-message.js',
       'src/content/form-detector.js',
       'src/content/countdown-banner.js',
       'src/content/link-interceptor.js',
@@ -34,6 +35,7 @@ export const BUNDLE_SPECS = [
       'src/constants/action-types.js',
       'src/constants/config.js',
       'src/core/link/link-matcher.js',
+      'src/content/runtime-message.js',
       'src/content/form-detector.js',
       'src/content/link-interceptor.js',
       'src/content/frame-index.js'

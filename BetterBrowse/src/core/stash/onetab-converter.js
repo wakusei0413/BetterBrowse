@@ -4,6 +4,8 @@
  * @encoding UTF-8
  */
 
+import { defaultGroupTitle } from './group-title.js';
+
 export class OneTabConverter {
   /**
    * 校验并清洗 URL，支持智能补齐缺省协议头并兼容常见安全协议
@@ -145,19 +147,11 @@ export class OneTabConverter {
    * @param {number} [timestamp]
    */
   static createGroupFromTabs(tabs, timestamp = Date.now()) {
-    const dateStr = new Intl.DateTimeFormat('zh-CN', {
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    }).format(new Date(timestamp));
 
     return {
       id: `stash_grp_${timestamp}_${Math.random().toString(36).substring(2, 7)}`,
       createdAt: timestamp,
-      title: `${dateStr} 收纳 (${tabs.length} 个标签页)`,
+      title: defaultGroupTitle(timestamp, tabs.length),
       locked: false,
       starred: false,
       tabs: tabs
@@ -223,19 +217,11 @@ export class OneTabConverter {
             }));
 
             const realTimestamp = typeof grp.createDate === 'number' ? grp.createDate : Date.now();
-            const dateStr = new Intl.DateTimeFormat('zh-CN', {
-              year: 'numeric',
-              month: 'numeric',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-              hour12: false
-            }).format(new Date(realTimestamp));
 
             return {
               id: `stash_grp_${realTimestamp}_${Math.random().toString(36).substring(2, 7)}`,
               createdAt: realTimestamp,
-              title: grp.label || `${dateStr} 收纳 (${tabs.length} 个标签页)`,
+              title: grp.label || defaultGroupTitle(realTimestamp, tabs.length),
               locked: Boolean(grp.locked),
               starred: Boolean(grp.starred),
               tabs: tabs

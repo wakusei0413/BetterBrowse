@@ -2,7 +2,7 @@
  * @file content-bundle.js
  * @description BetterBrowse 顶层页面完整内容脚本打包产物
  * @encoding UTF-8
- * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=60ffc4a6;src/core/logging/runtime-logger.js=4392ab33;src/core/link/link-matcher.js=25202d73;src/content/form-detector.js=ac1a1c56;src/content/countdown-banner.js=6c0920f0;src/content/link-interceptor.js=eeeb3c6c;src/content/index.js=543e068f
+ * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=60ffc4a6;src/core/logging/runtime-logger.js=4392ab33;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/countdown-banner.js=1f8d21c4;src/content/link-interceptor.js=5130ff18;src/content/index.js=b1d72c5b
  */
 (function() {
   'use strict';
@@ -428,6 +428,46 @@ class LinkMatcher {
 }
 
 
+// ===== [模块: src/content/runtime-message.js] =====
+/**
+ * @file runtime-message.js
+ * @description 内容脚本向后台发消息的统一安全封装
+ * @encoding UTF-8
+ */
+
+/**
+ * 向后台发送消息，永不抛错：扩展重载后上下文失效、Service Worker 无接收端或超时都按 null 返回。
+ * 回调中显式消费 runtime.lastError，并吞掉 MV3 在回调模式下仍可能返回的拒绝 Promise，避免控制台错误噪音。
+ * @param {{ action: string, payload?: any }} message
+ * @param {number} [timeoutMs=0] - 大于 0 时超时按 null 返回（后台无响应时不让调用方永久等待）
+ * @returns {Promise<any>}
+ */
+function sendRuntimeMessage(message, timeoutMs = 0) {
+  return new Promise((resolve) => {
+    if (!chrome.runtime?.id) {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = timeoutMs > 0 ? setTimeout(() => finish(null), timeoutMs) : null;
+    try {
+      const result = chrome.runtime.sendMessage(message, (response) => {
+        finish(chrome.runtime.lastError ? null : response);
+      });
+      if (result != null && typeof result.then === 'function') result.then(() => {}, () => {});
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+
 // ===== [模块: src/content/form-detector.js] =====
 /**
  * @file form-detector.js
@@ -547,6 +587,7 @@ class FormDetector {
  * @description 网页端超阈值智能收纳倒计时悬浮卡片（采用 Shadow DOM 彻底隔离宿主样式）
  * @encoding UTF-8
  */
+
 
 
 
@@ -1037,20 +1078,7 @@ class CountdownBanner {
    */
   cancelAutoStash() {
     this.stopTimer();
-    try {
-      const chromeResult = chrome.runtime.sendMessage({
-        action: ActionTypes.CANCEL_AUTO_STASH,
-        payload: { nonce: this.nonce }
-      }, () => {
-        // 显式消费 lastError，避免扩展重载后产生未处理的错误噪音
-        void chrome.runtime.lastError;
-      });
-      if (chromeResult != null && typeof chromeResult.then === 'function') {
-        chromeResult.then(() => {}, () => {});
-      }
-    } catch {
-      // 忽略通信断开
-    }
+    sendRuntimeMessage({ action: ActionTypes.CANCEL_AUTO_STASH, payload: { nonce: this.nonce } });
     this.fadeOutAndRemove();
   }
 
@@ -1076,31 +1104,11 @@ class CountdownBanner {
     }
 
     try {
-      const response = await new Promise((resolve) => {
-        const timeoutId = setTimeout(() => {
-          // 后台无响应（扩展重载/SW 休眠）时的超时兜底，避免卡片永久停留在"正在评估"
-          resolve(null);
-        }, 10000);
-        try {
-          const chromeResult = chrome.runtime.sendMessage({
-            action: ActionTypes.CONFIRM_AUTO_STASH,
-            payload: { nonce: this.nonce }
-          }, (res) => {
-            clearTimeout(timeoutId);
-            if (chrome.runtime.lastError) {
-              resolve(null);
-              return;
-            }
-            resolve(res);
-          });
-          if (chromeResult != null && typeof chromeResult.then === 'function') {
-            chromeResult.then(() => {}, () => {});
-          }
-        } catch {
-          clearTimeout(timeoutId);
-          resolve(null);
-        }
-      });
+      // 后台无响应（扩展重载/SW 休眠）时 10 秒超时兜底，避免卡片永久停留在"正在评估"
+      const response = await sendRuntimeMessage({
+        action: ActionTypes.CONFIRM_AUTO_STASH,
+        payload: { nonce: this.nonce }
+      }, 10000);
 
       // 统一消息响应为 { success, data } 双层结构：真正业务结果在 data.success
       const data = response && response.data ? response.data : null;
@@ -1187,6 +1195,7 @@ class CountdownBanner {
 
 
 
+
 class LinkInterceptor {
   constructor() {
     this.currentDomain = window.location.hostname.toLowerCase();
@@ -1258,17 +1267,7 @@ class LinkInterceptor {
   }
 
   safeSendMessage(message) {
-    if (!chrome.runtime?.id) return;
-    try {
-      const chromeResult = chrome.runtime.sendMessage(message, () => {
-        void chrome.runtime.lastError;
-      });
-      if (chromeResult != null && typeof chromeResult.then === 'function') {
-        chromeResult.then(() => {}, () => {});
-      }
-    } catch {
-      // 扩展重载后静默释放失效上下文
-    }
+    sendRuntimeMessage(message);
   }
 
   handleMainWorldOpen(event) {
@@ -1306,20 +1305,8 @@ class LinkInterceptor {
   }
 
   async refreshRulesCache() {
-    if (!chrome.runtime?.id) return;
     try {
-      const response = await new Promise((resolve) => {
-        const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT }, (result) => {
-          if (chrome.runtime.lastError) {
-            resolve(null);
-            return;
-          }
-          resolve(result);
-        });
-        if (chromeResult != null && typeof chromeResult.then === 'function') {
-          chromeResult.then(() => {}, () => {});
-        }
-      });
+      const response = await sendRuntimeMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT });
       const data = response?.data || response;
       this.applyEffectiveMode(data?.effectiveMode || data);
       if (this.normalizeMode(this.effectiveMode)) return;
@@ -1571,19 +1558,10 @@ class LinkInterceptor {
 
 
 
+
 installRuntimeLogger({
   context: 'content',
-  write: (entry) => new Promise((resolve) => {
-    try {
-      const result = chrome.runtime.sendMessage({ action: ActionTypes.APPEND_RUNTIME_LOG, payload: entry }, () => {
-        void chrome.runtime.lastError;
-        resolve();
-      });
-      if (result != null && typeof result.then === 'function') result.catch(() => {});
-    } catch {
-      resolve();
-    }
-  })
+  write: (entry) => sendRuntimeMessage({ action: ActionTypes.APPEND_RUNTIME_LOG, payload: entry }).then(() => {})
 });
 
 // 顶层页面使用完整能力；iframe 由 frame-content-bundle.js 独立承载轻量能力。

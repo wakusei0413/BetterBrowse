@@ -7,6 +7,7 @@
 import { ActionTypes } from '../constants/action-types.js';
 import { LinkModes } from '../constants/config.js';
 import { LinkMatcher } from '../core/link/link-matcher.js';
+import { sendRuntimeMessage } from './runtime-message.js';
 
 export class LinkInterceptor {
   constructor() {
@@ -79,17 +80,7 @@ export class LinkInterceptor {
   }
 
   safeSendMessage(message) {
-    if (!chrome.runtime?.id) return;
-    try {
-      const chromeResult = chrome.runtime.sendMessage(message, () => {
-        void chrome.runtime.lastError;
-      });
-      if (chromeResult != null && typeof chromeResult.then === 'function') {
-        chromeResult.then(() => {}, () => {});
-      }
-    } catch {
-      // 扩展重载后静默释放失效上下文
-    }
+    sendRuntimeMessage(message);
   }
 
   handleMainWorldOpen(event) {
@@ -127,20 +118,8 @@ export class LinkInterceptor {
   }
 
   async refreshRulesCache() {
-    if (!chrome.runtime?.id) return;
     try {
-      const response = await new Promise((resolve) => {
-        const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT }, (result) => {
-          if (chrome.runtime.lastError) {
-            resolve(null);
-            return;
-          }
-          resolve(result);
-        });
-        if (chromeResult != null && typeof chromeResult.then === 'function') {
-          chromeResult.then(() => {}, () => {});
-        }
-      });
+      const response = await sendRuntimeMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT });
       const data = response?.data || response;
       this.applyEffectiveMode(data?.effectiveMode || data);
       if (this.normalizeMode(this.effectiveMode)) return;

@@ -42,6 +42,7 @@ const allJsFiles = new Set([
   'src/core/stash/onetab-converter.js',
   'src/core/stash/stash-service.js',
   'src/core/stash/stash-result.js',
+  'src/core/stash/group-title.js',
   'src/core/ai/ai-capabilities.js',
   'src/core/sync/sync-constants.js',
   'src/core/sync/crypto-util.js',
@@ -62,6 +63,7 @@ const allJsFiles = new Set([
   'src/background/ai-bridge.js',
   'src/background/service-worker.js',
   'src/content/link-interceptor.js',
+  'src/content/runtime-message.js',
   'src/content/form-detector.js',
   'src/content/countdown-banner.js',
   'src/content/main-world-bridge.js',
@@ -346,6 +348,7 @@ try {
 // 7. 内容脚本不得直读 chrome.storage / IndexedDB（必须经后台消息返回最小必要字段）
 const contentSourceFiles = [
   'src/content/link-interceptor.js',
+  'src/content/runtime-message.js',
   'src/content/form-detector.js',
   'src/content/countdown-banner.js',
   'src/content/index.js',
