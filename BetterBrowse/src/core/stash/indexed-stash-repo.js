@@ -9,7 +9,7 @@
  * @encoding UTF-8
  */
 
-import { IndexedDBManager, IDBStores, STASH_ENTRY_POSITION_INDEX } from '../storage/indexed-db.js';
+import { IndexedDBManager, IDBStores, STASH_ENTRY_POSITION_INDEX, STASH_GROUP_SORT_INDEX } from '../storage/indexed-db.js';
 import { SyncOutbox } from '../sync/outbox.js';
 import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS } from '../sync/sync-constants.js';
 import { defaultGroupTitle } from './group-title.js';
@@ -207,34 +207,41 @@ export class IndexedStashRepository {
     const minBound = Number.isFinite(minCreated) ? minCreated : null;
     const maxBound = Number.isFinite(maxCreated) ? maxCreated : null;
     const decodedCursor = this._decodeCursor(cursor);
+    // 游标为排序索引键 [starRank, createdAt, groupId]；旧格式游标（仅 groupId）按从头读取处理
+    const resumeKey = Array.isArray(decodedCursor) && decodedCursor.length === 3 ? decodedCursor : null;
 
-    const allGroups = await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
-      return await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_GROUPS).getAll());
-    }) || [];
-    if (!Array.isArray(allGroups)) {
-      throw new Error(`收纳组摘要读取结果异常: ${typeof allGroups}`);
-    }
-    const sorted = [...allGroups].sort((a, b) => {
-      const starDiff = (b.starred ? 1 : 0) - (a.starred ? 1 : 0);
-      if (starDiff) return starDiff;
-      const timeDiff = (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0);
-      if (timeDiff) return timeDiff;
-      return String(a.groupId || '').localeCompare(String(b.groupId || ''));
-    }).filter((group) => {
-      const createdAt = Number(group.createdAt) || 0;
-        if (minBound != null && createdAt < minBound) return false;
-        if (maxBound != null && createdAt > maxBound) return false;
-
-      return true;
+    // 沿 (starRank, createdAt, groupId) 复合索引倒序游标读取：星标组在前、新组在前，
+    // 每页只读 limit+1 条，不再每页全表 getAll + 排序（逐组分页导出时是 O(N²)）
+    const records = [];
+    let hasMore = false;
+    await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
+      const index = tx.objectStore(IDBStores.STASH_GROUPS).index(STASH_GROUP_SORT_INDEX);
+      for (const rank of [1, 0]) {
+        if (hasMore) break;
+        if (resumeKey && Number(resumeKey[0]) < rank) continue;
+        const lower = [rank, minBound ?? -Number.MAX_SAFE_INTEGER, ''];
+        let upper = [rank, maxBound ?? Number.MAX_SAFE_INTEGER, MAX_KEY_TEXT];
+        let upperOpen = false;
+        if (resumeKey && Number(resumeKey[0]) === rank) {
+          upper = resumeKey;
+          upperOpen = true;
+        }
+        await new Promise((resolve, reject) => {
+          const request = index.openCursor(IDBKeyRange.bound(lower, upper, false, upperOpen), 'prev');
+          request.onerror = () => reject(request.error || new Error('收纳组摘要游标读取失败'));
+          request.onsuccess = () => {
+            const current = request.result;
+            if (!current) return resolve();
+            if (records.length >= safeLimit) {
+              hasMore = true;
+              return resolve();
+            }
+            records.push({ record: current.value, key: current.key });
+            current.continue();
+          };
+        });
+      }
     });
-    let start = 0;
-    if (Array.isArray(decodedCursor) && decodedCursor[0]) {
-      const index = sorted.findIndex((group) => group.groupId === decodedCursor[0]);
-      start = index >= 0 ? index + 1 : 0;
-    }
-    const sliced = sorted.slice(start, start + safeLimit);
-    const hasMore = start + sliced.length < sorted.length;
-    const records = sliced.map((record) => ({ record, key: [record.groupId] }));
     const items = [];
     for (const { record } of records) {
       items.push(this._toGroupSummary(record));

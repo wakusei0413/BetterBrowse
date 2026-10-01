@@ -29,7 +29,7 @@ Deno.test('API 版本：能力清单和状态统一使用 apiVersion', () => {
   assertEquals(Object.hasOwn(descriptor, 'protocol'), false);
   assertEquals(Object.hasOwn(descriptor, 'extensionVersion'), false);
   assertEquals(Object.hasOwn(descriptor, 'schemaVersion'), false);
-  assertEquals(descriptor.internalRevisions.localDataSchema, 10);
+  assertEquals(descriptor.internalRevisions.localDataSchema, 11);
   assertEquals(descriptor.internalRevisions.indexedDbSchema, 11);
 
   globalThis.chrome = {

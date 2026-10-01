@@ -6,7 +6,7 @@
 |---|---|---:|---|---|
 | Manifest 软件版本 | `BetterBrowse/manifest.json` | `1.0.0` / Milestone 4 | 用户可见发布包 | 发布软件、功能或修复版本时；不代表协议兼容性 |
 | `API_VERSION` | `src/constants/api-version.js` | 1 | 扩展、Native Host、桥接客户端的消息契约 | 跨组件不兼容变更；UI 或普通修复不涨 |
-| `LOCAL_DATA_SCHEMA_REVISION` | `src/constants/config.js` | 10 | 业务数据迁移边界 | 数据形状不兼容时，并在 `migration.js` 增加幂等迁移块 |
+| `LOCAL_DATA_SCHEMA_REVISION` | `src/constants/config.js` | 11 | 业务数据迁移边界 | 数据形状不兼容时，并在 `migration.js` 增加幂等迁移块 |
 | `INDEXED_DB_SCHEMA_REVISION` | `src/core/storage/indexed-db.js` | 11 | IndexedDB 对象仓储与索引 | 新增/改变对象仓储或索引，并在 `onupgradeneeded` 建表/索引；只能涨不能降 |
 | `FULL_BACKUP_FORMAT_REVISION` | `src/constants/format-revisions.js` | 1 | 全量备份 JSON 持久化格式 | 备份格式不兼容时；UI 和 Manifest 不涨它 |
 

@@ -2,7 +2,7 @@
  * @file frame-content-bundle.js
  * @description BetterBrowse iframe 轻量内容脚本打包产物
  * @encoding UTF-8
- * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=60ffc4a6;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=5130ff18;src/content/frame-index.js=ecaaf4df
+ * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=8c03a32d;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=5130ff18;src/content/frame-index.js=ecaaf4df
  */
 (function() {
   'use strict';
@@ -237,7 +237,7 @@ const DefaultConfig = {
 // 本地数据修订 8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
 // 本地数据修订 9：回填收纳组派生字段 itemCount / starRank / nextPosition，供真分页摘要使用
 // 本地数据修订 10：活跃度按 pageId 分记录持久化，避免每次激活整对象重写
-const LOCAL_DATA_SCHEMA_REVISION = 10;
+const LOCAL_DATA_SCHEMA_REVISION = 11;
 
 /**
  * 统一解析标签页数量阈值：阈值监控、智能收纳达标判定与各界面统计必须同一口径

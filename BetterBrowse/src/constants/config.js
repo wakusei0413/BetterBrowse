@@ -116,7 +116,7 @@ export const DefaultConfig = {
 // 本地数据修订 8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
 // 本地数据修订 9：回填收纳组派生字段 itemCount / starRank / nextPosition，供真分页摘要使用
 // 本地数据修订 10：活跃度按 pageId 分记录持久化，避免每次激活整对象重写
-export const LOCAL_DATA_SCHEMA_REVISION = 10;
+export const LOCAL_DATA_SCHEMA_REVISION = 11;
 
 /**
  * 统一解析标签页数量阈值：阈值监控、智能收纳达标判定与各界面统计必须同一口径

@@ -213,6 +213,18 @@ export class MigrationManager {
       }
     }
 
+    // 本地数据修订 11：再次按实际条目重算全部组的 itemCount / starRank / nextPosition。
+    // 修订 9 之后的导入、同步合并与快照应用曾不维护这些派生字段（组显示 0 项、导出被截断）；
+    // 摘要分页改走 (starRank, createdAt, groupId) 索引后，缺 starRank 的组还会从列表中消失
+    if (targetVersion >= 10 && currentVersion < 11) {
+      const optedOut = (await StorageAdapter.getChrome(StorageKeys.IDB_OPTOUT, false)) === true;
+      if (optedOut || await this.backfillGroupDerivedFields()) {
+        targetVersion = 11;
+      } else {
+        targetVersion = 10;
+      }
+    }
+
     await StorageAdapter.setChrome(StorageKeys.SCHEMA_VERSION, targetVersion);
     console.info(`[MigrationManager] 数据架构迁移完成，当前本地数据修订: ${targetVersion}`);
     await this.cleanupLegacyStashData(targetVersion);

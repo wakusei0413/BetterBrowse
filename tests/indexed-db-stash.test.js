@@ -659,3 +659,37 @@ Deno.test("主库丢失自愈：浏览器运行中删除并重建主库后，从
     await idb.restore();
   }
 });
+
+Deno.test("摘要分页：沿排序索引游标翻页，星标在前、新组在前且不重不漏", async () => {
+  const idb = installFakeIndexedDB();
+  try {
+    installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 4, [StorageKeys.STASH_GROUPS]: [] });
+    await MigrationManager.runMigrations();
+    const groups = Array.from({ length: 23 }, (_, i) => ({
+      id: `grp_page_${String(i).padStart(2, "0")}`,
+      createdAt: 1000 + i,
+      starred: i % 7 === 0,
+      title: `组 ${i}`,
+      tabs: [{ id: "t", url: `https://page.example/${i}` }]
+    }));
+    await LocalStashRepository.importDataJSON(JSON.stringify(groups));
+    const seen = [];
+    let cursor = null;
+    do {
+      const page = await IndexedStashRepository.listGroupSummariesPage({ cursor, limit: 5 });
+      seen.push(...page.items);
+      cursor = page.nextCursor;
+    } while (cursor);
+    assertEquals(seen.length, 23);
+    assertEquals(new Set(seen.map((g) => g.id)).size, 23);
+    const starredCount = groups.filter((g) => g.starred).length;
+    assertEquals(seen.slice(0, starredCount).every((g) => g.starred), true);
+    const rest = seen.slice(starredCount).map((g) => g.createdAt);
+    assertEquals(rest, [...rest].sort((a, b) => b - a));
+
+    const ranged = await IndexedStashRepository.listGroupSummariesPage({ limit: 100, createdAtFrom: 1010, createdAtTo: 1015 });
+    assertEquals(ranged.items.map((g) => g.createdAt).sort(), [1010, 1011, 1012, 1013, 1014, 1015]);
+  } finally {
+    await idb.restore();
+  }
+});
