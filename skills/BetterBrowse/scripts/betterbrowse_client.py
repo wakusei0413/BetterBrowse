@@ -501,11 +501,12 @@ def read_argument_text(
             raise BridgeClientError("ARGUMENT_REQUIRED", "--file 必须指定文件路径")
         path = Path(str(flags["file"]))
         try:
-            return path.read_text(encoding="utf-8")
+            # utf-8-sig：容忍记事本 / PowerShell 5 写出的带 BOM 文件
+            return path.read_text(encoding="utf-8-sig")
         except OSError as error:
             raise BridgeClientError("INPUT_FILE_UNREADABLE", f"无法读取输入文件 {path}", {"reason": str(error)}) from error
     if flags.get("stdin") is True:
-        return sys.stdin.read()
+        return read_stdin_text()
     if index < len(positional):
         return positional[index]
     if required:
@@ -902,9 +903,55 @@ def execute_batch(session: BridgeSession, operations: Sequence[Mapping[str, Any]
     return {"success": True, "data": {"completed": len(results), "results": results}}
 
 
+def read_stdin_text() -> str:
+    """按 UTF-8 读取标准输入，不受 Windows 本地代码页（如 GBK）影响。"""
+
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.read()
+    return buffer.read().decode("utf-8-sig")
+
+
+def configure_stdio() -> None:
+    """统一以 UTF-8 输出 JSON：Windows 中文环境默认代码页会把中文写成乱码。"""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8")
+            except (OSError, ValueError):
+                pass
+
+
+def _windows_process_alive(pid: int) -> bool | None:
+    # Windows 上 os.kill(pid, 0) 会向进程组发送 CTRL_C_EVENT，不能用作存活探测
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        process_query_limited_information = 0x1000
+        still_active = 259
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            # 5 = ERROR_ACCESS_DENIED：进程存在但无权访问
+            return True if kernel32.GetLastError() == 5 else False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            return code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
 def process_alive(pid: Any) -> bool | None:
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return None
+    if os.name == "nt":
+        return _windows_process_alive(pid)
     try:
         os.kill(pid, 0)
         return True
@@ -1032,4 +1079,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    configure_stdio()
     raise SystemExit(main())

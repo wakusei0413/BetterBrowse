@@ -3,79 +3,73 @@
  * @description AI 桥接本机宿主卸载器（移除 Native Messaging 注册与自发现残留文件）
  *
  * 用法：deno task ai-host-uninstall [--browser=chrome|edge]
+ * 只移除指定浏览器的注册；另一浏览器仍在使用时保留共用的启动器。
  * @encoding UTF-8
  */
 
 import { join } from 'jsr:@std/path@^1.0.8';
+import {
+  legacyWindowsManifestPath,
+  parseArgs,
+  parseBrowser,
+  readRegistryDefault,
+  resolveRegistration,
+  stateDirPath
+} from './host-paths.js';
 
-const HOST_NAME = 'com.betterbrowse.bridge';
-
-function parseArgs(args) {
-  const parsed = {};
-  for (const arg of args) {
-    const match = /^--([a-zA-Z-]+)=(.*)$/.exec(arg);
-    if (match) parsed[match[1]] = match[2];
+/**
+ * @param {string} path
+ * @returns {Promise<boolean>}
+ */
+async function removeIfExists(path) {
+  try {
+    await Deno.remove(path);
+    return true;
+  } catch {
+    return false;
   }
-  return parsed;
-}
-
-function resolveRegistration(browser) {
-  const home = Deno.env.get('USERPROFILE') || Deno.env.get('HOME') || '.';
-  const os = Deno.build.os;
-  if (os === 'windows') {
-    const dir = join(Deno.env.get('LOCALAPPDATA') || join(home, 'AppData', 'Local'), 'BetterBrowse');
-    return { dir, mode: 'registry', registryKey: browser === 'edge'
-      ? 'HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.betterbrowse.bridge'
-      : 'HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.betterbrowse.bridge' };
-  }
-  if (os === 'darwin') {
-    const base = join(home, 'Library', 'Application Support');
-    const dir = browser === 'edge'
-      ? join(base, 'Microsoft Edge', 'NativeMessagingHosts')
-      : join(base, 'Google', 'Chrome', 'NativeMessagingHosts');
-    return { dir, mode: 'file' };
-  }
-  const base = join(home, '.config');
-  const dir = browser === 'edge'
-    ? join(base, 'microsoft-edge', 'NativeMessagingHosts')
-    : join(base, 'google-chrome', 'NativeMessagingHosts');
-  return { dir, mode: 'file' };
 }
 
 async function main() {
-  const args = parseArgs(Deno.args);
-  const browser = args.browser === 'edge' ? 'edge' : 'chrome';
-  const { dir, mode, registryKey } = resolveRegistration(browser);
+  const browser = parseBrowser(parseArgs(Deno.args));
+  const otherBrowser = browser === 'edge' ? 'chrome' : 'edge';
+  const { mode, manifestPath, registryKey } = resolveRegistration(browser);
+  const other = resolveRegistration(otherBrowser);
 
   if (mode === 'registry') {
-    const command = new Deno.Command('reg', {
+    const output = await new Deno.Command('reg', {
       args: ['delete', registryKey, '/f'],
       stdout: 'piped',
       stderr: 'piped'
-    });
-    const output = await command.output();
+    }).output();
     if (!output.success) {
       console.log('注册表项不存在或已删除（跳过）');
     }
   }
 
-  try {
-    await Deno.remove(join(dir, `${HOST_NAME}.json`));
-    console.log(`已删除宿主清单：${join(dir, `${HOST_NAME}.json`)}`);
-  } catch {
+  if (await removeIfExists(manifestPath)) {
+    console.log(`已删除宿主清单：${manifestPath}`);
+  } else {
     console.log('宿主清单不存在（跳过）');
   }
 
-  // 清理生成的启动器与可能残留的自发现文件（正常由宿主进程退出时自行删除）
-  const stateDir = Deno.build.os === 'windows'
-    ? join(Deno.env.get('LOCALAPPDATA') || '.', 'BetterBrowse')
-    : join(Deno.env.get('XDG_STATE_HOME') || join(Deno.env.get('HOME') || '.', '.local', 'state'), 'better-browse');
-  for (const leftover of ['run-host.cmd', 'run-host.sh', 'bridge.json']) {
-    try {
-      await Deno.remove(join(stateDir, leftover));
-      console.log(`已清理：${leftover}`);
-    } catch {
-      // 文件不存在视为已清理
+  // 另一浏览器是否仍在使用宿主（Windows 查注册表，其它平台查清单文件）
+  const otherRegistered = other.mode === 'registry'
+    ? Boolean(await readRegistryDefault(other.registryKey))
+    : await Deno.stat(other.manifestPath).then(() => true, () => false);
+
+  if (mode === 'registry' && !otherRegistered) {
+    // 旧版安装器写入的共用清单：两个浏览器都已注销后才清理
+    await removeIfExists(legacyWindowsManifestPath());
+  }
+
+  if (otherRegistered) {
+    console.log(`${otherBrowser} 仍注册了 AI 桥接宿主，保留共用启动器`);
+  } else {
+    // 清理生成的启动器（bridge.json 由宿主进程退出时自行删除，这里不动仍在运行的宿主）
+    const stateDir = stateDirPath();
+    for (const leftover of ['run-host.cmd', 'run-host.sh']) {
+      if (await removeIfExists(join(stateDir, leftover))) console.log(`已清理：${leftover}`);
     }
   }
 

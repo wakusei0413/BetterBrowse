@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import importlib.util
 import json
 import socket
@@ -429,6 +430,34 @@ class ResponseAndDoctorTests(unittest.TestCase):
             client.BridgeSession = original_session  # type: ignore[assignment]
         self.assertFalse(response["success"])
         self.assertEqual("EXTENSION_UNREACHABLE", response["code"])
+
+
+class EncodingAndProcessTests(unittest.TestCase):
+    def test_file_input_tolerates_utf8_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "payload.json"
+            path.write_bytes(codecs.BOM_UTF8 + '{"title":"中文"}'.encode("utf-8"))
+            text = client.read_argument_text([], 0, {"file": str(path)}, "输入")
+        self.assertEqual({"title": "中文"}, json.loads(text or ""))
+
+    def test_stdin_is_decoded_as_utf8_regardless_of_locale(self) -> None:
+        import io
+        import sys
+
+        original = sys.stdin
+        sys.stdin = io.TextIOWrapper(io.BytesIO('{"t":"普通请求"}'.encode("utf-8")), encoding="gbk")
+        try:
+            text = client.read_stdin_text()
+        finally:
+            sys.stdin = original
+        self.assertEqual({"t": "普通请求"}, json.loads(text))
+
+    def test_process_alive_detects_current_and_missing_process(self) -> None:
+        import os
+
+        self.assertTrue(client.process_alive(os.getpid()))
+        self.assertIsNone(client.process_alive(0))
+        self.assertIn(client.process_alive(2**22 + 3), (False, None))
 
 
 if __name__ == "__main__":

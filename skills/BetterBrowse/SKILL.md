@@ -71,7 +71,7 @@ python "$CLIENT" batch --file operations.json
 
 ## 硬性安全规则（必须遵守）
 
-1. **不可逆操作必须带确认位**：`group-delete` / `backup-import` / `backup-restore` / `backup-delete` / `config-reset` 必须加 `--confirm`；经 `call` 直调 `DELETE_STASH_GROUP`、`CLEAR_ALL_STASH`、`RESTORE_FULL_BACKUP`、`DEDUPLICATE_STASH_DATA`、`RESET_CONFIG`、`RESTORE_AUTO_BACKUP`、`DELETE_AUTO_BACKUP`、`RESTORE_STASH_GROUP_DATA`、`CLEAR_RUNTIME_LOGS`、`REBUILD_SYNC_FROM_SCRATCH` 时 payload 必须含 `"confirm": true`。运行时以 `capabilities` 返回的 `confirmRequired` 为唯一事实源，缺少确认位时插件会直接拒绝。
+1. **不可逆操作必须带确认位**：`group-delete` / `backup-import` / `backup-restore` / `backup-delete` / `config-reset` 必须加 `--confirm`；经 `call` 直调 `DELETE_STASH_GROUP`、`CLEAR_ALL_STASH`、`RESTORE_FULL_BACKUP`、`DEDUPLICATE_STASH_DATA`、`RESET_CONFIG`、`RESTORE_AUTO_BACKUP`、`DELETE_AUTO_BACKUP`、`RESTORE_STASH_GROUP_DATA`、`CLEAR_RUNTIME_LOGS`、`REBUILD_SYNC_FROM_SCRATCH`、`FALLBACK_PREVIOUS_SNAPSHOT`、`RETIRE_SYNC_DEVICE` 时 payload 必须含 `"confirm": true`。运行时以 `capabilities` 返回的 `confirmRequired` 为唯一事实源，缺少确认位时插件会直接拒绝。
 2. **破坏性操作前先备份**：执行清空、恢复备份、去重前，先运行 `python "$CLIENT" backup-export --output <文件>`。
 3. **凭据只写不可读**：可以用 `sync-credentials` 保存 WebDAV 凭据，但任何响应都不会包含密码；不要尝试读取。
 4. **所有操作有审计**：每次调用写入插件选项页「运行日志」Tab，用户可见。不要执行用户没有要求的操作。

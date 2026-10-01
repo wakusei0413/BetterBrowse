@@ -68,8 +68,18 @@ async function 等待条件(predicate, message, timeoutMs = 10_000) {
 }
 
 async function 读取业务请求(reader) {
+  const 分块缓存 = new Map();
   while (true) {
-    const message = await reader.读取一帧();
+    let message = await reader.读取一帧();
+    // 宿主向扩展转发超长请求时按统一信封分块，这里与扩展侧一样按 id 重组
+    if (message?.chunk && typeof message.part === "string") {
+      const parts = 分块缓存.get(message.id) || [];
+      parts[message.chunk.i] = message.part;
+      分块缓存.set(message.id, parts);
+      if (parts.filter((part) => typeof part === "string").length < message.chunk.n) continue;
+      分块缓存.delete(message.id);
+      message = JSON.parse(parts.join(""));
+    }
     if (
       typeof message?.reqId === "string" && typeof message?.action === "string"
     ) return message;
@@ -208,6 +218,20 @@ Deno.test({
       assertEquals(largeResult.success, true);
       assertEquals(largeResult.data.text, largeText);
 
+      // 大请求：多字节中文必然跨 TCP 读取边界，宿主必须流式解码而不产生替换字符
+      const bigRequestFile = join(临时根目录, "big-request.json");
+      const bigText = "跨块中文".repeat(80_000);
+      await Deno.writeTextFile(bigRequestFile, JSON.stringify({ text: bigText }));
+      const bigRequestProcess = 启动Python客户端(
+        ["call", "TEST_BIG_REQUEST", "--file", bigRequestFile],
+        隔离环境,
+      );
+      const bigRequest = await 读取业务请求(reader);
+      assertEquals(bigRequest.action, "TEST_BIG_REQUEST");
+      assertEquals(bigRequest.payload.text === bigText, true);
+      await 写扩展响应(writer, bigRequest, { success: true, data: { ok: true } });
+      assertEquals((await 读取客户端结果(bigRequestProcess)).success, true);
+
       const bridgeInfo = JSON.parse(await Deno.readTextFile(bridgeFile));
       assertEquals(bridgeInfo.apiVersion, API_VERSION);
       assertEquals(bridgeInfo.extensionId, 扩展编号);
@@ -238,7 +262,7 @@ Deno.test({
       );
       const exited = await Promise.race([
         host.status.then(() => true),
-        new Promise((resolve) => setTimeout(() => resolve(false), 500)),
+        new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
       ]);
       if (!exited) {
         try {
@@ -249,6 +273,8 @@ Deno.test({
         await host.status;
       }
       await Deno.remove(临时根目录, { recursive: true });
+      // 宿主在 stdin EOF 后必须自行退出，不能依赖外部强杀（否则每次浏览器退出都留下僵尸进程）
+      assertEquals(exited, true, "宿主 stdin EOF 后未自行退出");
     }
   },
 });

@@ -16,8 +16,8 @@
 ## AI 桥接排障
 
 1. **先跑统一诊断**：使用 Python 3.9+ 执行 `python skills/BetterBrowse/scripts/betterbrowse_client.py doctor`，一次检查解释器、`bridge.json`、宿主端口、握手和 API 版本。
-2. **显示“宿主缺失”**：确认已执行 `deno task ai-host-install --ext-id=<扩展ID>`，检查 Native Messaging 注册项/清单路径，并在 `chrome://extensions` 重载扩展。
-3. **宿主秒退**：确认 `run-host.cmd` 只有 ASCII；中文说明只能放在 `bb_native_host.js`。查看宿主 stderr，Native host 的 stdout 只能是协议帧。
+2. **显示“宿主缺失”**：确认已执行 `deno task ai-host-install --ext-id=<扩展ID>`，检查 Native Messaging 注册项/清单路径，并在 `chrome://extensions` 重载扩展。Windows 下 Chrome 与 Edge 的清单分别为 `%LOCALAPPDATA%\BetterBrowse\com.betterbrowse.bridge.chrome.json` / `.edge.json`，各自注册、互不覆盖；卸载一个浏览器不会影响另一个。
+3. **宿主秒退**：确认 `run-host.cmd` 只有 ASCII；中文说明只能放在 `bb_native_host.js`。用户名含中文时，安装器会把路径改写为 `%LOCALAPPDATA%` 等环境变量前缀或 8.3 短路径；若出现“无法转换为短路径”警告，需要把仓库放到纯 ASCII 路径下重新安装。查看宿主 stderr，Native host 的 stdout 只能是协议帧。
 4. **安装后仍找不到 deno**：重启 Chrome；安装器应把 `Deno.execPath()` 绝对路径写入启动包装，不能依赖长驻 Chrome 的旧 PATH。
 5. **连接但请求卡住**：检查 `bridge.json` 的端口、一次性令牌和 `apiVersion`；Python 客户端必须从该文件读取 API 版本，大响应要确认分块重组后仍回填 reqId。
 6. **“Native host has exited”**：检查 stdin EOF 清理、宿主 stderr、90 秒 pong 看门狗和 120 秒在途超时；Service Worker 的 setTimeout 不能作为唯一保活依据。

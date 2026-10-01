@@ -33,6 +33,23 @@ const CHUNK_CHARS = 200000;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+/** 未完成分块重组的过期时间：Agent 中途断开时释放半截缓冲 */
+const REASSEMBLY_TTL_MS = 120000;
+
+/**
+ * 循环写满整个缓冲：Deno 的 write() 允许短写（Windows 管道写入大帧时常见）
+ * @param {{ write(p: Uint8Array): Promise<number> }} writer
+ * @param {Uint8Array} bytes
+ */
+async function writeAll(writer, bytes) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    offset += await writer.write(bytes.subarray(offset));
+  }
+}
+
+/** stdout 写入串行链：ping 与业务响应不得交错写出半帧 */
+let nativeWriteChain = Promise.resolve();
 
 /** 调试日志文件句柄（懒创建） */
 let debugLogFile = null;
@@ -96,7 +113,9 @@ async function writeNativeFrame(obj) {
   const frame = new Uint8Array(4 + payload.length);
   new DataView(frame.buffer).setUint32(0, payload.length, true);
   frame.set(payload, 4);
-  await Deno.stdout.write(frame);
+  const next = nativeWriteChain.then(() => writeAll(Deno.stdout, frame));
+  nativeWriteChain = next.catch(() => {});
+  await next;
 }
 
 /**
@@ -179,8 +198,12 @@ async function writeBridgeFile(info) {
 
 /** 删除自发现文件（进程退出清理） */
 async function removeBridgeFile() {
+  const file = join(stateDirPath(), 'bridge.json');
   try {
-    await Deno.remove(join(stateDirPath(), 'bridge.json'));
+    // 多浏览器 / 多配置文件共用同一自发现文件：只删除自己写入的那份，不误删仍在运行的宿主
+    const info = JSON.parse(await Deno.readTextFile(file));
+    if (info?.pid !== Deno.pid) return;
+    await Deno.remove(file);
   } catch {
     // 文件不存在视为已清理
   }
@@ -219,6 +242,7 @@ class BridgeHost {
     this.inflight = null;
     /** 分块重组缓存：id -> { parts, received, total }（扩展响应与 Agent 请求共用） */
     this.reassembly = new Map();
+    this.agentWriteChain = Promise.resolve();
     this.agentSocket = null;
     /** 扩展 API 兼容状态：null=尚未握手，true=可转发，false=明确不兼容 */
     this.extensionApiCompatible = null;
@@ -258,6 +282,9 @@ class BridgeHost {
         this.inflight = null;
         this.writeAgentLine(timed.conn, { id: timed.id, success: false, error: '扩展响应超时丢失，请重试' }).catch(() => {});
       }
+      for (const [id, entry] of this.reassembly) {
+        if (now - entry.createdAt > REASSEMBLY_TTL_MS) this.reassembly.delete(id);
+      }
       this.drainQueue();
       if (this.inflight) {
         try {
@@ -278,13 +305,17 @@ class BridgeHost {
     } finally {
       await this.shutdown();
     }
+    // 兜底：任何残留句柄都不得让宿主在浏览器退出后继续驻留
+    Deno.exit(0);
   }
 
   /** 退出清理：停 ping、关监听与 socket、删 bridge.json */
   async shutdown() {
     if (this.closed) return;
     this.closed = true;
-    if (this.pingTimer) clearInterval(this.pingTimer);
+    // 维护定时器不清除会让 Deno 事件循环永不退出，形成僵尸宿主
+    if (this.maintenanceTimer) clearInterval(this.maintenanceTimer);
+    this.maintenanceTimer = null;
     try {
       this.listener?.close();
     } catch {
@@ -331,9 +362,11 @@ class BridgeHost {
   async agentSession(conn) {
     let authenticated = false;
     let lineBuffer = '';
+    // 每个连接独立的流式解码器：多字节中文可能被拆在两次 TCP 读取之间
+    const streamDecoder = new TextDecoder();
     try {
       for await (const chunk of conn.readable) {
-        lineBuffer += decoder.decode(chunk);
+        lineBuffer += streamDecoder.decode(chunk, { stream: true });
         let newlineIndex;
         while ((newlineIndex = lineBuffer.indexOf('\n')) >= 0) {
           const line = lineBuffer.slice(0, newlineIndex).trim();
@@ -430,7 +463,7 @@ class BridgeHost {
     if (!id) return null;
     let entry = this.reassembly.get(id);
     if (!entry) {
-      entry = { parts: new Array(message.chunk.n || 0).fill(''), received: 0, total: message.chunk.n || 0 };
+      entry = { parts: new Array(message.chunk.n || 0).fill(''), received: 0, total: message.chunk.n || 0, createdAt: Date.now() };
       this.reassembly.set(id, entry);
       log(`开始重组分块: id=${id} 总块数=${entry.total}`);
     }
@@ -456,14 +489,15 @@ class BridgeHost {
     } catch {
       text = JSON.stringify({ success: false, error: '响应序列化失败' });
     }
-    if (text.length <= CHUNK_CHARS) {
-      await conn.write(encoder.encode(text + '\n'));
-      return;
-    }
-    const id = typeof obj?.id === 'string' ? obj.id : `resp_${Date.now()}`;
-    for (const frame of chunkFrames(text, id)) {
-      await conn.write(encoder.encode(JSON.stringify(frame) + '\n'));
-    }
+    const lines = text.length <= CHUNK_CHARS
+      ? [text]
+      : chunkFrames(text, typeof obj?.id === 'string' ? obj.id : `resp_${Date.now()}`).map((frame) => JSON.stringify(frame));
+    // 同一宿主的 Agent 写入串行化：超时放行与真实响应并发时，分块行不得交错
+    const next = this.agentWriteChain.then(async () => {
+      for (const line of lines) await writeAll(conn, encoder.encode(line + '\n'));
+    });
+    this.agentWriteChain = next.catch(() => {});
+    await next;
   }
 
   /** 串行派发：无在途请求时把队首转发给扩展 */

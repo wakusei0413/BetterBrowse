@@ -87,6 +87,7 @@ const allJsFiles = new Set([
   'src/options/ui/time-tree.js',
   'src/options/options.js',
   'native-host/bb_native_host.js',
+  'native-host/host-paths.js',
   'native-host/install.js',
   'native-host/uninstall.js',
   'scripts/bump-api-version.js',

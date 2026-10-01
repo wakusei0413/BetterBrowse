@@ -33,6 +33,8 @@ export const AI_CONFIRM_REQUIRED_ACTIONS = new Set([
   ActionTypes.DELETE_AUTO_BACKUP,     // 删除自动备份
   ActionTypes.CLEAR_RUNTIME_LOGS,      // 清空本地运行日志
   ActionTypes.REBUILD_SYNC_FROM_SCRATCH, // 从本机快照重建同步
+  ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT, // 回退上一份快照（非合并应用，覆盖本地收纳数据）
+  ActionTypes.RETIRE_SYNC_DEVICE,     // 退役同步设备（从远端清单移除）
   ActionTypes.RESTORE_STASH_GROUP_DATA // 恢复组快照（写入任意 URL 载荷）
 ]);
 

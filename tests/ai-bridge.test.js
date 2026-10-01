@@ -214,6 +214,9 @@ Deno.test("AI 治理：确认位强制（镜像人类 UI 确认弹窗）", async
     assertEquals(responses.get('r3').success, false);
 
     assertEquals(AI_CONFIRM_REQUIRED_ACTIONS.has(ActionTypes.RESTORE_STASH_GROUP_DATA), true);
+    // 回退快照以非合并方式覆盖本地数据、退役设备改写远端清单：均属不可逆
+    assertEquals(AI_CONFIRM_REQUIRED_ACTIONS.has(ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT), true);
+    assertEquals(AI_CONFIRM_REQUIRED_ACTIONS.has(ActionTypes.RETIRE_SYNC_DEVICE), true);
   } finally {
     await idb.restore();
   }
