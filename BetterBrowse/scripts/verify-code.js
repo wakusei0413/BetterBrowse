@@ -77,6 +77,8 @@ const allJsFiles = new Set([
   'src/options/constants.js',
   'src/options/components/toast.js',
   'src/options/components/stash-tab.js',
+  'src/options/components/stash-card.js',
+  'src/options/components/stash-favicons.js',
   'src/options/components/stash-settings.js',
   'src/options/components/rules-config.js',
   'src/options/components/domain-rules.js',

@@ -10,6 +10,7 @@ import { LinkMatcher } from '../../core/link/link-matcher.js';
 import { MessageBus } from '../../core/bus/message-bus.js';
 import { Toast } from './toast.js';
 import { CustomSelectEnhancer } from '../ui/custom-select.js';
+import { escapeHTML } from './stash-card.js';
 
 export class DomainRulesComponent {
   constructor() {
@@ -175,7 +176,7 @@ export class DomainRulesComponent {
     let rowsHtml = '';
     for (const domain of domains) {
       const mode = this.rules[domain];
-      const safeDomain = this.escapeHTML(domain);
+      const safeDomain = escapeHTML(domain);
       rowsHtml += `
         <tr>
           <td><span class="domain-badge">${safeDomain}</span></td>
@@ -204,11 +205,6 @@ export class DomainRulesComponent {
     if (this.selectMode) CustomSelectEnhancer.sync(this.selectMode);
   }
 
-  escapeHTML(str) {
-    if (typeof str !== 'string') return '';
-    // 与 StashTabComponent 的实现保持一致（含单引号转义），防止单引号属性场景下的注入
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
-  }
 }
 
 /**

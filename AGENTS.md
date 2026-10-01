@@ -179,6 +179,7 @@ BetterBrowse/
     │   │   ├── list-window.js     # 时间线虚拟窗口纯函数（组卡片/组内条目）
     │   │   ├── components/        # 收纳、设置、同步、日志等页面组件
     │   │   │   ├── stash-tab.js / stash-settings.js / rules-config.js
+    │   │   │   ├── stash-card.js / stash-favicons.js # 时间线卡片纯渲染函数与站点图标解析
     │   │   │   ├── domain-rules.js / backup.js / webdav-sync.js
     │   │   │   ├── ai-bridge.js / runtime-log.js / about.js
     │   │   │   ├── search-home.js / toast.js

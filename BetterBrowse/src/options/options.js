@@ -190,29 +190,57 @@ export class OptionsApp {
   }
 
   /**
+   * 切换一级视图：时间线 / 主页 / 设置中心三者互斥，面板与侧栏导航状态同步
+   * @param {'stash' | 'home' | 'settings'} view
+   */
+  showView(view) {
+    const views = {
+      stash: [this.tabStash, this.navItemStash, true],
+      home: [this.tabSearch, this.navItemSearch, true],
+      settings: [this.viewSettingsHub, this.btnSidebarSettings, false]
+    };
+    for (const [name, [panel, nav, rovingTab]] of Object.entries(views)) {
+      const active = name === view;
+      if (panel) {
+        panel.classList.toggle('active', active);
+        panel.hidden = !active;
+      }
+      nav?.classList.toggle('active', active);
+      nav?.setAttribute('aria-selected', active ? 'true' : 'false');
+      if (rovingTab) nav?.setAttribute('tabindex', active ? '0' : '-1');
+    }
+  }
+
+  /**
+   * @param {string} hash
+   * @param {boolean} updateHash
+   */
+  replaceHash(hash, updateHash) {
+    if (!updateHash) return;
+    try {
+      history.replaceState(null, '', hash);
+    } catch {
+      // 忽略历史记录异常
+    }
+  }
+
+  /**
    * 统一切换视图与设置选项
-   * @param {string} tabName 目标标签名或设置路由
+   * @param {string} route 目标标签名或设置路由，可携带查询串（stash?groupId=x、home?scope=stash）
    * @param {boolean} [updateHash=true] 是否同步更新 URL Hash
    */
   switchTab(route, updateHash = true) {
-    // 路由可携带查询串：stash?groupId=x 定位收纳组，home?scope=stash 聚焦主页检索范围
     const [rawTab, queryPart = ''] = String(route || 'stash').split('?');
     const tabName = rawTab || 'stash';
     const params = new URLSearchParams(queryPart);
-    if (tabName === 'stash' && params.get('groupId')) {
-      setTimeout(() => this.components.get('stash')?.locateGroup?.(params.get('groupId')), 100);
-    } else if ((tabName === 'home' || tabName === 'search') && params.get('scope')) {
-      setTimeout(() => this.components.get('home')?.focusSearch?.(params.get('scope')), 100);
-    }
-
     const isStashView = tabName === 'stash';
     const isHomeView = tabName === 'search' || tabName === 'home';
+
     const requestedRoute = tabName === 'settings'
       ? (this.currentSettingsRoute || this.currentSettingsSubtab)
       : tabName;
     const tertiaryRoute = SETTINGS_TERTIARY_ROUTES[requestedRoute];
-    const isSettingsSubtab = SETTINGS_SUBTABS.includes(requestedRoute);
-    const targetSubtab = tertiaryRoute?.parent || (isSettingsSubtab ? requestedRoute : null);
+    const targetSubtab = tertiaryRoute?.parent || (SETTINGS_SUBTABS.includes(requestedRoute) ? requestedRoute : null);
     const targetRoute = tertiaryRoute ? requestedRoute : targetSubtab;
     // 未知路由回落到时间线，绝不把主区域全部隐藏成空白页
     if (!isStashView && !isHomeView && !targetSubtab) {
@@ -221,168 +249,69 @@ export class OptionsApp {
     }
 
     // 离开主页视图时释放/暂停定时器与下拉框
-    if (!isHomeView) {
-      this.components.get('home')?.deactivate?.();
-    }
+    if (!isHomeView) this.components.get('home')?.deactivate?.();
 
     if (isStashView) {
-      // 1. 激活时间线主视图
-      if (this.tabStash) {
-        this.tabStash.classList.add('active');
-        this.tabStash.hidden = false;
-      }
-      if (this.tabSearch) {
-        this.tabSearch.classList.remove('active');
-        this.tabSearch.hidden = true;
-      }
-      if (this.viewSettingsHub) {
-        this.viewSettingsHub.classList.remove('active');
-        this.viewSettingsHub.hidden = true;
-      }
-
-      // 2. 侧边栏按钮状态同步
-      this.navItemStash?.classList.add('active');
-      this.navItemStash?.setAttribute('aria-selected', 'true');
-      this.navItemStash?.setAttribute('tabindex', '0');
-
-      this.navItemSearch?.classList.remove('active');
-      this.navItemSearch?.setAttribute('aria-selected', 'false');
-      this.navItemSearch?.setAttribute('tabindex', '-1');
-
-      this.btnSidebarSettings?.classList.remove('active');
-      this.btnSidebarSettings?.setAttribute('aria-selected', 'false');
-
-      if (updateHash) {
-        try {
-          history.replaceState(null, '', '#stash');
-        } catch {
-          // 忽略历史记录异常
-        }
-      }
+      this.showView('stash');
+      this.replaceHash('#stash', updateHash);
+      const groupId = params.get('groupId');
+      if (groupId) setTimeout(() => this.components.get('stash')?.locateGroup?.(groupId), 100);
       return;
     }
 
     if (isHomeView) {
-      // 1. 激活主页视图、隐藏时间线与设置中心
-      if (this.tabSearch) {
-        this.tabSearch.classList.add('active');
-        this.tabSearch.hidden = false;
-      }
-      if (this.tabStash) {
-        this.tabStash.classList.remove('active');
-        this.tabStash.hidden = true;
-      }
-      if (this.viewSettingsHub) {
-        this.viewSettingsHub.classList.remove('active');
-        this.viewSettingsHub.hidden = true;
-      }
-
-      // 2. 侧边栏按钮状态同步
-      this.navItemStash?.classList.remove('active');
-      this.navItemStash?.setAttribute('aria-selected', 'false');
-      this.navItemStash?.setAttribute('tabindex', '-1');
-
-      this.navItemSearch?.classList.add('active');
-      this.navItemSearch?.setAttribute('aria-selected', 'true');
-      this.navItemSearch?.setAttribute('tabindex', '0');
-
-      this.btnSidebarSettings?.classList.remove('active');
-      this.btnSidebarSettings?.setAttribute('aria-selected', 'false');
-
-      // 3. 进入时激活视图（聚焦搜索框、刷新数据）
+      this.showView('home');
+      // 进入时激活视图（聚焦搜索框、刷新数据）
       this.components.get('home')?.activate?.();
-
-      if (updateHash) {
-        try {
-          const targetHash = tabName === 'search' ? '#search' : '#home';
-          history.replaceState(null, '', targetHash);
-        } catch {
-          // 忽略历史记录异常
-        }
-      }
+      this.replaceHash(tabName === 'search' ? '#search' : '#home', updateHash);
+      const scope = params.get('scope');
+      if (scope) setTimeout(() => this.components.get('home')?.focusSearch?.(scope), 100);
       return;
     }
 
-    // 进入设置中心前，先隐藏搜索主视图
-    if (this.tabSearch) {
-      this.tabSearch.classList.remove('active');
-      this.tabSearch.hidden = true;
+    // 进入面板时才实例化并读取数据，避免打开时间线就加载全部隐藏设置页。
+    const targetComponent = this.ensureComponent(targetSubtab);
+    this.currentSettingsSubtab = targetSubtab;
+    this.currentSettingsRoute = targetRoute;
+    this.showView('settings');
+
+    // 二级导航 Tab 与面包屑同步
+    this.subnavItems.forEach((item) => {
+      const isCurrent = item.getAttribute('data-subtab') === targetSubtab;
+      item.classList.toggle('active', isCurrent);
+      item.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
+      item.tabIndex = isCurrent ? 0 : -1;
+    });
+    if (this.breadcrumbParent) {
+      this.breadcrumbParent.hidden = !tertiaryRoute;
+      this.breadcrumbParent.textContent = SETTINGS_SUBTAB_TITLES[targetSubtab] || '设置';
+      this.breadcrumbParent.dataset.subtab = tertiaryRoute ? targetSubtab : '';
     }
-    this.navItemSearch?.classList.remove('active');
-    this.navItemSearch?.setAttribute('aria-selected', 'false');
-    this.navItemSearch?.setAttribute('tabindex', '-1');
-
-    if (targetSubtab) {
-      // 进入面板时才实例化并读取数据，避免打开时间线就加载全部隐藏设置页。
-      const targetComponent = this.ensureComponent(targetSubtab);
-      this.currentSettingsSubtab = targetSubtab;
-      this.currentSettingsRoute = targetRoute;
-
-      if (this.tabStash) {
-        this.tabStash.classList.remove('active');
-        this.tabStash.hidden = true;
-      }
-      if (this.viewSettingsHub) {
-        this.viewSettingsHub.classList.add('active');
-        this.viewSettingsHub.hidden = false;
-      }
-
-      // 2. 侧边栏按钮状态同步
-      this.navItemStash?.classList.remove('active');
-      this.navItemStash?.setAttribute('aria-selected', 'false');
-      this.navItemStash?.setAttribute('tabindex', '-1');
-
-      this.btnSidebarSettings?.classList.add('active');
-      this.btnSidebarSettings?.setAttribute('aria-selected', 'true');
-
-      // 3. 二级导航 Tab 与面包屑同步
-      this.subnavItems.forEach((item) => {
-        const isCurrent = item.getAttribute('data-subtab') === targetSubtab;
-        item.classList.toggle('active', isCurrent);
-        item.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
-        item.tabIndex = isCurrent ? 0 : -1;
-      });
-
-      if (this.breadcrumbParent) {
-        this.breadcrumbParent.hidden = !tertiaryRoute;
-        this.breadcrumbParent.textContent = SETTINGS_SUBTAB_TITLES[targetSubtab] || '设置';
-        this.breadcrumbParent.dataset.subtab = tertiaryRoute ? targetSubtab : '';
-      }
-      if (this.breadcrumbTertiarySeparator) {
-        this.breadcrumbTertiarySeparator.hidden = !tertiaryRoute;
-      }
-      if (this.breadcrumbCurrent) {
-        this.breadcrumbCurrent.textContent = tertiaryRoute?.title || SETTINGS_SUBTAB_TITLES[targetSubtab] || '设置';
-      }
-      if (this.btnBackLabel) {
-        this.btnBackLabel.textContent = tertiaryRoute ? '返回上一级' : '返回';
-      }
-      this.btnBackToStash?.setAttribute('aria-label', tertiaryRoute ? `返回${SETTINGS_SUBTAB_TITLES[targetSubtab]}` : '返回时间线');
-
-      // 4. 激活对应设置页面
-      this.panels.forEach((panel) => {
-        if (panel.id === `tab-${targetRoute}`) {
-          panel.classList.add('active');
-          panel.hidden = false;
-        } else if (panel.id !== 'tab-stash') {
-          panel.classList.remove('active');
-          panel.hidden = true;
-        }
-      });
-
-      // 日志列表需要在面板可见后读取高度并渲染。
-      if (targetSubtab === 'logs') {
-        targetComponent?.load?.();
-      }
-
-      if (updateHash) {
-        try {
-          history.replaceState(null, '', `#${targetRoute}`);
-        } catch {
-          // 忽略历史记录异常
-        }
-      }
+    if (this.breadcrumbTertiarySeparator) {
+      this.breadcrumbTertiarySeparator.hidden = !tertiaryRoute;
     }
+    if (this.breadcrumbCurrent) {
+      this.breadcrumbCurrent.textContent = tertiaryRoute?.title || SETTINGS_SUBTAB_TITLES[targetSubtab] || '设置';
+    }
+    if (this.btnBackLabel) {
+      this.btnBackLabel.textContent = tertiaryRoute ? '返回上一级' : '返回';
+    }
+    this.btnBackToStash?.setAttribute('aria-label', tertiaryRoute ? `返回${SETTINGS_SUBTAB_TITLES[targetSubtab]}` : '返回时间线');
+
+    // 激活对应设置页面
+    this.panels.forEach((panel) => {
+      if (panel.id === `tab-${targetRoute}`) {
+        panel.classList.add('active');
+        panel.hidden = false;
+      } else if (panel.id !== 'tab-stash') {
+        panel.classList.remove('active');
+        panel.hidden = true;
+      }
+    });
+
+    // 日志列表需要在面板可见后读取高度并渲染。
+    if (targetSubtab === 'logs') targetComponent?.load?.();
+    this.replaceHash(`#${targetRoute}`, updateHash);
   }
 }
 

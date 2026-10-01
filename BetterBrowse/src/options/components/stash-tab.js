@@ -20,7 +20,23 @@ import {
 import { Toast } from './toast.js';
 import { TimeTreeBuilder, SingleLineTimelineScrollbar } from '../ui/time-tree.js';
 import { describeStashResult } from '../../core/stash/stash-result.js';
-import { formatStashTime } from '../../core/stash/group-title.js';
+import { escapeHTML, formatTimeAgo, headerSignature, renderGroupCardHtml, renderItemRowHtml } from './stash-card.js';
+import { FaviconResolver } from './stash-favicons.js';
+
+/** 卡片内按钮 → 处理方法（按顺序匹配第一个命中的选择器） */
+const CARD_CLICK_ACTIONS = [
+  ['.btn-restore-all', 'restoreWholeGroup'],
+  ['.btn-toggle-dropdown', 'toggleGroupDropdown'],
+  ['.btn-delete-group', 'deleteGroupWithUndo'],
+  ['.btn-toggle-star', 'toggleGroupStar'],
+  ['.btn-toggle-lock', 'toggleGroupLock'],
+  ['.btn-rename-group', 'renameGroupFromButton'],
+  ['.btn-copy-group-urls', 'copyGroupUrls'],
+  ['.btn-restore-item-link', 'restoreSingleItem'],
+  ['.btn-delete-item', 'deleteItemFromButton'],
+  ['.btn-edit-item', 'editItemFromButton'],
+  ['.btn-show-more-tabs', 'expandGroupItems']
+];
 
 export class StashTabComponent {
   /**
@@ -41,9 +57,8 @@ export class StashTabComponent {
     this.itemWindowByGroup = new Map();
     this.pageLoaders = new Map();
     this.windowSyncTicking = false;
-    // 站点图标解析结果缓存：URL → data URL / null（失败亦缓存，避免反复抓取）
-    this.faviconCache = new Map();
-    this.faviconInFlight = new Set();
+    // 站点图标解析器（自带结果缓存，失败亦缓存，避免反复抓取）
+    this.favicons = new FaviconResolver(() => this.container);
     this.onSearchInHome = typeof options.onSearchInHome === 'function' ? options.onSearchInHome : null;
 
     this.container = document.getElementById('stashGroupsContainer');
@@ -234,7 +249,7 @@ export class StashTabComponent {
     // 6. 站点图标经后台解析为 data URL，避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露
     this.container?.addEventListener(
       'click',
-      () => this.resolveVisibleFavicons(),
+      () => this.favicons.resolveVisible(),
       true
     );
 
@@ -496,7 +511,7 @@ export class StashTabComponent {
       this.mainColumn.scrollTop = Number(options.scrollTop) || 0;
       this.syncListWindow();
     }
-    this.resolveVisibleFavicons();
+    this.favicons.resolveVisible();
   }
 
   /** 渲染空状态（时间线无数据或当前时段无内容）。 */
@@ -655,7 +670,7 @@ export class StashTabComponent {
     this.patchExpandedItemWindows();
     this.recordMeasuredHeights();
     this.prefetchVisiblePages(range);
-    this.resolveVisibleFavicons();
+    this.favicons.resolveVisible();
   }
 
   mountGroupWindow(range) {
@@ -679,7 +694,7 @@ export class StashTabComponent {
       const pinned = this.pinnedGroupIds.has(group.id);
       // 组头（标题、星标、锁定、颜色、数量）变化或残留已取消的编辑框时整卡重建，否则只刷新条目列表
       const headerStale = card && !pinned && (
-        card.dataset.headerSig !== StashTabComponent.headerSignature(group)
+        card.dataset.headerSig !== headerSignature(group)
         || card.querySelector('.stash-group-header .inline-title-input')
       );
       if (!card || headerStale) {
@@ -744,7 +759,7 @@ export class StashTabComponent {
           this.measuredCardHeights.set(group.id, card.offsetHeight + gap);
         }
         // 条目行是异步分页填充的，同步渲染路径上的图标解析执行时行尚未挂载，此处补触发
-        this.resolveVisibleFavicons();
+        this.favicons.resolveVisible();
       });
     }
   }
@@ -868,48 +883,11 @@ export class StashTabComponent {
     const rows = [];
     for (let i = window.start; i < window.end; i++) {
       const tab = cache.slots.get(i);
-      if (tab) rows.push(this.renderItemRowHtml(group.id, tab));
+      if (tab) rows.push(renderItemRowHtml(group.id, tab));
     }
     return rows.join('');
   }
 
-  renderItemRowHtml(groupId, tab) {
-    const safeGroupId = this.escapeHTML(groupId);
-    const safeTabId = this.escapeHTML(tab.id);
-    // 同时带上真实 favIconUrl 与页面 URL：后台优先抓取 Chrome 记录的图标资源，
-    // 缺失时（OneTab 导入、剔除图标的备份快照）再按页面域名回退 /favicon.ico。
-    const faviconSrc = tab.favIconUrl || tab.url || '';
-    const pageUrl = tab.url || '';
-    const faviconAttr = faviconSrc ? ` data-favicon-url="${this.escapeHTML(faviconSrc)}"` : '';
-    const pageUrlAttr = pageUrl ? ` data-page-url="${this.escapeHTML(pageUrl)}"` : '';
-    return `
-        <li class="stash-item-row" data-group-id="${safeGroupId}" data-item-id="${safeTabId}">
-          <div class="stash-item-main">
-            <svg class="tab-favicon tab-favicon-fallback"${faviconAttr}${pageUrlAttr} viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="2" y1="12" x2="22" y2="12"></line>
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-            </svg>
-            <a href="${this.escapeHTML(tab.url || '')}" class="tab-link btn-restore-item-link" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="${this.escapeHTML(tab.title || tab.url || '')}&#10;${this.escapeHTML(tab.url || '')}">
-              <span class="tab-title">${this.escapeHTML(tab.title || tab.url || '')}</span>
-            </a>
-          </div>
-          <div class="tab-item-actions">
-            <button class="btn-icon-danger btn-edit-item" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="编辑标题" type="button" aria-label="编辑标题">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
-              </svg>
-            </button>
-            <button class="btn-icon-danger btn-delete-item" data-group-id="${safeGroupId}" data-item-id="${safeTabId}" title="删除此网页" type="button" aria-label="删除此网页">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
-              </svg>
-            </button>
-          </div>
-        </li>
-      `;
-  }
 
   refreshCardItems(card, group) {
     const listEl = card.querySelector('.stash-items-list');
@@ -993,452 +971,216 @@ export class StashTabComponent {
     Toast.show('已恢复全量收纳列表');
   }
 
-  /**
-   * 组卡片头部的渲染签名：任一字段变化都意味着复用的卡片头部已过期
-   * @param {{ title?: string, starred?: boolean, locked?: boolean, color?: string, itemCount?: number, createdAt?: number }} group
-   */
-  static headerSignature(group) {
-    return JSON.stringify([group.title || '', Boolean(group.starred), Boolean(group.locked), group.color || '', Number(group.itemCount) || 0, group.createdAt || 0]);
-  }
 
   createGroupCardElement(group) {
     const card = document.createElement('div');
     card.className = `stash-group-card ${group.starred ? 'is-starred' : ''} ${group.locked ? 'is-locked' : ''} ${this.expandedGroupIds.has(group.id) ? 'is-expanded' : ''}`;
     card.dataset.groupId = group.id;
-    card.dataset.headerSig = StashTabComponent.headerSignature(group);
+    card.dataset.headerSig = headerSignature(group);
 
-    const createdAt = TimeTreeBuilder.getGroupTimestamp(group);
-    const dateObj = new Date(createdAt);
-    const dateStr = formatStashTime(dateObj);
-
-    const timeAgo = this.formatTimeAgo(createdAt);
-    const tabCount = Number(group.itemCount) || 0;
-    const displayGroupName = group.title || `${tabCount} 个标签页`;
-    const safeGroupId = this.escapeHTML(group.id);
     const itemWindow = this.resolveItemWindow(group, null);
-    const itemsHtml = this.buildItemRowsHtml(group, itemWindow);
-    const hasMoreTabs = tabCount > TABS_INITIAL_LIMIT && !this.expandedGroupIds.has(group.id);
-
-    card.innerHTML = `
-      <div class="stash-group-header">
-        <div class="stash-header-left">
-          <div class="stash-title-block" title="双击重命名标签组">
-            <svg class="group-bullet-icon" ${group.color ? `data-color="${this.escapeHTML(group.color)}"` : ''} viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="5"></circle>
-            </svg>
-            ${group.starred ? `
-              <svg class="star-icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" stroke="none" aria-hidden="true">
-                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
-              </svg>
-            ` : ''}
-            ${group.locked ? `
-              <svg class="lock-icon-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-              </svg>
-            ` : ''}
-            <h3 class="title-text">${this.escapeHTML(displayGroupName)}</h3>
-            <button class="btn-icon-rename btn-rename-group" data-id="${safeGroupId}" type="button" aria-label="重命名此组" title="重命名此组">
-              <svg class="edit-hint-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <div class="stash-header-right">
-          <div class="stash-time-row" title="收纳时间：${dateStr}">
-            <span class="stash-time-text">${dateStr} · ${timeAgo}</span>
-            <svg class="time-dropdown-caret" viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </div>
-
-          <div class="stash-actions-row">
-            <button class="stash-action-link btn-restore-all" data-id="${safeGroupId}" type="button" aria-label="还原此组全部网页">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                <polyline points="15 3 21 3 21 9"></polyline>
-                <line x1="10" y1="14" x2="21" y2="3"></line>
-              </svg>
-              <span>全部还原</span>
-            </button>
-
-            <div class="dropdown-wrapper">
-              <button class="stash-action-link btn-toggle-dropdown" data-id="${safeGroupId}" type="button" aria-label="更多操作" aria-haspopup="true" aria-expanded="false">
-                <span>更多...</span>
-              </button>
-              <div class="dropdown-menu">
-                <button class="dropdown-item btn-delete-group" data-id="${safeGroupId}" type="button">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="3 6 5 6 21 6"></polyline>
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                  </svg>
-                  <span>删除此组</span>
-                </button>
-                <button class="dropdown-item btn-toggle-star" data-id="${safeGroupId}" type="button">
-                  <svg viewBox="0 0 24 24" width="14" height="14" style="fill: ${group.starred ? 'var(--star-color)' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
-                  </svg>
-                  <span>${group.starred ? '取消星标' : '星标此组'}</span>
-                </button>
-                <button class="dropdown-item btn-toggle-lock" data-id="${safeGroupId}" type="button">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect>
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                  </svg>
-                  <span>${group.locked ? '解除锁定' : '锁定此组'}</span>
-                </button>
-                <button class="dropdown-item btn-rename-group" data-id="${safeGroupId}" type="button">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
-                  </svg>
-                  <span>命名此组</span>
-                </button>
-                <div class="dropdown-divider"></div>
-                <button class="dropdown-item btn-copy-group-urls" data-id="${safeGroupId}" type="button">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
-                    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
-                  </svg>
-                  <span>复制全部链接</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <ul class="stash-items-list${itemWindow.padTop || itemWindow.padBottom ? ' is-virtual' : ''}" style="${itemWindow.padTop ? `padding-top:${itemWindow.padTop}px;` : ''}${itemWindow.padBottom ? `padding-bottom:${itemWindow.padBottom}px;` : ''}">
-        ${itemsHtml}
-      </ul>
-
-      ${hasMoreTabs ? `
-        <button class="btn-show-more-tabs" data-id="${safeGroupId}" type="button">
-          展开其余 ${tabCount - TABS_INITIAL_LIMIT} 个标签页...
-        </button>
-      ` : ''}
-
-    `;
+    card.innerHTML = renderGroupCardHtml(group, {
+      expanded: this.expandedGroupIds.has(group.id),
+      itemWindow,
+      itemsHtml: this.buildItemRowsHtml(group, itemWindow)
+    });
 
     return card;
   }
 
-  formatTimeAgo(timestamp) {
-    const diffSec = Math.floor((Date.now() - timestamp) / 1000);
-    if (diffSec < 60) return '刚刚';
-    if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
-    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
-    if (diffSec < 604800) return `${Math.floor(diffSec / 86400)} 天前`;
-    if (diffSec < 31536000) return `${Math.max(1, Math.floor(diffSec / 2592000))} 个月前`;
-    return `${Math.floor(diffSec / 31536000)} 年前`;
-  }
+
+
+
+
 
   /**
-   * 批量解析当前可见行的站点图标：经后台取回 data URL 后替换占位 SVG，避免直连第三方
-   *
-   * ⚠️ 两个易错点：
-   * 1. MessageBus 会把后台结果统一包装成 { success, data }，因此图标字段在 res.data.dataUrl，
-   *    直接读 res.dataUrl 恒为 undefined（图标永远替换不掉、全部停留在默认占位图标）。
-   * 2. 组内条目是 prefetchVisiblePages 异步分页填充的，同步渲染路径上调用本方法时行尚未挂载，
-   *    必须在异步分页的 .then 回补里再次调用（见 prefetchVisiblePages）。
+   * 时间线卡片点击事件委托：按 CARD_CLICK_ACTIONS 顺序匹配第一个命中的按钮并分派
+   * @param {MouseEvent} e
    */
-  async resolveVisibleFavicons() {
-    const placeholders = this.container?.querySelectorAll('svg.tab-favicon-fallback[data-favicon-url]:not([data-resolved])');
-    if (!placeholders || placeholders.length === 0) return;
-    const limit = 24;
-    let count = 0;
-    for (const svg of placeholders) {
-      if (count >= limit) break;
-      const url = svg.getAttribute('data-favicon-url') || '';
-      if (!url) continue;
-      svg.setAttribute('data-resolved', '1');
-      count += 1;
-      this.applyFavicon(svg, url, svg.getAttribute('data-page-url') || '');
-    }
-  }
-
-  /**
-   * 应用单个站点图标：命中缓存直接替换，否则经后台代取（同 URL 并发合并）
-   * @param {SVGElement} svg - 占位图标元素
-   * @param {string} url - 网页或图标 URL
-   * @param {string} [pageUrl] - 页面对应的 http(s) 地址，用于按站点域名回退
-   */
-  async applyFavicon(svg, url, pageUrl = '') {
-    if (this.faviconCache.has(url)) {
-      const cached = this.faviconCache.get(url);
-      if (cached) this.replaceFaviconPlaceholder(svg, cached);
-      return;
-    }
-    if (this.faviconInFlight.has(url)) return;
-    this.faviconInFlight.add(url);
-    try {
-      const res = await MessageBus.sendToBackground(ActionTypes.RESOLVE_FAVICON_DATA_URL, {
-        url,
-        pageUrl
-      });
-      // 后台返回值被 MessageBus 包装在 data 中：{ success: true, data: { success, dataUrl } }
-      const payload = res?.data || {};
-      const dataUrl = res?.success && payload.success ? payload.dataUrl : '';
-      this.faviconCache.set(url, dataUrl || null);
-      if (!dataUrl) return;
-      // 缓存命中批量回填：同一 URL 可能在多个组里重复出现
-      for (const node of this.container?.querySelectorAll(`svg.tab-favicon-fallback[data-favicon-url="${CSS.escape(url)}"]`) || []) {
-        this.replaceFaviconPlaceholder(node, dataUrl);
-      }
-    } catch {
-      this.faviconCache.set(url, null);
-    } finally {
-      this.faviconInFlight.delete(url);
-    }
-  }
-
-  /**
-   * 将占位 SVG 替换为真实图标 <img>，失败时由 error 委托自动回退默认图标
-   * @param {SVGElement} svg
-   * @param {string} dataUrl
-   */
-  replaceFaviconPlaceholder(svg, dataUrl) {
-    if (!svg?.isConnected) return;
-    const img = document.createElement('img');
-    img.src = dataUrl;
-    img.className = 'tab-favicon';
-    img.alt = '';
-    img.decoding = 'async';
-    svg.replaceWith(img);
-  }
-
-  escapeHTML(str) {
-    if (typeof str !== 'string') return '';
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
   async handleContainerClick(e) {
-    // 1. 全部还原组
-    const btnRestoreAll = e.target.closest('.btn-restore-all');
-    if (btnRestoreAll) {
-      e.preventDefault();
-      const groupId = btnRestoreAll.dataset.id;
-      const group = this.groups.find((g) => g.id === groupId);
-      btnRestoreAll.disabled = true;
-      Toast.show(`正在后台还原 ${group?.itemCount || 0} 个网页...`);
-      await MessageBus.sendToBackground(ActionTypes.RESTORE_STASH_GROUP, { groupId });
-      await this.loadData();
+    for (const [selector, method] of CARD_CLICK_ACTIONS) {
+      const target = e.target.closest(selector);
+      if (!target) continue;
+      // 下拉开关只阻止冒泡（避免被 document 级"点击空白处收起"立即关闭），其余按钮阻止默认跳转
+      if (selector === '.btn-toggle-dropdown') e.stopPropagation();
+      else e.preventDefault();
+      await this[method](target);
+      return;
+    }
+  }
+
+  async restoreWholeGroup(button) {
+    const groupId = button.dataset.id;
+    const group = this.groups.find((g) => g.id === groupId);
+    button.disabled = true;
+    Toast.show(`正在后台还原 ${group?.itemCount || 0} 个网页...`);
+    await MessageBus.sendToBackground(ActionTypes.RESTORE_STASH_GROUP, { groupId });
+    await this.loadData();
+  }
+
+  toggleGroupDropdown(button) {
+    const wrapper = button.closest('.dropdown-wrapper');
+    const wasOpen = wrapper.classList.contains('open');
+    document.querySelectorAll('.dropdown-wrapper.open').forEach((el) => {
+      el.classList.remove('open');
+      el.querySelector('.btn-toggle-dropdown')?.setAttribute('aria-expanded', 'false');
+    });
+    const groupId = button.dataset.id;
+    button.setAttribute('aria-expanded', wasOpen ? 'false' : 'true');
+    if (!wasOpen) {
+      wrapper.classList.add('open');
+      if (groupId) this.pinnedGroupIds.add(groupId);
+    } else if (groupId) {
+      this.pinnedGroupIds.delete(groupId);
+    }
+  }
+
+  /**
+   * 删除整组（5 秒内可撤销）
+   * @param {HTMLElement} button
+   */
+  async deleteGroupWithUndo(button) {
+    const groupId = button.dataset.id;
+    const targetGroup = this.groups.find((g) => g.id === groupId);
+    if (!targetGroup) return;
+
+    if (targetGroup.locked) {
+      Toast.show('⚠️ 该组已锁定保护，请先解除锁定后再删除');
       return;
     }
 
-    // 2. 展开/折叠更多下拉菜单
-    const btnToggleDropdown = e.target.closest('.btn-toggle-dropdown');
-    if (btnToggleDropdown) {
-      e.stopPropagation();
-      const wrapper = btnToggleDropdown.closest('.dropdown-wrapper');
-      const wasOpen = wrapper.classList.contains('open');
-      document.querySelectorAll('.dropdown-wrapper.open').forEach((el) => {
-        el.classList.remove('open');
-        el.querySelector('.btn-toggle-dropdown')?.setAttribute('aria-expanded', 'false');
-      });
-      if (!wasOpen) {
-        wrapper.classList.add('open');
-        btnToggleDropdown.setAttribute('aria-expanded', 'true');
-        const groupId = btnToggleDropdown.dataset.id;
-        if (groupId) this.pinnedGroupIds.add(groupId);
-      } else {
-        btnToggleDropdown.setAttribute('aria-expanded', 'false');
-        if (btnToggleDropdown.dataset.id) {
-          this.pinnedGroupIds.delete(btnToggleDropdown.dataset.id);
-        }
-      }
+    // 消费 deleteConfirmation 设置：开启时删除前需二次确认
+    if (await this.shouldConfirmDelete()) {
+      const confirmed = window.confirm(`确定删除收纳组「${targetGroup.title || groupId}」吗？（删除后 5 秒内可撤销）`);
+      if (!confirmed) return;
+    }
+
+    // 撤销快照不完整时绝不删除：否则"撤销"只能恢复出半个组
+    let snapshotTabs;
+    try {
+      snapshotTabs = await this.fetchAllGroupItems(groupId, { strict: true });
+    } catch (err) {
+      Toast.show(`删除已取消：${err?.message || '读取收纳组内容失败'}`);
+      return;
+    }
+    this.recentlyDeletedGroups.set(groupId, {
+      group: {
+        id: targetGroup.id,
+        createdAt: targetGroup.createdAt,
+        title: targetGroup.title,
+        color: targetGroup.color,
+        locked: targetGroup.locked,
+        starred: targetGroup.starred,
+        archived: targetGroup.archived,
+        tabs: snapshotTabs
+      },
+      index: this.groups.findIndex((g) => g.id === groupId)
+    });
+    // 缓存只保留最近 20 条，避免长时间使用后无界增长
+    while (this.recentlyDeletedGroups.size > 20) {
+      const oldestKey = this.recentlyDeletedGroups.keys().next().value;
+      this.recentlyDeletedGroups.delete(oldestKey);
+    }
+
+    const deleteRes = await MessageBus.sendToBackground(ActionTypes.DELETE_STASH_GROUP, { groupId });
+    await this.loadData();
+    if (!deleteRes?.success || deleteRes.data === false) {
+      this.recentlyDeletedGroups.delete(groupId);
+      Toast.show(`删除失败：${deleteRes?.error || '该组可能已锁定或已被删除'}`);
       return;
     }
 
-    // 3. 删除整组（支持 5 秒极速撤销机制）
-    const btnDeleteGroup = e.target.closest('.btn-delete-group');
-    if (btnDeleteGroup) {
-      e.preventDefault();
-      const groupId = btnDeleteGroup.dataset.id;
-      const targetGroup = this.groups.find((g) => g.id === groupId);
-      if (!targetGroup) return;
+    Toast.show('已删除该收纳组', 5000, {
+      text: '撤销',
+      onClick: () => this.undoDeleteGroup(groupId)
+    });
+  }
 
-      if (targetGroup.locked) {
-        Toast.show('⚠️ 该组已锁定保护，请先解除锁定后再删除');
-        return;
-      }
+  /**
+   * 撤销删除：走"单组快照恢复"专用通道，仅写回被删除的这一个组，
+   * 不经过全量备份管线（该管线会追加导入现有组并触发配置/规则恢复）
+   * @param {string} groupId
+   */
+  async undoDeleteGroup(groupId) {
+    const cached = this.recentlyDeletedGroups.get(groupId);
+    if (!cached) return;
+    const res = await MessageBus.sendToBackground(ActionTypes.RESTORE_STASH_GROUP_DATA, { group: cached.group });
+    this.recentlyDeletedGroups.delete(groupId);
+    await this.loadData();
+    Toast.show(res?.success ? '已成功恢复该收纳组' : `恢复失败：${res?.error || '存储写入异常'}`);
+  }
 
-      // 消费 deleteConfirmation 设置：开启时删除前需二次确认
-      if (await this.shouldConfirmDelete()) {
-        const confirmed = window.confirm(`确定删除收纳组「${targetGroup.title || groupId}」吗？（删除后 5 秒内可撤销）`);
-        if (!confirmed) return;
-      }
+  /**
+   * 切换组的布尔属性（星标 / 锁定）
+   * @param {string} groupId
+   * @param {'starred' | 'locked'} field
+   */
+  async toggleGroupFlag(groupId, field) {
+    const group = this.groups.find((g) => g.id === groupId);
+    if (!group) return;
+    await MessageBus.sendToBackground(ActionTypes.UPDATE_STASH_GROUP, {
+      groupId,
+      updates: { [field]: !group[field] }
+    });
+    await this.loadData();
+  }
 
-      // 撤销快照不完整时绝不删除：否则"撤销"只能恢复出半个组
-      let snapshotTabs;
-      try {
-        snapshotTabs = await this.fetchAllGroupItems(groupId, { strict: true });
-      } catch (err) {
-        Toast.show(`删除已取消：${err?.message || '读取收纳组内容失败'}`);
-        return;
-      }
-      this.recentlyDeletedGroups.set(groupId, {
-        group: {
-          id: targetGroup.id,
-          createdAt: targetGroup.createdAt,
-          title: targetGroup.title,
-          color: targetGroup.color,
-          locked: targetGroup.locked,
-          starred: targetGroup.starred,
-          archived: targetGroup.archived,
-          tabs: snapshotTabs
-        },
-        index: this.groups.findIndex((g) => g.id === groupId)
-      });
-      // 缓存只保留最近 20 条，避免长时间使用后无界增长
-      while (this.recentlyDeletedGroups.size > 20) {
-        const oldestKey = this.recentlyDeletedGroups.keys().next().value;
-        this.recentlyDeletedGroups.delete(oldestKey);
-      }
+  toggleGroupStar(button) {
+    return this.toggleGroupFlag(button.dataset.id, 'starred');
+  }
 
-      const deleteRes = await MessageBus.sendToBackground(ActionTypes.DELETE_STASH_GROUP, { groupId });
-      await this.loadData();
-      if (!deleteRes?.success || deleteRes.data === false) {
-        this.recentlyDeletedGroups.delete(groupId);
-        Toast.show(`删除失败：${deleteRes?.error || '该组可能已锁定或已被删除'}`);
-        return;
-      }
+  toggleGroupLock(button) {
+    return this.toggleGroupFlag(button.dataset.id, 'locked');
+  }
 
-      Toast.show('已删除该收纳组', 5000, {
-        text: '撤销',
-        onClick: async () => {
-          const cached = this.recentlyDeletedGroups.get(groupId);
-          if (cached) {
-            // 撤销走"单组快照恢复"专用通道：仅写回被删除的这一个组，
-            // 不经过全量备份管线（该管线会追加导入现有组并触发配置/规则恢复）
-            const res = await MessageBus.sendToBackground(ActionTypes.RESTORE_STASH_GROUP_DATA, {
-              group: cached.group
-            });
-            this.recentlyDeletedGroups.delete(groupId);
-            await this.loadData();
-            if (res?.success) {
-              Toast.show('已成功恢复该收纳组');
-            } else {
-              Toast.show(`恢复失败：${res?.error || '存储写入异常'}`);
-            }
-          }
-        }
-      });
+  renameGroupFromButton(button) {
+    this.startInlineRename(button.dataset.id);
+  }
+
+  async copyGroupUrls(button) {
+    const items = await this.fetchAllGroupItems(button.dataset.id);
+    if (items.length === 0) return;
+    await navigator.clipboard.writeText(items.map((t) => `${t.url} | ${t.title}`).join('\n'));
+    Toast.show(`已复制该组全部 ${items.length} 个网页链接到剪贴板`);
+  }
+
+  async restoreSingleItem(link) {
+    const { groupId, itemId } = link.dataset;
+    await MessageBus.sendToBackground(ActionTypes.RESTORE_STASH_ITEM, { groupId, itemId });
+    await this.loadData();
+  }
+
+  deleteItemFromButton(button) {
+    this.handleDeleteItemWithAnimation(button.dataset.groupId, button.dataset.itemId);
+  }
+
+  editItemFromButton(button) {
+    this.startInlineItemEdit(button.dataset.groupId, button.dataset.itemId);
+  }
+
+  /**
+   * 展开超长组内的全部标签
+   * @param {HTMLElement} button
+   */
+  expandGroupItems(button) {
+    const groupId = button.dataset.id;
+    const scrollTop = this.mainColumn?.scrollTop || 0;
+    this.expandedGroupIds.add(groupId);
+    this.measuredCardHeights.delete(groupId);
+    const group = this.groups.find((item) => item.id === groupId);
+    const card = button.closest('.stash-group-card');
+    if (!group || !card) {
+      this.syncListWindow();
       return;
     }
-
-    // 4. 切换星标
-    const btnToggleStar = e.target.closest('.btn-toggle-star');
-    if (btnToggleStar) {
-      e.preventDefault();
-      const groupId = btnToggleStar.dataset.id;
-      const group = this.groups.find((g) => g.id === groupId);
-      if (group) {
-        await MessageBus.sendToBackground(ActionTypes.UPDATE_STASH_GROUP, {
-          groupId,
-          updates: { starred: !group.starred }
-        });
-        await this.loadData();
-      }
-      return;
-    }
-
-    // 5. 切换锁定
-    const btnToggleLock = e.target.closest('.btn-toggle-lock');
-    if (btnToggleLock) {
-      e.preventDefault();
-      const groupId = btnToggleLock.dataset.id;
-      const group = this.groups.find((g) => g.id === groupId);
-      if (group) {
-        await MessageBus.sendToBackground(ActionTypes.UPDATE_STASH_GROUP, {
-          groupId,
-          updates: { locked: !group.locked }
-        });
-        await this.loadData();
-      }
-      return;
-    }
-
-    // 6. 重命名组
-    const btnRenameGroup = e.target.closest('.btn-rename-group');
-    if (btnRenameGroup) {
-      e.preventDefault();
-      const groupId = btnRenameGroup.dataset.id;
-      this.startInlineRename(groupId);
-      return;
-    }
-
-    // 7. 复制组内所有链接
-    const btnCopyUrls = e.target.closest('.btn-copy-group-urls');
-    if (btnCopyUrls) {
-      e.preventDefault();
-      const groupId = btnCopyUrls.dataset.id;
-      const items = await this.fetchAllGroupItems(groupId);
-      if (items.length > 0) {
-        const text = items.map((t) => `${t.url} | ${t.title}`).join('\n');
-        await navigator.clipboard.writeText(text);
-        Toast.show(`已复制该组全部 ${items.length} 个网页链接到剪贴板`);
-      }
-      return;
-    }
-
-    // 8. 恢复单个标签
-    const linkRestoreItem = e.target.closest('.btn-restore-item-link');
-    if (linkRestoreItem) {
-      e.preventDefault();
-      const { groupId, itemId } = linkRestoreItem.dataset;
-      await MessageBus.sendToBackground(ActionTypes.RESTORE_STASH_ITEM, { groupId, itemId });
-      await this.loadData();
-      return;
-    }
-
-    // 9. 删除单个标签项
-    const btnDeleteItem = e.target.closest('.btn-delete-item');
-    if (btnDeleteItem) {
-      e.preventDefault();
-      const { groupId, itemId } = btnDeleteItem.dataset;
-      this.handleDeleteItemWithAnimation(groupId, itemId);
-      return;
-    }
-
-    // 9b. 编辑单条标题
-    const btnEditItem = e.target.closest('.btn-edit-item');
-    if (btnEditItem) {
-      e.preventDefault();
-      this.startInlineItemEdit(btnEditItem.dataset.groupId, btnEditItem.dataset.itemId);
-      return;
-    }
-
-    // 10. 展开超长组内所有标签
-    const btnShowMore = e.target.closest('.btn-show-more-tabs');
-    if (btnShowMore) {
-      e.preventDefault();
-      const groupId = btnShowMore.dataset.id;
-      const scrollTop = this.mainColumn?.scrollTop || 0;
-      this.expandedGroupIds.add(groupId);
-      this.measuredCardHeights.delete(groupId);
-      const group = this.groups.find((item) => item.id === groupId);
-      const card = btnShowMore.closest('.stash-group-card');
-      if (group && card) {
-        this.refreshCardItems(card, group);
-        this.ensureSlots(groupId, 0, Math.min(Number(group.itemCount) || 0, TABS_INITIAL_LIMIT + TAB_OVERSCAN)).then((result) => {
-          if (result.changed) this.refreshCardItems(card, group);
-          if (result.failed) card.dataset.pageLoadState = 'failed';
-          else delete card.dataset.pageLoadState;
-          this.syncListWindow();
-          if (this.mainColumn) this.mainColumn.scrollTop = scrollTop;
-        });
-      } else {
-        this.syncListWindow();
-      }
-      return;
-    }
+    this.refreshCardItems(card, group);
+    this.ensureSlots(groupId, 0, Math.min(Number(group.itemCount) || 0, TABS_INITIAL_LIMIT + TAB_OVERSCAN)).then((result) => {
+      if (result.changed) this.refreshCardItems(card, group);
+      if (result.failed) card.dataset.pageLoadState = 'failed';
+      else delete card.dataset.pageLoadState;
+      this.syncListWindow();
+      if (this.mainColumn) this.mainColumn.scrollTop = scrollTop;
+    });
   }
 
   startInlineRename(groupId) {
