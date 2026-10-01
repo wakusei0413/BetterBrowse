@@ -45,7 +45,10 @@ export class LinkInterceptor {
       this._waitingForBody = false;
       if (this.effectiveMode !== LinkModes.AUTO) this.startDOMObserver();
     };
-    this._destroyOnPageHide = () => this.destroy();
+    // 进入往返缓存（bfcache）的页面会原样恢复且不会重新注入：只有真正卸载时才拆除，否则后退返回后拦截失效
+    this._destroyOnPageHide = (event) => {
+      if (!event?.persisted) this.destroy();
+    };
   }
 
   async init(options = {}) {
@@ -56,7 +59,7 @@ export class LinkInterceptor {
     this.initGestureGate();
     window.addEventListener('__BETTER_BROWSE_OPEN_NEW_TAB__', this._handleMainWorldOpen);
     document.addEventListener('click', this._handleClick, true);
-    window.addEventListener('pagehide', this._destroyOnPageHide, { once: true });
+    window.addEventListener('pagehide', this._destroyOnPageHide);
     this.isInitialized = true;
 
     this.syncModeToMainWorld();

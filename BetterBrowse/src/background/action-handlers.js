@@ -326,6 +326,27 @@ export async function createTabWithRetry(createProperties) {
 }
 
 /**
+ * 打开或聚焦当前窗口的选项页并切到指定视图（view 可带查询串，如 `stash?groupId=x`）。
+ * 已打开时只定向通知该标签页切换，不广播给其它扩展页面。
+ * @param {string} targetTab
+ */
+export async function openOptionsPage(targetTab) {
+  const targetUrl = chrome.runtime.getURL(`src/options/options.html#${targetTab}`);
+  try {
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    const existingOptionsTab = tabs.find((t) => isOwnOptionsTab(t));
+    if (existingOptionsTab) {
+      await chrome.tabs.update(existingOptionsTab.id, { url: targetUrl, active: true });
+      MessageBus.sendToTab(existingOptionsTab.id, ActionTypes.SWITCH_OPTIONS_TAB, { tab: targetTab }, 800).catch(() => {});
+    } else {
+      await chrome.tabs.create({ url: targetUrl, active: true });
+    }
+  } catch {
+    chrome.runtime.openOptionsPage();
+  }
+}
+
+/**
  * 构建统一 action 处理映射
  * @param {object} deps - 依赖注入（实例型服务与宿主环境回调）
  * @param {StashService} deps.stashService - 收纳服务实例
@@ -663,27 +684,7 @@ export function createActionHandlers(deps) {
     },
 
     [ActionTypes.OPEN_OPTIONS_PAGE]: async (payload) => {
-      const targetTab = payload?.tab || 'stash-settings';
-      const targetUrl = chrome.runtime.getURL(`src/options/options.html#${targetTab}`);
-      try {
-        const tabs = await chrome.tabs.query({ currentWindow: true });
-        const existingOptionsTab = tabs.find((t) => isOwnOptionsTab(t));
-
-        if (existingOptionsTab) {
-          await chrome.tabs.update(existingOptionsTab.id, {
-            url: targetUrl,
-            active: true
-          });
-          MessageBus.sendToTab(existingOptionsTab.id, 'SWITCH_OPTIONS_TAB', { tab: targetTab }, 800).catch(() => {});
-        } else {
-          await chrome.tabs.create({
-            url: targetUrl,
-            active: true
-          });
-        }
-      } catch {
-        chrome.runtime.openOptionsPage();
-      }
+      await openOptionsPage(payload?.tab || 'stash-settings');
       return true;
     },
 

@@ -16,6 +16,8 @@ export class SearchHomeComponent {
     this.container = options.container || document.getElementById('tab-search');
     this.onNavigateToStash = options.onNavigateToStash || null;
     this.view = null;
+    /** 宿主当前是否要求主页处于激活态（视图异步就绪前的激活/停用请求以此为准） */
+    this.wantActive = false;
     this.init();
   }
 
@@ -31,8 +33,7 @@ export class SearchHomeComponent {
         }
       }
     });
-    // 共享视图在管理中心中默认挂载但不抢焦点，由宿主显式激活。
-    this.view.ready?.then(() => this.view.activate()).catch(() => {});
+    // 共享视图在管理中心中默认挂载但不激活：只有路由真正进入主页时才绑定全局快捷键、启动时钟与拉取数据
   }
 
   /**
@@ -47,7 +48,12 @@ export class SearchHomeComponent {
    * 激活主页视图（聚焦搜索框、刷新数据）
    */
   activate() {
-    this.view?.activate?.();
+    this.wantActive = true;
+    const run = () => {
+      if (this.wantActive) this.view?.activate?.();
+    };
+    if (this.view?.ready) this.view.ready.then(run).catch(() => {});
+    else run();
   }
 
   /**
@@ -62,6 +68,7 @@ export class SearchHomeComponent {
    * 离开主页视图（取消定时器、收起下拉框）
    */
   deactivate() {
+    this.wantActive = false;
     this.view?.deactivate?.();
   }
 

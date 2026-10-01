@@ -9,6 +9,7 @@ import { LinkModes } from '../constants/config.js';
 import { LinkMatcher } from '../core/link/link-matcher.js';
 import { MessageBus } from '../core/bus/message-bus.js';
 import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
+import { describeStashResult } from '../core/stash/stash-result.js';
 
 installRuntimeLogger({
   context: 'popup',
@@ -335,18 +336,10 @@ class PopupController {
 
     try {
       const res = await MessageBus.sendToBackground(ActionTypes.EXECUTE_STASH, { forceAll: true });
-      if (res.success && res.data) {
-        const { stashedCount, note } = res.data;
-        if (stashedCount > 0) {
-          this.showStatus(`已收纳 ${stashedCount} 个标签页至时间线`, 'success');
-        } else {
-          // 优先展示服务层给出的具体原因（受保护标签过多、均为重复项等），而非笼统的"没有可收纳"
-          this.showStatus(note || '当前窗口没有可收纳的网页', 'info');
-        }
-        await this.loadTabCountInfo();
-      } else {
-        this.showStatus(res.error || res.data?.error || '收纳失败', 'error');
-      }
+      // 优先展示服务层给出的具体原因（写入失败、均为重复项等），而非笼统的"没有可收纳"
+      const result = describeStashResult(res);
+      this.showStatus(result.message, !result.ok ? 'error' : result.stashedCount > 0 ? 'success' : 'info');
+      if (result.ok) await this.loadTabCountInfo();
     } catch (err) {
       this.showStatus('收纳请求异常', 'error');
     } finally {

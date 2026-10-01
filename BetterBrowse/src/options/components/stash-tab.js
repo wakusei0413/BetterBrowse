@@ -24,6 +24,7 @@ import {
 } from '../list-window.js';
 import { Toast } from './toast.js';
 import { TimeTreeBuilder, SingleLineTimelineScrollbar } from '../ui/time-tree.js';
+import { describeStashResult } from '../../core/stash/stash-result.js';
 
 
 
@@ -193,17 +194,9 @@ export class StashTabComponent {
       this.btnStashNow.disabled = true;
       Toast.show('正在收纳本窗口标签…');
       const res = await MessageBus.sendToBackground(ActionTypes.EXECUTE_STASH, { forceAll: true });
-      if (res.success && res.data) {
-        const { stashedCount } = res.data;
-        if (stashedCount > 0) {
-          Toast.show(`已收纳 ${stashedCount} 个标签`);
-        } else {
-          Toast.show('没有可收纳的网页');
-        }
-        await this.loadData();
-      } else {
-        Toast.show(res.error || '收纳失败');
-      }
+      const result = describeStashResult(res);
+      Toast.show(result.message);
+      if (result.ok) await this.loadData();
       this.btnStashNow.disabled = false;
     });
 
@@ -441,7 +434,7 @@ export class StashTabComponent {
     this.measuredCardHeights = new Map();
     this.itemWindowByGroup = new Map();
     this.mountedRange = null;
-    this.pinnedGroupIds = new Set();
+    // 不清空 pinnedGroupIds：重载数据（可见性变化、同步、修订号广播）期间正在重命名 / 打开菜单的卡片必须保持原样
     for (const group of rawGroups) {
       if (!Array.isArray(group.tabs) || group.tabs.length === 0) continue;
       const slots = new Map();
@@ -696,7 +689,12 @@ export class StashTabComponent {
       keep.add(group.id);
       let card = existing.get(group.id);
       const pinned = this.pinnedGroupIds.has(group.id);
-      if (!card) {
+      // 组头（标题、星标、锁定、颜色、数量）变化或残留已取消的编辑框时整卡重建，否则只刷新条目列表
+      const headerStale = card && !pinned && (
+        card.dataset.headerSig !== StashTabComponent.headerSignature(group)
+        || card.querySelector('.stash-group-header .inline-title-input')
+      );
+      if (!card || headerStale) {
         card = this.createGroupCardElement(group);
       } else if (!pinned) {
         this.refreshCardItems(card, group);
@@ -822,7 +820,12 @@ export class StashTabComponent {
     return { changed, failed };
   }
 
-  async fetchAllGroupItems(groupId) {
+  /**
+   * 读取组内全部条目
+   * @param {string} groupId
+   * @param {{ strict?: boolean }} [options] - strict 时任一分页读取失败即抛错（删除前的撤销快照必须完整）
+   */
+  async fetchAllGroupItems(groupId, { strict = false } = {}) {
     const items = [];
     let offset = 0;
     while (true) {
@@ -831,7 +834,10 @@ export class StashTabComponent {
         offset,
         limit: 500
       });
-      if (!res?.success || !res.data) break;
+      if (!res?.success || !res.data) {
+        if (strict) throw new Error(res?.error || '读取收纳组内容失败');
+        break;
+      }
       const pageItems = Array.isArray(res.data.items) ? res.data.items : [];
       items.push(...pageItems);
       const total = Number(res.data.total) || items.length;
@@ -999,10 +1005,19 @@ export class StashTabComponent {
     Toast.show('已恢复全量收纳列表');
   }
 
+  /**
+   * 组卡片头部的渲染签名：任一字段变化都意味着复用的卡片头部已过期
+   * @param {{ title?: string, starred?: boolean, locked?: boolean, color?: string, itemCount?: number, createdAt?: number }} group
+   */
+  static headerSignature(group) {
+    return JSON.stringify([group.title || '', Boolean(group.starred), Boolean(group.locked), group.color || '', Number(group.itemCount) || 0, group.createdAt || 0]);
+  }
+
   createGroupCardElement(group) {
     const card = document.createElement('div');
     card.className = `stash-group-card ${group.starred ? 'is-starred' : ''} ${group.locked ? 'is-locked' : ''} ${this.expandedGroupIds.has(group.id) ? 'is-expanded' : ''}`;
     card.dataset.groupId = group.id;
+    card.dataset.headerSig = StashTabComponent.headerSignature(group);
 
     const createdAt = TimeTreeBuilder.getGroupTimestamp(group);
     const dateObj = new Date(createdAt);
@@ -1279,7 +1294,14 @@ export class StashTabComponent {
         if (!confirmed) return;
       }
 
-      const snapshotTabs = await this.fetchAllGroupItems(groupId);
+      // 撤销快照不完整时绝不删除：否则"撤销"只能恢复出半个组
+      let snapshotTabs;
+      try {
+        snapshotTabs = await this.fetchAllGroupItems(groupId, { strict: true });
+      } catch (err) {
+        Toast.show(`删除已取消：${err?.message || '读取收纳组内容失败'}`);
+        return;
+      }
       this.recentlyDeletedGroups.set(groupId, {
         group: {
           id: targetGroup.id,
@@ -1299,8 +1321,13 @@ export class StashTabComponent {
         this.recentlyDeletedGroups.delete(oldestKey);
       }
 
-      await MessageBus.sendToBackground(ActionTypes.DELETE_STASH_GROUP, { groupId });
+      const deleteRes = await MessageBus.sendToBackground(ActionTypes.DELETE_STASH_GROUP, { groupId });
       await this.loadData();
+      if (!deleteRes?.success || deleteRes.data === false) {
+        this.recentlyDeletedGroups.delete(groupId);
+        Toast.show(`删除失败：${deleteRes?.error || '该组可能已锁定或已被删除'}`);
+        return;
+      }
 
       Toast.show('已删除该收纳组', 5000, {
         text: '撤销',
@@ -1464,6 +1491,7 @@ export class StashTabComponent {
         groupId,
         updates: { title: newTitle || oldTitle }
       });
+      this.pinnedGroupIds.delete(groupId);
       await this.loadData();
     };
 

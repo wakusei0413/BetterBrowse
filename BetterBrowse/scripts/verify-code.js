@@ -41,6 +41,7 @@ const allJsFiles = new Set([
   'src/core/stash/indexed-stash-repo.js',
   'src/core/stash/onetab-converter.js',
   'src/core/stash/stash-service.js',
+  'src/core/stash/stash-result.js',
   'src/core/ai/ai-capabilities.js',
   'src/core/sync/sync-constants.js',
   'src/core/sync/crypto-util.js',

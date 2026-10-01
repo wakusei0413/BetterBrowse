@@ -63,7 +63,7 @@ export const ActionTypes = {
   // === 即时同步广播事件 ===
   NOTIFY_RULE_UPDATED: 'NOTIFY_RULE_UPDATED', // 广播通知各页面规则已变更，即时刷新内存
   NOTIFY_CONFIG_UPDATED: 'NOTIFY_CONFIG_UPDATED', // 广播通知各页面配置已变更
-  NOTIFY_STASH_UPDATED: 'NOTIFY_STASH_UPDATED',   // 广播通知收纳数据已变更
+  SWITCH_OPTIONS_TAB: 'SWITCH_OPTIONS_TAB',       // 后台定向通知某个选项页切换到指定视图
   NOTIFY_SYNC_UPDATED: 'NOTIFY_SYNC_UPDATED',     // 广播云端同步状态变更
 
   // === WebDAV 云端同步 ===

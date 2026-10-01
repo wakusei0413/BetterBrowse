@@ -147,12 +147,17 @@
     modeObserver?.disconnect();
     modeObserver = null;
     window.removeEventListener('__BETTER_BROWSE_SYNC_MODE__', handleModeSync);
-    window.removeEventListener('pagehide', destroyBridge);
+    window.removeEventListener('pagehide', handlePageHide);
     document.removeEventListener('DOMContentLoaded', initModeObserver);
   }
 
+  // 进入往返缓存（bfcache）的页面会原样恢复，且加载守卫阻止脚本重新初始化：只有真正卸载时才拆除
+  function handlePageHide(event) {
+    if (!event?.persisted) destroyBridge();
+  }
+
   window.addEventListener('__BETTER_BROWSE_SYNC_MODE__', handleModeSync);
-  window.addEventListener('pagehide', destroyBridge, { once: true });
+  window.addEventListener('pagehide', handlePageHide);
 
   if (document.documentElement) initModeObserver();
   else document.addEventListener('DOMContentLoaded', initModeObserver, { once: true });

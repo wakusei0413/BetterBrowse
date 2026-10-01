@@ -67,3 +67,33 @@ Deno.test('搜索收敛：时间线不再内置搜索框，全部检索交由主
   const home = await Deno.readTextFile(homePath);
   assert(home.includes('focusSearch('), '主页共享视图必须暴露 focusSearch 统一检索入口');
 });
+
+Deno.test('管理中心主页：视图就绪前已离开主页时不得再激活（避免隐藏主页抢占快捷键与拉取数据）', async () => {
+  globalThis.document = globalThis.document || { getElementById: () => null };
+  const { SearchHomeComponent } = await import('../BetterBrowse/src/options/components/search-home.js');
+  const component = new SearchHomeComponent({ container: null });
+  let resolveReady;
+  let activated = 0;
+  component.view = {
+    ready: new Promise((resolve) => { resolveReady = resolve; }),
+    activate: () => { activated += 1; },
+    deactivate: () => {}
+  };
+  component.activate();
+  component.deactivate();
+  resolveReady();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(activated, 0);
+
+  component.activate();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(activated, 1);
+});
+
+Deno.test('管理中心路由：只响应后台定向的 SWITCH_OPTIONS_TAB，路由支持查询串且未知路由回落时间线', async () => {
+  const source = await Deno.readTextFile(resolve(root, '../BetterBrowse/src/options/options.js'));
+  assert(source.includes('ActionTypes.SWITCH_OPTIONS_TAB'), '选项页必须响应 SWITCH_OPTIONS_TAB');
+  assert(!/message\.action === ActionTypes\.OPEN_OPTIONS_PAGE/.test(source), 'OPEN_OPTIONS_PAGE 是发往后台的请求，选项页不得响应');
+  assert(source.includes(".split('?')"), 'switchTab 必须解析 view?query 路由');
+  assert(source.includes('未知路由回落到时间线'), '未知路由必须回落时间线');
+});

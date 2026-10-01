@@ -16,8 +16,7 @@ import { PinnedTabGuard } from './pinned-tab-guard.js';
 import { ContextMenuManager } from './context-menu-manager.js';
 import { SyncScheduler } from './sync-scheduler.js';
 import { AccountConfigSync } from '../core/sync/account-config-sync.js';
-import { isOwnOptionsTab } from '../core/extension-url.js';
-import { createActionHandlers } from './action-handlers.js';
+import { createActionHandlers, openOptionsPage } from './action-handlers.js';
 import { AIBridgeManager } from './ai-bridge.js';
 import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
 import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
@@ -51,17 +50,7 @@ const thresholdMonitor = new ThresholdMonitor({
       windowId: targetWindowId
     });
   },
-  onOpenOptions: async () => {
-    const targetUrl = chrome.runtime.getURL('src/options/options.html#stash-settings');
-    const tabs = await chrome.tabs.query({ currentWindow: true });
-    const existingOptionsTab = tabs.find((t) => isOwnOptionsTab(t));
-    if (existingOptionsTab) {
-      await chrome.tabs.update(existingOptionsTab.id, { url: targetUrl, active: true });
-      MessageBus.sendToTab(existingOptionsTab.id, 'SWITCH_OPTIONS_TAB', { tab: 'stash-settings' }, 800).catch(() => {});
-    } else {
-      await chrome.tabs.create({ url: targetUrl, active: true });
-    }
-  }
+  onOpenOptions: () => openOptionsPage('stash-settings')
 });
 
 // 扩展安装/升级时运行迁移并强制死守首位固定小标签

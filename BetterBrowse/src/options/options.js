@@ -91,12 +91,10 @@ export class OptionsApp {
     // 接收来自后台的主动通知；尚未打开的面板不提前实例化，首次进入时读取最新状态。
     chrome.runtime.onMessage.addListener((message) => {
       if (!message || !message.action) return false;
-      if (message.action === 'SWITCH_OPTIONS_TAB' && message.payload?.tab) {
+      // 只响应后台定向投递的切换通知：OPEN_OPTIONS_PAGE 是发给后台的请求，
+      // 若这里也响应，所有已打开的选项页都会被别处（如新标签页）的请求切走
+      if (message.action === ActionTypes.SWITCH_OPTIONS_TAB && message.payload?.tab) {
         this.switchTab(message.payload.tab);
-      } else if (message.action === ActionTypes.OPEN_OPTIONS_PAGE && message.payload?.tab) {
-        this.switchTab(message.payload.tab);
-      } else if (message.action === ActionTypes.NOTIFY_STASH_UPDATED) {
-        this.components.get('stash')?.loadData?.();
       } else if (message.action === ActionTypes.NOTIFY_RULE_UPDATED) {
         this.components.get('links')?.loadRules?.();
       } else if (message.action === ActionTypes.NOTIFY_CONFIG_UPDATED) {
@@ -112,19 +110,7 @@ export class OptionsApp {
     });
 
     const handleHashNavigation = () => {
-      const rawHash = window.location.hash.replace(/^#/, '');
-      const [targetTab, queryPart] = (rawHash || 'stash').split('?');
-      this.switchTab(targetTab, false);
-      if (targetTab === 'stash' && queryPart) {
-        const params = new URLSearchParams(queryPart);
-        const groupId = params.get('groupId');
-        if (groupId) {
-          setTimeout(() => this.components.get('stash')?.locateGroup?.(groupId), 100);
-        }
-      } else if ((targetTab === 'home' || targetTab === 'search') && queryPart) {
-        const scope = new URLSearchParams(queryPart).get('scope');
-        if (scope) setTimeout(() => this.components.get('home')?.focusSearch?.(scope), 100);
-      }
+      this.switchTab(window.location.hash.replace(/^#/, '') || 'stash', false);
     };
     window.addEventListener('hashchange', handleHashNavigation);
     handleHashNavigation();
@@ -209,8 +195,16 @@ export class OptionsApp {
    * @param {string} tabName 目标标签名或设置路由
    * @param {boolean} [updateHash=true] 是否同步更新 URL Hash
    */
-  switchTab(tabName, updateHash = true) {
-    if (!tabName) tabName = 'stash';
+  switchTab(route, updateHash = true) {
+    // 路由可携带查询串：stash?groupId=x 定位收纳组，home?scope=stash 聚焦主页检索范围
+    const [rawTab, queryPart = ''] = String(route || 'stash').split('?');
+    const tabName = rawTab || 'stash';
+    const params = new URLSearchParams(queryPart);
+    if (tabName === 'stash' && params.get('groupId')) {
+      setTimeout(() => this.components.get('stash')?.locateGroup?.(params.get('groupId')), 100);
+    } else if ((tabName === 'home' || tabName === 'search') && params.get('scope')) {
+      setTimeout(() => this.components.get('home')?.focusSearch?.(params.get('scope')), 100);
+    }
 
     const isStashView = tabName === 'stash';
     const isHomeView = tabName === 'search' || tabName === 'home';
@@ -221,6 +215,11 @@ export class OptionsApp {
     const isSettingsSubtab = SETTINGS_SUBTABS.includes(requestedRoute);
     const targetSubtab = tertiaryRoute?.parent || (isSettingsSubtab ? requestedRoute : null);
     const targetRoute = tertiaryRoute ? requestedRoute : targetSubtab;
+    // 未知路由回落到时间线，绝不把主区域全部隐藏成空白页
+    if (!isStashView && !isHomeView && !targetSubtab) {
+      this.switchTab('stash', updateHash);
+      return;
+    }
 
     // 离开主页视图时释放/暂停定时器与下拉框
     if (!isHomeView) {

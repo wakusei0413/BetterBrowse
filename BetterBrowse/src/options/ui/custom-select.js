@@ -225,12 +225,14 @@ export class CustomSelectEnhancer {
         item.setAttribute('aria-selected', 'true');
       }
 
+      // 选项文本可能来自运行日志来源等外部数据：只以 textContent 写入，不拼进 HTML
       item.innerHTML = `
-        <span>${opt.textContent}</span>
+        <span></span>
         <svg class="option-check-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polyline points="20 6 9 17 4 12"></polyline>
         </svg>
       `;
+      item.querySelector('span').textContent = opt.textContent;
 
       item.addEventListener('click', (e) => {
         e.stopPropagation();

@@ -519,3 +519,27 @@ test('OneTab 文本：URL 自身含竖线时按 " | " 分隔，不截断地址',
   assert.equal(groups[0].tabs[0].title, '带竖线的页面');
   assert.equal(groups[0].tabs[1].title, '普通页面');
 });
+
+test('LinkInterceptor: 页面进入往返缓存时不拆除，真正卸载才拆除', () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = { location: { hostname: 'example.com', href: 'https://example.com/' } };
+  try {
+    const interceptor = new LinkInterceptor();
+    let destroyed = 0;
+    interceptor.destroy = () => { destroyed += 1; };
+    interceptor._destroyOnPageHide({ persisted: true });
+    assert.equal(destroyed, 0);
+    interceptor._destroyOnPageHide({ persisted: false });
+    assert.equal(destroyed, 1);
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test('describeStashResult: 区分写入失败、跳过与确实无可收纳', async () => {
+  const { describeStashResult } = await import('../BetterBrowse/src/core/stash/stash-result.js');
+  assert.deepEqual(describeStashResult({ success: false, error: '总线异常' }), { ok: false, stashedCount: 0, message: '总线异常' });
+  assert.equal(describeStashResult({ success: true, data: { success: false, error: '写入失败' } }).message, '写入失败');
+  assert.equal(describeStashResult({ success: true, data: { success: true, stashedCount: 0, note: '均为重复项' } }).message, '均为重复项');
+  assert.equal(describeStashResult({ success: true, data: { success: true, stashedCount: 3 } }).message, '已收纳 3 个标签页');
+});

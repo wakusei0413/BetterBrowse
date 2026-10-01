@@ -2,7 +2,7 @@
  * @file content-bundle.js
  * @description BetterBrowse 顶层页面完整内容脚本打包产物
  * @encoding UTF-8
- * @betterbrowse-sources src/constants/action-types.js=713fa0a0;src/constants/config.js=b833b094;src/core/logging/runtime-logger.js=4392ab33;src/core/link/link-matcher.js=25202d73;src/content/form-detector.js=ac1a1c56;src/content/countdown-banner.js=6c0920f0;src/content/link-interceptor.js=1242386c;src/content/index.js=543e068f
+ * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=b833b094;src/core/logging/runtime-logger.js=4392ab33;src/core/link/link-matcher.js=25202d73;src/content/form-detector.js=ac1a1c56;src/content/countdown-banner.js=6c0920f0;src/content/link-interceptor.js=eeeb3c6c;src/content/index.js=543e068f
  */
 (function() {
   'use strict';
@@ -75,7 +75,7 @@ const ActionTypes = {
   // === 即时同步广播事件 ===
   NOTIFY_RULE_UPDATED: 'NOTIFY_RULE_UPDATED', // 广播通知各页面规则已变更，即时刷新内存
   NOTIFY_CONFIG_UPDATED: 'NOTIFY_CONFIG_UPDATED', // 广播通知各页面配置已变更
-  NOTIFY_STASH_UPDATED: 'NOTIFY_STASH_UPDATED',   // 广播通知收纳数据已变更
+  SWITCH_OPTIONS_TAB: 'SWITCH_OPTIONS_TAB',       // 后台定向通知某个选项页切换到指定视图
   NOTIFY_SYNC_UPDATED: 'NOTIFY_SYNC_UPDATED',     // 广播云端同步状态变更
 
   // === WebDAV 云端同步 ===
@@ -1214,7 +1214,10 @@ class LinkInterceptor {
       this._waitingForBody = false;
       if (this.effectiveMode !== LinkModes.AUTO) this.startDOMObserver();
     };
-    this._destroyOnPageHide = () => this.destroy();
+    // 进入往返缓存（bfcache）的页面会原样恢复且不会重新注入：只有真正卸载时才拆除，否则后退返回后拦截失效
+    this._destroyOnPageHide = (event) => {
+      if (!event?.persisted) this.destroy();
+    };
   }
 
   async init(options = {}) {
@@ -1225,7 +1228,7 @@ class LinkInterceptor {
     this.initGestureGate();
     window.addEventListener('__BETTER_BROWSE_OPEN_NEW_TAB__', this._handleMainWorldOpen);
     document.addEventListener('click', this._handleClick, true);
-    window.addEventListener('pagehide', this._destroyOnPageHide, { once: true });
+    window.addEventListener('pagehide', this._destroyOnPageHide);
     this.isInitialized = true;
 
     this.syncModeToMainWorld();

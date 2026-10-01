@@ -88,7 +88,7 @@ export class StashSettingsComponent {
     if (this.dom.selectBackupRetentionDays) {
       this.dom.selectBackupRetentionDays.value = String(settings.backupRetentionDays || 30);
     }
-    CustomSelectEnhancer.enhanceAll(document.getElementById('tab-settings'));
+    CustomSelectEnhancer.enhanceAll(document.getElementById('tab-stash-settings'));
   }
 
   bindEvents() {
