@@ -6,7 +6,6 @@
 
 import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
-import { StorageKeys } from '../../constants/storage-keys.js';
 import { WebdavCredentials } from './credentials.js';
 import { WebdavClient } from './webdav-client.js';
 import { SyncOutbox } from './outbox.js';

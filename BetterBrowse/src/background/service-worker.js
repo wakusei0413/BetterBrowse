@@ -22,7 +22,6 @@ import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
 import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
 import { DeviceEventLog } from '../core/sync/device-events.js';
 import { isTrustedPopupLifecyclePort } from '../core/security/message-authorizer.js';
-import { notifyTopFrame } from './link-notifier.js';
 
 installRuntimeLogger({
   context: 'background',
@@ -106,23 +105,6 @@ MigrationManager.runMigrations()
     console.warn('[ServiceWorker] 启动阈值检查异常:', err?.message || err);
   });
 
-/**
- * 兼容旧注入：仅向 HTTP(S) 顶层框架发送，倒计时等路径应改用 notifyTopFrame。
- * @param {string} action
- * @param {any} [data={}]
- */
-async function broadcastToTabs(action, data = {}) {
-  try {
-    const tabs = await chrome.tabs.query({});
-    await Promise.all(tabs.map((tab) => {
-      if (!tab.id || !tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) return Promise.resolve();
-      return notifyTopFrame(tab.id, action, data);
-    }));
-  } catch (err) {
-    console.warn('[ServiceWorker] 广播消息异常:', err);
-  }
-}
-
 try { chrome.action?.setBadgeText?.({ text: '' }); } catch {}
 
 const aiBridge = new AIBridgeManager();
@@ -132,7 +114,6 @@ const actionHandlers = createActionHandlers({
   stashService,
   activityTracker,
   thresholdMonitor,
-  broadcastToTabs,
   aiBridge
 });
 const messageHandlers = {

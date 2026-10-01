@@ -117,3 +117,13 @@ export const DefaultConfig = {
 // 本地数据修订 9：回填收纳组派生字段 itemCount / starRank / nextPosition，供真分页摘要使用
 // 本地数据修订 10：活跃度按 pageId 分记录持久化，避免每次激活整对象重写
 export const LOCAL_DATA_SCHEMA_REVISION = 10;
+
+/**
+ * 统一解析标签页数量阈值：阈值监控、智能收纳达标判定与各界面统计必须同一口径
+ * @param {{ tabThreshold?: unknown }} config
+ * @returns {number}
+ */
+export function resolveTabThreshold(config) {
+  const value = Number(config?.tabThreshold);
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 15;
+}

@@ -9,12 +9,7 @@
  * @encoding UTF-8
  */
 
-import {
-  IndexedDBManager,
-  IDBStores,
-  STASH_GROUP_SORT_INDEX,
-  STASH_ENTRY_POSITION_INDEX
-} from '../storage/indexed-db.js';
+import { IndexedDBManager, IDBStores, STASH_ENTRY_POSITION_INDEX } from '../storage/indexed-db.js';
 import { SyncOutbox } from '../sync/outbox.js';
 import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS } from '../sync/sync-constants.js';
 

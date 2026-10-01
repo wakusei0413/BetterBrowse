@@ -8,6 +8,7 @@ import { StorageAdapter } from '../storage/storage-adapter.js';
 import { RuleEngine } from '../rules/rule-engine.js';
 import { LocalStashRepository } from './local-stash-repo.js';
 import { filterCountableTabs, getTabTargetUrl, isExcludedFromTabCounting, isOwnOptionsTab } from '../extension-url.js';
+import { resolveTabThreshold } from '../../constants/config.js';
 
 export class StashService {
   /**
@@ -323,7 +324,7 @@ export class StashService {
     // 与阈值监控保持同一计数口径（排除系统页/新标签页/插件自身页面）
     const countableTabs = filterCountableTabs(allTabs);
     const currentCount = countableTabs.length;
-    const threshold = Number.isFinite(config.tabThreshold) ? Math.max(1, Math.floor(config.tabThreshold)) : 15;
+    const threshold = resolveTabThreshold(config);
 
     // 当前可计数标签页数量未达到阈值，无需任何回收
     if (currentCount < threshold) {

@@ -5,27 +5,6 @@
  */
 
 
-import { ActionTypes } from '../../constants/action-types.js';
-import { StorageKeys } from '../../constants/storage-keys.js';
-import { LinkModes, LOCAL_DATA_SCHEMA_REVISION } from '../../constants/config.js';
-import { API_VERSION } from '../../constants/api-version.js';
-import { LinkMatcher } from '../../core/link/link-matcher.js';
-import { MessageBus } from '../../core/bus/message-bus.js';
-import { installRuntimeLogger } from '../../core/logging/runtime-logger.js';
-import {
-  GROUP_OVERSCAN,
-  TAB_OVERSCAN,
-  TABS_INITIAL_LIMIT,
-  computePads,
-  estimateGroupCardHeight,
-  getDensityMetrics,
-  getItemWindow,
-  getVisibleRange
-} from '../list-window.js';
-
-
-
-
 export class Toast {
   static show(message, duration = 3200, action = null) {
     const el = document.getElementById('toastNotification');

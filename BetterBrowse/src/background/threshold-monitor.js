@@ -10,6 +10,7 @@ import { StorageKeys } from '../constants/storage-keys.js';
 import { MessageBus } from '../core/bus/message-bus.js';
 import { filterCountableTabs, isExcludedFromTabCounting, isInjectableWebTab } from '../core/extension-url.js';
 import { DeviceEventLog, DeviceEventTypes } from '../core/sync/device-events.js';
+import { resolveTabThreshold } from '../constants/config.js';
 
 /** 恢复已过期倒计时的最大宽限期（超过则视为陈旧状态直接丢弃） */
 const EXPIRED_DEADLINE_GRACE_MS = 10 * 60 * 1000;
@@ -57,7 +58,6 @@ export class ThresholdMonitor {
     this.lastActionTime = 0; // 上次提醒、取消或执行收纳的时间戳（用于冷却防打扰）
     this.noopCooldownUntil = 0; // 收纳空操作后的短暂退避截止时间（随状态持久化）
     this.noopStreak = 0; // 连续空操作次数（退避逐次翻倍，封顶为完整冷却）
-    this.countdownInterval = null; // 兼容旧调用方，倒计时由 alarms 驱动
     this.remainingSeconds = 0; // 当前剩余秒数
     this.totalSeconds = 15;
     this.activeWindowId = null; // 当前正在倒计时的窗口 ID
@@ -274,7 +274,7 @@ export class ThresholdMonitor {
       const { windowId, tabs } = await this.getActiveWindowInfo(targetWindowId);
       const countableTabs = filterCountableTabs(tabs);
       const currentCount = countableTabs.length;
-      const threshold = config.tabThreshold || 15;
+      const threshold = resolveTabThreshold(config);
       const now = Date.now();
 
       // 倒计时归属某个具体窗口：其它窗口的标签增减不得取消它
@@ -348,7 +348,7 @@ export class ThresholdMonitor {
     this.deadline = Date.now() + this.totalSeconds * 1000;
     const countableTabs = filterCountableTabs(tabs);
     const currentCount = countableTabs.length;
-    const threshold = config.tabThreshold || 15;
+    const threshold = resolveTabThreshold(config);
     this.bannerContext = { currentCount, threshold };
 
     // 1. 更新 Action 图标 Badge 徽章动画
@@ -609,7 +609,7 @@ export class ThresholdMonitor {
       const { tabs } = await this.getActiveWindowInfo(this.activeWindowId);
       this.bannerContext = {
         currentCount: filterCountableTabs(tabs).length,
-        threshold: config.tabThreshold || 15
+        threshold: resolveTabThreshold(config)
       };
       return this.bannerContext;
     } catch {
@@ -704,10 +704,6 @@ export class ThresholdMonitor {
    * 清除倒计时状态、徽章与前台卡片
    */
   async clearCountdownUI() {
-    if (this.countdownInterval) {
-      clearInterval(this.countdownInterval);
-      this.countdownInterval = null;
-    }
     this.clearLocalExpiryTimer();
     this.remainingSeconds = 0;
     this.deadline = 0;

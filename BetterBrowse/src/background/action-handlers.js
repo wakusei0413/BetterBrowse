@@ -9,8 +9,7 @@
  */
 
 import { ActionTypes } from '../constants/action-types.js';
-import { DefaultConfig } from '../constants/config.js';
-import { StorageKeys } from '../constants/storage-keys.js';
+import { DefaultConfig, resolveTabThreshold } from '../constants/config.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
 import { LinkService } from '../core/link/link-service.js';
 import { StashService } from '../core/stash/stash-service.js';
@@ -352,7 +351,6 @@ export async function openOptionsPage(targetTab) {
  * @param {StashService} deps.stashService - 收纳服务实例
  * @param {TabActivityTracker} deps.activityTracker - 活跃度统计实例
  * @param {ThresholdMonitor} deps.thresholdMonitor - 阈值监控实例
- * @param {(action: string, data?: any) => Promise<void>} [deps.broadcastToTabs] - 兼容旧注入；链接刷新改走框架定向通知
  * @param {{ getStatusSummary: () => any, onConfigUpdated: (config: any) => void } | null} [deps.aiBridge] - AI 桥接管理器
  * @returns {Record<string, (payload: any, sender?: any) => Promise<any>>}
  */
@@ -487,7 +485,7 @@ export function createActionHandlers(deps) {
       ]);
       return {
         currentCount: filterCountableTabs(tabs).length,
-        threshold: Number.isFinite(config.tabThreshold) ? Math.max(1, Math.floor(config.tabThreshold)) : 15
+        threshold: resolveTabThreshold(config)
       };
     },
 
@@ -1074,7 +1072,7 @@ export function createActionHandlers(deps) {
         return {
           success: true,
           currentWindowCount: countableTabs.length,
-          threshold: config.tabThreshold || 15,
+          threshold: resolveTabThreshold(config),
           totalGroups: stashStats.groupCount || 0,
           totalItems: stashStats.itemCount || 0,
           weekGroupCount,

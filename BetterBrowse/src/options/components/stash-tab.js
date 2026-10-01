@@ -4,14 +4,9 @@
  * @encoding UTF-8
  */
 
-
 import { ActionTypes } from '../../constants/action-types.js';
 import { StorageKeys } from '../../constants/storage-keys.js';
-import { LinkModes, LOCAL_DATA_SCHEMA_REVISION } from '../../constants/config.js';
-import { API_VERSION } from '../../constants/api-version.js';
-import { LinkMatcher } from '../../core/link/link-matcher.js';
 import { MessageBus } from '../../core/bus/message-bus.js';
-import { installRuntimeLogger } from '../../core/logging/runtime-logger.js';
 import {
   GROUP_OVERSCAN,
   TAB_OVERSCAN,
@@ -25,9 +20,6 @@ import {
 import { Toast } from './toast.js';
 import { TimeTreeBuilder, SingleLineTimelineScrollbar } from '../ui/time-tree.js';
 import { describeStashResult } from '../../core/stash/stash-result.js';
-
-
-
 
 export class StashTabComponent {
   /**

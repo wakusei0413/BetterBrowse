@@ -108,7 +108,7 @@ test('ThresholdMonitor: 实例化与默认状态正常', () => {
   const monitor = new ThresholdMonitor();
   assert.equal(monitor.totalSeconds, 15);
   assert.equal(monitor.remainingSeconds, 0);
-  assert.equal(monitor.countdownInterval, null);
+  assert.equal(monitor.deadline, 0);
 });
 
 test('ThresholdMonitor: 冷却时间内防打扰机制生效', () => {
@@ -140,7 +140,7 @@ test('ThresholdMonitor: 扩展页与新标签页不参与阈值计数', async ()
 
   await monitor.checkTabCount();
   assert.equal(monitor.remainingSeconds, 0);
-  assert.equal(monitor.countdownInterval, null);
+  assert.equal(monitor.deadline, 0);
 });
 
 test('ThresholdMonitor: tabs.onUpdated 仅在 URL 提交或加载完成时补检', async () => {

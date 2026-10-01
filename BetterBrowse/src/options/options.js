@@ -14,7 +14,6 @@ import { RuntimeLogComponent } from './components/runtime-log.js';
 import { SearchHomeComponent } from './components/search-home.js';
 import { StashSettingsComponent } from './components/stash-settings.js';
 import { StashTabComponent } from './components/stash-tab.js';
-import { Toast } from './components/toast.js';
 import { WebdavSyncComponent } from './components/webdav-sync.js';
 import {
   SETTINGS_SUBTAB_TITLES,
