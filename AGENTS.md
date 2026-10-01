@@ -60,6 +60,7 @@ BetterBrowse/
 │   ├── runtime-log.test.js        # 运行时日志仓储与格式化测试
 │   ├── extension-url.test.js      # 扩展页面 URL 判定测试
 │   ├── pinned-tab-guard.test.js   # 常驻收纳箱按窗口唯一性、pendingUrl 与 newtab 隔离测试
+│   ├── sync-scheduler.test.js     # 同步周期闹钟不被 SW 重启重置测试
 │   ├── api-version.test.js        # 内部 API 版本契约测试
 │   ├── python-client.test.js      # Deno 驱动 Python unittest（纳入 deno task test / verify）
 │   ├── python/                    # Python 客户端 unittest（由 python-client.test.js 发现执行）
@@ -73,6 +74,7 @@ BetterBrowse/
     │   ├── bb_native_host.js      # 宿主主程序 (stdio 帧 ↔ 127.0.0.1 令牌侧信道、SW 保活 ping、串行转发)
     │   ├── run-host.cmd / run-host.sh # 平台启动包装 (Chrome 拉起入口)
     │   ├── install.js             # 安装器 (Windows 注册表 / macOS、Linux 目录, deno task ai-host-install)
+    │   ├── host-paths.js          # 安装/卸载共用路径与注册位置 (Chrome/Edge 清单分开)
     │   └── uninstall.js           # 卸载器 (deno task ai-host-uninstall)
     │
     ├── scripts/                   # Deno 原生驱动的辅助与校验工具 (纯 JS)
@@ -112,7 +114,9 @@ BetterBrowse/
     │   │   │   ├── stash-service.js # 收纳与恢复服务主调度
     │   │   │   ├── local-stash-repo.js # 收纳仓储门面 (IndexedDB 主库优先, chrome.storage 兜底)
     │   │   │   ├── indexed-stash-repo.js # IndexedDB 仓储实现 (页面实体+收纳记录两层模型、索引去重、分页检索)
-    │   │   │   └── onetab-converter.js # OneTab 双向数据转换器 (支持纯文本/内部 JSON 互导)
+    │   │   │   ├── onetab-converter.js # OneTab 双向数据转换器 (支持纯文本/内部 JSON 互导)
+    │   │   │   ├── group-title.js # 收纳时间与默认组标题的统一格式
+    │   │   │   └── stash-result.js # 收纳结果的统一用户提示文案 (弹窗/时间线共用)
     │   │   │
     │   │   ├── ai/                # AI 桥接能力层 (阶段三 M4, 协议见 docs/03-ai-skill-bridge.md)
     │   │   │   └── ai-capabilities.js # 能力自描述常量 (动作文档目录、确认位白名单、清单构建器)
@@ -145,6 +149,7 @@ BetterBrowse/
     │   ├── content/               # 网页端内容脚本 (双层世界防御体系、顶层/iframe 双产物)
     │   │   ├── main-world-bridge.js  # 主页面世界 (Main World) 脚本，拦截 SPA 框架路由
     │   │   ├── link-interceptor.js   # 隔离世界 (Isolated World) 拦截器
+    │   │   ├── runtime-message.js    # 内容脚本向后台发消息的统一安全封装 (吞 lastError、可超时)
     │   │   ├── form-detector.js      # 表单焦点与未保存输入探测器
     │   │   ├── countdown-banner.js   # 倒计时悬浮卡片 (Shadow DOM 样式彻底隔离)
     │   │   ├── content-bundle.js       # 顶层页面完整能力自包含产物
@@ -554,3 +559,20 @@ deno task ai-host-uninstall
    - **阈值检查入口三处齐备**：`chrome.runtime.onStartup`（浏览器启动）、`onInstalled`（扩展重载/更新）、SW 冷启动链都必须补检一次阈值。只挂 `onStartup` 会让"重载扩展后标签早已超标"一直静默到下一次标签事件；
    - **空操作不等于已处理**：`commitCooldown` 按结果区分冷却——确实收掉了标签或用户主动确认才走完整冷却，空操作只写短暂 `noopCooldownUntil`（连续空操作按 1、2、4… 分钟翻倍退避，封顶为完整冷却；与 `lastActionTime` 一并写入会话状态，SW 重启不丢），且必须通过 `notifyStashOutcome` 给出可见提示（可见提示不得包含任何页面标题或搜索词）；
    - **表单探测失败要区分"无接收端"与"超时"**：只有失败文本匹配 `NO_RECEIVER_PATTERN` 时才动态注入 `content-bundle.js` 后重探（镜像 `broadcastBannerToTabs` 的兜底）；超时说明接收端存在，**重复注入会重复注册监听器**。注入后仍探测不通才保持 fail-closed。
+   - **卡片投递失败必须撤销标记**：`sendBannerToTab` 投递失败时从 `bannerTabIds` 移除，`rebroadcastBannerToTab` 只补播倒计时所属窗口（`activeWindowId`）；收口进行中（`finalizePromise`）`checkTabCount` 不得再起第二轮倒计时。
+13. **收纳规则与活跃度约束（2026-10 排查确立）**：
+   - **活跃度冷启动投影**：`TabActivityTracker.syncCurrentTabs` 必须把持久化的 `pageStats[pageId]` 投影回 `stats[tabId]`；收纳入口一律用 `await activityTracker.getReadyStats()`，不得直接读 `getStats()`，否则 SW 重启后最近访问/高频保护全部失效；
+   - **前台标签属引擎硬保护**：`tab.active` 由 `RuleEngine.evaluateTabs` 直接保留（`matchedRuleId: 'activeTab'`），不受 `rulesEnabled.recentActive` 开关与阶梯降级影响；系统页判断统一走 `isProtectedSystemTab`；
+   - **表单预探测始终执行**：`evaluateTabs` 无论是否传入 `formResultsCache` 都必须调用 `FormGuardRule.preload`（它自行跳过已缓存标签），否则阶梯多轮评估会退化为逐个标签串行探测；已丢弃 / `status === 'unloaded'` 的标签视为无输入，不 fail-closed；
+   - **收纳路径统一**：保存→仅关闭已入库标签→确保常驻收纳箱→关闭，一律走 `StashService.stashAndClose`；标签转条目一律走 `StashService.tabToStashItem`（`getTabTargetUrl` 口径），不得再手写 `url: tab.url` 映射。
+14. **同步数据完整性与安全约束（2026-10 排查确立）**：
+   - **组派生计数**：任何不经 `createGroup/addTabItemToGroup/deleteTabItem` 直接写条目的路径（导入、同步合并、快照应用）写完后必须在同一或后续事务调用 `IndexedStashRepository.recountGroupsInTx`；导出与分页循环按 `hasMore`/`nextCursor` 结束，不得按 `total` 截断；
+   - **远端设置白名单**：`SyncMerge._applySettings` 与 `SyncSnapshot` 只接受 `isSyncableConfigPath` 白名单路径（`SYNC_CONFIG_SCALAR_KEYS` / `SYNC_CONFIG_NESTED_KEYS` 一级子字段），拒绝 `__proto__` / `constructor` / `prototype`；快照只携带 `pickSyncableConfig` 切片，应用时合并进本机配置而非整体覆盖；域名规则过 `isValidLinkRule`；
+   - **自愈回填门控**：`MigrationManager.repairMissingObjectStores` 只在 `IndexedDBManager.stashStoreRecreated`（本进程升级时新建了收纳组仓储）时才从旧快照回填；用户清空全部收纳组不得触发回填；
+   - **收纳修订号**：同步合并与快照应用后必须调用 `StorageAdapter.bumpStashRevision()`，否则其它设备同步来的收纳组要手动刷新才可见；
+   - **AI 不可逆动作**：`FALLBACK_PREVIOUS_SNAPSHOT`（非合并覆盖本地）与 `RETIRE_SYNC_DEVICE` 已列入 `AI_CONFIRM_REQUIRED_ACTIONS`。
+15. **AI 桥接宿主健壮性补充（2026-10 排查确立）**：
+   - stdout 与 Agent socket 写入一律经 `writeAll` 写满并串行化（ping 与业务响应不得交错写出半帧）；TCP 读取使用每连接独立的流式 `TextDecoder({ stream: true })`；
+   - `removeBridgeFile` 只删除 `pid` 等于自身的 `bridge.json`（多浏览器 / 多配置文件共用同一自发现文件）；
+   - Windows 安装器按浏览器分开清单（`com.betterbrowse.bridge.chrome.json` / `.edge.json`），`.cmd` 中非 ASCII 路径改写为环境变量前缀或 8.3 短路径；
+   - Python 客户端入口调用 `configure_stdio()` 统一 UTF-8 输出，`--stdin` 以 UTF-8 读取、`--file` 容忍 BOM；Windows 进程存活探测不得使用 `os.kill(pid, 0)`（会发送 CTRL_C_EVENT）。

@@ -12,7 +12,7 @@ Agent CLI（本目录 `scripts/betterbrowse_client.py`，Python 3.9+）
 扩展 Service Worker（AIBridgeManager → 共享 action 处理映射）
 ```
 
-自发现文件（宿主进程写入、退出时删除）：
+自发现文件（宿主进程写入；退出时仅当文件中的 `pid` 是自身才删除，避免误删另一浏览器仍在运行的宿主）：
 
 | 平台 | 路径 |
 | --- | --- |

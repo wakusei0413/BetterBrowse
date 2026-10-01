@@ -94,7 +94,7 @@
 | 开关开启 / SW 冷启动 / onStartup / onInstalled | `AIBridgeManager.init()` → `chrome.runtime.connectNative('com.betterbrowse.bridge')` |
 | 宿主未安装 | `connectNative` 回调报错 → 状态置 `host_missing`，指数退避重试（5s→15s→60s→5min 封顶） |
 | 宿主已连 | 仅在有在途请求时 ping；开放中的 Native Messaging 端口本身即延长 SW 生命周期，无需空闲心跳 |
-| Chrome 退出 | stdio EOF → 宿主自行退出并删除 `bridge.json` |
+| Chrome 退出 | stdio EOF → 宿主清除维护定时器、自行退出，并仅删除 `pid` 与自身相同的 `bridge.json`（多浏览器共存时不误删） |
 | 开关关闭 | 主动断开 native 端口、宿主退出、`bridge.json` 清除；Agent 请求全部被拒 |
 
 ## 5. 安全与治理（扩展侧 AIBridgeManager）
@@ -147,7 +147,7 @@
 ## 8. 安装与配对（一次）
 
 1. 选项页「AI 桥接」Tab 开启总开关，复制扩展 ID。
-2. `deno task ai-host-install -- --ext-id=<扩展ID>`（Windows 写 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.betterbrowse.bridge`，可选 `--browser edge`；macOS/Linux 写对应 `NativeMessagingHosts` 目录）。
+2. `deno task ai-host-install -- --ext-id=<扩展ID>`（Windows 写 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.betterbrowse.bridge`，清单为 `%LOCALAPPDATA%\BetterBrowse\com.betterbrowse.bridge.chrome.json`；可选 `--browser edge`，Edge 使用独立的 `.edge.json` 清单，两者互不覆盖；macOS/Linux 写对应 `NativeMessagingHosts` 目录）。
 3. 重载扩展 → 状态变“宿主已连接”，`bridge.json` 出现 → Agent 先运行 `python skills/BetterBrowse/scripts/betterbrowse_client.py doctor` 完整诊断，再以 `status` 验证。
 
 ## 9. 客户端使用约定
