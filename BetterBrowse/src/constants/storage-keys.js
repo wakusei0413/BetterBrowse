@@ -15,6 +15,8 @@ export const StorageKeys = {
   STASH_REV: 'bb_stash_revision',            // 收纳数据修订号（IndexedDB 模式下的跨上下文变更通知）
   IDB_MIGRATED_AT: 'bb_idb_migrated_at',     // IndexedDB 收纳主库迁移完成时间戳（30 天旧数据保留期判定）
   IDB_SETTINGS_MIGRATED_AT: 'bb_idb_settings_migrated_at', // IndexedDB 配置/规则/备份/活跃度迁移完成时间戳
+  IDB_RECREATED_AT: 'bb_idb_recreated_at',   // 主库在已迁移后被重建（数据丢失）的时间戳：待自愈回填，回填完成后清除
+  RECOVERY_SNAPSHOT: 'bb_recovery_snapshot', // 主库之外的收纳数据灾备副本（chrome.storage.local，绝不进入同步/导出）
   IDB_OPTOUT: 'bb_idb_optout',               // 回退标记：置为 true 后数据源固定为 chrome.storage.local 旧存储
   WEBDAV_CREDENTIALS: 'bb_webdav_credentials', // WebDAV 凭据（仅本地 IndexedDB settings，永不进入同步 / 导出 / 快照）
   ACCOUNT_CONFIG: 'bb_account_config',         // 浏览器账号偏好镜像（仅 chrome.storage.sync，不含收纳列表 / 域名表 / 凭据）

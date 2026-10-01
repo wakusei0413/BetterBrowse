@@ -35,29 +35,46 @@ export class MigrationManager {
       const storeRecreated = IndexedDBManager.stashStoreRecreated;
       IndexedDBManager.stashStoreRecreated = false;
 
-      const groupCount = await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
-        return await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_GROUPS).count());
-      });
-      if (groupCount > 0) return; // 主库已有数据：结构健康，无需修复
-      // 仓储本来就在、只是用户清空了全部收纳组：绝不能从 30 天保留期内的旧快照回填，
-      // 否则已删除的组会复活并经 WebDAV 扩散到其它设备
-      if (!storeRecreated) return;
-
       // 数据架构尚未进入 IndexedDB 时代：旧数据由正式迁移管线（本地数据修订 5、7、8）负责回填，此处不抢
-      const schemaVersion = Number(await StorageAdapter.get(StorageKeys.SCHEMA_VERSION, 0));
+      const schemaVersion = Number(await StorageAdapter.getChrome(StorageKeys.SCHEMA_VERSION, 0));
       if (schemaVersion < 5) return;
 
-      const legacyGroups = await StorageAdapter.get(StorageKeys.STASH_GROUPS, []);
-      if (Array.isArray(legacyGroups) && legacyGroups.length > 0) {
-        const imported = await IndexedDBManager.withWriteLock(() => IndexedStashRepository.importGroups(legacyGroups));
-        console.info(`[MigrationManager] 自愈修复完成：已重建 IndexedDB 结构并回填 ${imported.groupCount} 个收纳组（${imported.entryCount} 条记录）`);
-      } else {
-        console.info('[MigrationManager] 自愈修复完成：IndexedDB 结构已重建（旧存储无收纳数据）');
-      }
+      // 只有"主库确实被重建过"才回填：用户自己清空全部收纳组时仓储仍在，绝不能把已删除的组复活
+      // 并经 WebDAV 扩散到其它设备。重建标记持久化在 chrome.storage，运行中途重建也不会被遗忘。
+      const recreatedAt = Number(await StorageAdapter.getChrome(StorageKeys.IDB_RECREATED_AT, 0));
+      if (!recreatedAt && !storeRecreated) return;
+      await this.restoreFromRecoveryCopies();
+      await StorageAdapter.setChrome(StorageKeys.IDB_RECREATED_AT, 0);
     } catch (err) {
-      // 自愈失败不阻塞迁移主流程（旧存储兜底仍然可用）
+      // 自愈失败不阻塞迁移主流程；重建标记保留，下次启动重试，旧副本也不会被保留期清理删除
       console.warn('[MigrationManager] 自愈修复失败（不阻塞主流程）:', err?.message || err);
     }
+  }
+
+  /**
+   * 从主库之外的副本回填收纳组：旧版收纳数组（迁移后保留 30 天）与灾备副本 bb_recovery_snapshot。
+   * importGroups 以组 ID 幂等 upsert，主库重建后用户新建的组不受影响，重复执行不会产生重复。
+   * @returns {Promise<{ groupCount: number, entryCount: number }>}
+   */
+  static async restoreFromRecoveryCopies() {
+    const legacyGroups = await StorageAdapter.getChrome(StorageKeys.STASH_GROUPS, []);
+    const recovery = await StorageAdapter.getChrome(StorageKeys.RECOVERY_SNAPSHOT, null);
+    const byId = new Map();
+    for (const group of [...(Array.isArray(legacyGroups) ? legacyGroups : []), ...(Array.isArray(recovery?.groups) ? recovery.groups : [])]) {
+      if (!group?.id || !Array.isArray(group.tabs) || group.tabs.length === 0) continue;
+      const existing = byId.get(group.id);
+      // 同一组两份副本都在时取条目更多的一份，宁多勿少
+      if (!existing || group.tabs.length > existing.tabs.length) byId.set(group.id, group);
+    }
+    const groups = [...byId.values()];
+    if (groups.length === 0) {
+      console.warn('[MigrationManager] 收纳主库已重建，但没有可用的灾备副本可回填');
+      return { groupCount: 0, entryCount: 0 };
+    }
+    const imported = await IndexedDBManager.withWriteLock(() => IndexedStashRepository.importGroups(groups));
+    await StorageAdapter.bumpStashRevision();
+    console.warn(`[MigrationManager] 收纳主库曾被重建，已从灾备副本回填 ${imported.groupCount} 个收纳组（${imported.entryCount} 条记录）`);
+    return imported;
   }
 
   /**
@@ -532,6 +549,10 @@ export class MigrationManager {
    */
   static async cleanupLegacyStashData(currentVersion) {
     const retentionMs = LEGACY_STASH_RETENTION_DAYS * 86400000;
+    if (Number(await StorageAdapter.getChrome(StorageKeys.IDB_RECREATED_AT, 0)) > 0) {
+      console.warn('[MigrationManager] 收纳主库曾被重建且尚未完成回填，暂不清理旧版副本');
+      return;
+    }
     if (Number(currentVersion) >= 5) {
       const migratedAt = await StorageAdapter.getChrome(StorageKeys.IDB_MIGRATED_AT, 0);
       if (migratedAt && Date.now() - migratedAt >= retentionMs) {
@@ -690,3 +711,7 @@ export class MigrationManager {
     }
   }
 }
+
+IndexedDBManager.onRecreated = () => {
+  MigrationManager.repairMissingObjectStores().catch(() => {});
+};

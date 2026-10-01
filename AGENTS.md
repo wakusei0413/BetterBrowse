@@ -576,3 +576,8 @@ deno task ai-host-uninstall
    - `removeBridgeFile` 只删除 `pid` 等于自身的 `bridge.json`（多浏览器 / 多配置文件共用同一自发现文件）；
    - Windows 安装器按浏览器分开清单（`com.betterbrowse.bridge.chrome.json` / `.edge.json`），`.cmd` 中非 ASCII 路径改写为环境变量前缀或 8.3 短路径；
    - Python 客户端入口调用 `configure_stdio()` 统一 UTF-8 输出，`--stdin` 以 UTF-8 读取、`--file` 容忍 BOM；Windows 进程存活探测不得使用 `os.kill(pid, 0)`（会发送 CTRL_C_EVENT）。
+16. **主库丢失防护（2026-10 事故复盘确立）**：
+   - IndexedDB 主库可能被浏览器整体删除重建（数据库损坏、清除站点数据），且常发生在扩展运行中途——下一次写入会静默建出空库。`IndexedDBManager` 在 `oldVersion === 0` 且本地数据修订 ≥ 5 时把 `bb_idb_recreated_at` 写入 chrome.storage（不能只用进程内标记，SW 休眠即丢失），并经 `onRecreated` 钩子立即触发自愈；
+   - 自愈回填只认"主库确实被重建"（持久化标记或本进程升级标记），从旧版收纳数组与灾备副本 `bb_recovery_snapshot` 按组 ID 幂等导入，**不得**以"主库组数为 0"作为条件（重建后用户往往已经新建了组）；
+   - **灾备副本必须放在主库之外**：自动备份本身存于 IndexedDB，会与数据同生共死。`bb_recovery_snapshot` 写在 chrome.storage.local，绝不进入 WebDAV 同步、快照与导出；主库重建、回填未完成期间禁止覆盖它；
+   - 存在未完成回填的重建标记时，30 天保留期清理**不得**删除旧版副本。

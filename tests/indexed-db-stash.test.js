@@ -625,3 +625,37 @@ Deno.test("自愈修复：用户清空全部收纳组后，重启不得从旧快
     await idb.restore();
   }
 });
+
+Deno.test("主库丢失自愈：浏览器运行中删除并重建主库后，从灾备副本回填全部收纳组且保留新建的组", async () => {
+  const idb = installFakeIndexedDB();
+  try {
+    const store = installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 4, [StorageKeys.STASH_GROUPS]: [] });
+    await MigrationManager.runMigrations();
+    await LocalStashRepository.createGroup([{ url: "https://april.example/", title: "四月的页面" }], "四月");
+    await LocalStashRepository.createGroup([{ url: "https://august.example/", title: "八月的页面" }], "八月");
+    assertEquals(Array.isArray(store[StorageKeys.RECOVERY_SNAPSHOT]?.groups), true);
+    assertEquals(store[StorageKeys.RECOVERY_SNAPSHOT].groups.length, 2);
+
+    // 浏览器删除主库（数据库损坏 / 清除站点数据），扩展仍在运行：下一次写入静默建出空库
+    IndexedDBManager.onRecreated = null; // 先观察"未及时回填"的最坏情况
+    idb.factory.deleteDatabase("betterbrowse");
+    IndexedDBManager._dbPromise = null;
+    await LocalStashRepository.createGroup([{ url: "https://september.example/", title: "九月新建" }], "九月");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(store[StorageKeys.IDB_RECREATED_AT] > 0, true);
+
+    // 保留期清理在回填完成前不得删除旧副本
+    store[StorageKeys.IDB_MIGRATED_AT] = Date.now() - 40 * 86400000;
+    store[StorageKeys.STASH_GROUPS] = [{ id: "g_legacy", createdAt: 1, title: "旧数组", tabs: [{ id: "t", url: "https://legacy.example/" }] }];
+
+    // Service Worker 重启：自愈修复按持久化标记回填
+    IndexedDBManager._dbPromise = null;
+    IndexedDBManager.stashStoreRecreated = false;
+    await MigrationManager.runMigrations();
+    const titles = (await LocalStashRepository.listGroupSummaries()).map((group) => group.title).sort();
+    assertEquals(titles, ["九月", "八月", "四月", "旧数组"].sort());
+    assertEquals(store[StorageKeys.IDB_RECREATED_AT], 0);
+  } finally {
+    await idb.restore();
+  }
+});

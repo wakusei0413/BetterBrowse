@@ -13,6 +13,8 @@ import { IndexedDBManager } from '../storage/indexed-db.js';
 import { IndexedStashRepository } from './indexed-stash-repo.js';
 import { defaultGroupTitle } from './group-title.js';
 
+/** 灾备副本体积上限（chrome.storage.local 默认总配额 10MB，给其它键留足余量） */
+const RECOVERY_SNAPSHOT_MAX_BYTES = 6 * 1024 * 1024;
 export class LocalStashRepository {
   // ============================================================
   // 存储门面：IndexedDB 主库优先，chrome.storage.local 旧存储兜底
@@ -120,6 +122,31 @@ export class LocalStashRepository {
   }
 
   /**
+   * 写入主库之外的灾备副本。自动备份本身也存在 IndexedDB 里，主库一旦被浏览器删除重建，
+   * 备份会和数据一起消失；这份副本放在 chrome.storage.local，供 MigrationManager 自愈回填。
+   * 不进入 WebDAV 同步、快照与导出；超过体积上限时跳过（保住 chrome.storage.local 的 10MB 配额）。
+   * @param {any[]} groups
+   * @param {number} now
+   */
+  static async _writeRecoverySnapshot(groups, now) {
+    try {
+      // 主库刚被重建、尚未回填时，当前库里只剩重建后新建的少量组：此时覆盖副本会毁掉唯一的恢复来源
+      if (IndexedDBManager.stashStoreRecreated
+        || Number(await StorageAdapter.getChrome(StorageKeys.IDB_RECREATED_AT, 0)) > 0) {
+        return;
+      }
+      const snapshot = { createdAt: now, groups: this.createBackupSnapshot(groups, true) };
+      if (this.estimateBackupBytes([snapshot]) > RECOVERY_SNAPSHOT_MAX_BYTES) {
+        console.warn('[LocalStashRepository] 收纳数据超过灾备副本体积上限，已跳过本次副本写入');
+        return;
+      }
+      await StorageAdapter.setChrome(StorageKeys.RECOVERY_SNAPSHOT, snapshot);
+    } catch (err) {
+      console.warn('[LocalStashRepository] 灾备副本写入失败，已忽略:', err?.message || err);
+    }
+  }
+
+  /**
    * 执行自动备份（收纳组创建成功后调用）
    * 本地数据修订 7 起备份写入 IndexedDB settings 仓储（StorageAdapter 按版本门控路由），失败不影响主收纳。
    * @param {number} [now=Date.now()] - 备份快照时间戳
@@ -128,9 +155,10 @@ export class LocalStashRepository {
     try {
       const config = await StorageAdapter.getUserConfig();
       const settings = config.stashSettings || {};
+      const currentGroups = await this.getAllGroups();
+      await this._writeRecoverySnapshot(currentGroups, now);
       if (settings.autoBackupEnabled === false) return;
 
-      const currentGroups = await this.getAllGroups();
       const retentionDays = Math.max(1, Number(settings.backupRetentionDays) || 30);
       const cutoff = Date.now() - retentionDays * 86400000;
       const limits = DefaultConfig.autoBackupLimits || {};

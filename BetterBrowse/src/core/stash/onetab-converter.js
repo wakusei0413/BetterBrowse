@@ -38,6 +38,7 @@ export class OneTabConverter {
         'http:',
         'https:',
         'chrome:',
+        'chrome-extension:', // 其他扩展的页面（如 PDF 阅读器）：收纳时能存进来，导入/恢复时也必须保留
         'edge:',
         'about:',
         'file:',
