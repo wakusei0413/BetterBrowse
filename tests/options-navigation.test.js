@@ -50,3 +50,20 @@ Deno.test('管理中心主页必须允许面板滚动，不得继承时间线 ov
   assert(block.includes('overflow-y: auto'), '主页面板必须允许纵向滚动');
   assert(block.includes('display: block'), '主页面板不得以 flex 列裁切整页内容');
 });
+
+Deno.test('搜索收敛：时间线不再内置搜索框，全部检索交由主页承载', async () => {
+  const html = await Deno.readTextFile(optionsHtmlPath);
+  assert(!html.includes('id="stashSearchInput"'), '时间线必须移除内嵌搜索输入框');
+  assert(!html.includes('id="btnStashSearchClear"'), '时间线必须移除搜索清空按钮');
+  assert(html.includes('id="btnStashSearchInHome"'), '时间线必须提供跳转主页搜索的入口按钮');
+
+  const stashPath = resolve(root, '../BetterBrowse/src/options/components/stash-tab.js');
+  const stash = await Deno.readTextFile(stashPath);
+  assert(!/getSearchQuery|searchItemFilter|stashSearchInput/.test(stash), '时间线组件不得保留本地搜索过滤逻辑');
+  assert(stash.includes('openHomeSearch'), '时间线必须暴露跳转主页搜索的方法');
+  assert(stash.includes('onSearchInHome'), '时间线必须支持宿主注入跳转回调');
+
+  const homePath = resolve(root, '../BetterBrowse/src/home/home-view.js');
+  const home = await Deno.readTextFile(homePath);
+  assert(home.includes('focusSearch('), '主页共享视图必须暴露 focusSearch 统一检索入口');
+});

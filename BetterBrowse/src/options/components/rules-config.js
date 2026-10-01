@@ -54,6 +54,9 @@ export class RulesConfigComponent {
     };
 
     this.saveDebounceTimer = null;
+    // 配置是否已成功加载。未加载时表单里是 HTML 默认值，若此时触发保存会把
+    // Boolean(undefined) === false 写进配置，等于静默关闭"达到阈值时自动收纳"
+    this.configLoaded = false;
     this.init();
   }
 
@@ -64,7 +67,10 @@ export class RulesConfigComponent {
 
   async loadConfig() {
     const res = await MessageBus.sendToBackground(ActionTypes.GET_CONFIG);
-    if (!res.success || !res.data) return;
+    if (!res.success || !res.data) {
+      this.configLoaded = false;
+      return false;
+    }
 
     const config = res.data;
     if (this.dom.inputThreshold) this.dom.inputThreshold.value = config.tabThreshold || 15;
@@ -89,6 +95,8 @@ export class RulesConfigComponent {
     if (this.dom.chkTierUltimateFallback) this.dom.chkTierUltimateFallback.checked = tiered.ultimateFallback !== false;
     this.updateTieredRowsState();
     this.updateTieredSummary();
+    this.configLoaded = true;
+    return true;
   }
 
   updateTieredSummary() {
@@ -157,6 +165,13 @@ export class RulesConfigComponent {
   async saveConfig() {
     clearTimeout(this.saveDebounceTimer);
     this.saveDebounceTimer = setTimeout(async () => {
+      // 配置尚未成功加载时表单里只是 HTML 默认值，直接保存会把"自动收纳"等开关默默写成关闭。
+      // 这里改为先重试加载并放弃本次保存，宁可这次改动不生效也不能静默关掉功能
+      if (!this.configLoaded) {
+        const reloaded = await this.loadConfig();
+        if (!reloaded) return;
+      }
+
       const tabThreshold = parseInt(this.dom.inputThreshold?.value, 10) || 15;
       const recentActiveMinutes = parseInt(this.dom.inputRecent?.value, 10) || 5;
       const autoStashOnThreshold = Boolean(this.dom.chkAutoStash?.checked);

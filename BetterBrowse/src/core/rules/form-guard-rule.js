@@ -8,6 +8,14 @@ import { BaseRule } from './base-rule.js';
 import { RulePriorities } from '../../constants/config.js';
 import { MessageBus } from '../bus/message-bus.js';
 import { ActionTypes } from '../../constants/action-types.js';
+import { isInjectableWebTab } from '../extension-url.js';
+
+/**
+ * 内容脚本尚未注入时的失败特征。
+ * 超时（接收端存在但响应慢）刻意不在此列：对已有监听器的页面重复注入内容脚本
+ * 会重复注册 onMessage 监听器，反而制造"消息端口提前关闭"的伪故障。
+ */
+const NO_RECEIVER_PATTERN = /Receiving end does not exist|Could not establish connection/i;
 
 export class FormGuardRule extends BaseRule {
   constructor() {
@@ -34,9 +42,7 @@ export class FormGuardRule extends BaseRule {
     if (!globalThis.chrome?.tabs?.sendMessage || !results) return;
 
     const pendingTabs = (allTabs || []).filter(
-      (tab) => tab?.id && tab.url
-        && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))
-        && !results.has(tab.id)
+      (tab) => tab?.id && isInjectableWebTab(tab) && !results.has(tab.id)
     );
     if (pendingTabs.length === 0) return;
 
@@ -45,6 +51,35 @@ export class FormGuardRule extends BaseRule {
         results.set(tab.id, await FormGuardRule.probeTabFrames(tab.id));
       })
     );
+  }
+
+  /**
+   * 探测顶层框架的表单状态，并在"内容脚本尚未注入"时动态注入后重探一次。
+   *
+   * 这是"有提示却不收纳"的关键修复：刚打开的页面、会话恢复的标签与扩展刚重载后的既有标签
+   * 都没有内容脚本，此前一律因无法确认状态而 fail-closed 保留；数量一多就会命中硬性保护
+   * 超限，导致整次自动收纳一个标签都收不掉。
+   *
+   * @param {number} tabId
+   * @returns {Promise<{ success: boolean, data?: { hasActiveInput: boolean, reason?: string }, error?: string }>}
+   */
+  static async probeTopFrameWithRecovery(tabId) {
+    // 顶层框架走不带 options 的普通发送，兼容更简单的测试桩与旧调用约定
+    const first = await MessageBus.sendToTab(tabId, ActionTypes.CHECK_FORM_INPUT, null, 2000);
+    if (first?.success) return first;
+    if (!NO_RECEIVER_PATTERN.test(String(first?.error || ''))) return first;
+    if (!globalThis.chrome?.scripting?.executeScript) return first;
+
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        files: ['src/content/content-bundle.js']
+      });
+    } catch {
+      // 标签页已被关闭、处于丢弃状态或仍在中途导航：保持 fail-closed
+      return first;
+    }
+    return await MessageBus.sendToTab(tabId, ActionTypes.CHECK_FORM_INPUT, null, 2000);
   }
 
   /**
@@ -73,9 +108,8 @@ export class FormGuardRule extends BaseRule {
       if (url && !url.startsWith('http://') && !url.startsWith('https://') && frame.frameId !== 0) continue;
       const isTop = frame.frameId === 0;
       try {
-        // 顶层框架走不带 options 的普通发送，兼容更简单的测试桩与旧调用约定
         const response = isTop
-          ? await MessageBus.sendToTab(tabId, ActionTypes.CHECK_FORM_INPUT, null, 2000)
+          ? await FormGuardRule.probeTopFrameWithRecovery(tabId)
           : await MessageBus.sendToFrame(tabId, frame.frameId, ActionTypes.CHECK_FORM_INPUT, null, 2000);
         if (!response?.success) {
           if (isTop) {

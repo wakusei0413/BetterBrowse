@@ -24,7 +24,7 @@ import { SyncMerge } from '../core/sync/merge.js';
 import { SyncSnapshot } from '../core/sync/snapshot.js';
 import { WebdavCredentials } from '../core/sync/credentials.js';
 import { DeviceEventLog } from '../core/sync/device-events.js';
-import { filterCountableTabs, isOwnOptionsUrl } from '../core/extension-url.js';
+import { filterCountableTabs, isOwnOptionsTab } from '../core/extension-url.js';
 import { buildCapabilitiesDescriptor } from '../core/ai/ai-capabilities.js';
 import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
 import { classifySender } from '../core/security/message-authorizer.js';
@@ -667,7 +667,7 @@ export function createActionHandlers(deps) {
       const targetUrl = chrome.runtime.getURL(`src/options/options.html#${targetTab}`);
       try {
         const tabs = await chrome.tabs.query({ currentWindow: true });
-        const existingOptionsTab = tabs.find((t) => isOwnOptionsUrl(t.url));
+        const existingOptionsTab = tabs.find((t) => isOwnOptionsTab(t));
 
         if (existingOptionsTab) {
           await chrome.tabs.update(existingOptionsTab.id, {

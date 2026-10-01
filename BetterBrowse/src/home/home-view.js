@@ -231,6 +231,19 @@ export class HomeView {
   }
   setEngine(engine) { if (ENGINES[engine]) return this.saveHome({ searchEngine: engine }); }
 
+  /**
+   * 聚焦搜索框并按指定范围检索（时间线等入口统一跳转到主页搜索）。
+   * @param {string} [scope='all'] 'all' | 'stash' | 'history'
+   */
+  focusSearch(scope = 'all') {
+    if (this.destroyed || !this.container) return;
+    if (['all', 'stash', 'history'].includes(scope)) this.scope = scope;
+    this.syncControls();
+    this.input?.focus();
+    this.input?.select();
+    if (this.input?.value.trim()) this.scheduleSearch(0);
+  }
+
   /** 按当前时段返回问候语。 */
   greetingFor(hour) {
     if (hour < 5) return '夜深了';
@@ -741,8 +754,9 @@ export class HomeView {
   }
   navigateToStash(groupId = null) {
     if (this.onNavigateToStash) { this.onNavigateToStash(groupId); return; }
-    const hash = groupId ? `#stash?groupId=${encodeURIComponent(groupId)}` : '#stash';
-    this.openUrl(chrome.runtime.getURL(`src/options/options.html${hash}`), true);
+    const tab = groupId ? `stash?groupId=${encodeURIComponent(groupId)}` : 'stash';
+    Promise.resolve(MessageBus.sendToBackground(ActionTypes.OPEN_OPTIONS_PAGE, { tab }))
+      .catch((err) => this.feedback(`打开收纳箱失败：${err.message}`, true));
   }
   createItemElement({ url, title, extra = '' }) {
     const link = node('a', 'bb-home-item');

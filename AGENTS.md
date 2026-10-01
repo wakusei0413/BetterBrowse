@@ -59,6 +59,7 @@ BetterBrowse/
 │   ├── message-authorizer.test.js # 消息来源授权鉴权测试
 │   ├── runtime-log.test.js        # 运行时日志仓储与格式化测试
 │   ├── extension-url.test.js      # 扩展页面 URL 判定测试
+│   ├── pinned-tab-guard.test.js   # 常驻收纳箱按窗口唯一性、pendingUrl 与 newtab 隔离测试
 │   ├── api-version.test.js        # 内部 API 版本契约测试
 │   ├── python-client.test.js      # Deno 驱动 Python unittest（纳入 deno task test / verify）
 │   ├── python/                    # Python 客户端 unittest（由 python-client.test.js 发现执行）
@@ -258,13 +259,18 @@ BetterBrowse/
   │   其余标签按"重要度评分"从低到高强制回收，直至降到阈值以下
   │
   ▼ 若硬性保护数量本身已超出目标剩余数
-【放弃】返回明确提示，绝不误关任何受保护标签页
+【能收的就收】收纳全部可安全回收的标签 (tierLevel: 'hardLimit', reachedTarget: false)
+  │   返回 hardProtectedCount / remainingOverThreshold，并弹出可见结果提示告知仍需手动整理的标签数
+  │
+  ▼ 若确实没有任何可回收标签
+【报告】success: false + noStashableTabs: true，返回明确提示，绝不误关任何受保护标签页
 ```
 
 **核心概念：**
 - **硬性保护**（永不降级）：系统/插件自身页面、正在播放媒体（P0）、正在输入表单（P0）、前台激活标签、固定标签（P3）。
 - **软性保护**（随阶梯逐级放宽）：最近访问（P1，窗口逐级缩短）、高频访问（P2，百分比下调 + 最低激活次数上调）。
 - **达标口径**：与阈值监控完全一致（`filterCountableTabs` 可计数标签），收纳后 `可计数数量 < 阈值` 即为达标。
+- **硬性保护超限不等于整体放弃**：只要还有可安全回收的标签就必须全部收掉，并通过通知告知用户剩余数量。若改为"整体放弃"，在表单探测普遍失败（内容脚本尚未注入）等场景下会出现"一个标签都收不掉"，用户看到的就是自动收纳完全不工作。
 - 配置项位于 `DefaultConfig.tieredStash`（`enabled` / `maxTiers` / `tierStepSeconds` / `ultimateFallback` / `targetSafetyMargin`）。
 
 ### 3.3 数据导入与 URL 容错清洗机制
@@ -534,8 +540,17 @@ deno task ai-host-uninstall
    - **五套版本号分工**：Manifest 软件版本、`API_VERSION`、`LOCAL_DATA_SCHEMA_REVISION`、`INDEXED_DB_SCHEMA_REVISION` 与备份/WebDAV 格式修订互不替代；新增 IndexedDB 仓储或索引必须同步 `onupgradeneeded`，详见 `docs/06-versioning.md`。`deno task verify` 已自动检查主要边界，但“这次变更是否真的不兼容”仍需人工判断。
 11. **主页与独立新标签页（Home & NewTab）约束**：
    - **共享与独立边界**：核心控制器与展示由 `src/home/` 统一承载；独立新标签页 `src/newtab/` 仅含极简壳层（通过 `chrome_url_overrides.newtab` 直接接管），**绝不加载 OptionsApp 或侧边栏**；管理中心原 `search-home` 作为轻量宿主适配器挂载共享视图，导航更名为「主页」，路由兼容 `#search` 与 `#home`，且不改变默认 `#stash` 入口；
+   - **搜索唯一入口（主页收敛）**：全部检索（网页/收纳/浏览记录/外部联想）**只由主页 `HomeView` 承载**；时间线**严禁**再内置搜索输入框或本地关键词过滤（原 `stashSearchInput` / `searchItemFilter` / `getSearchQuery` 已移除）。时间线只保留「在主页搜索」跳转按钮，经 `StashTabComponent.onSearchInHome(scope)` → `OptionsApp.switchTab('home')` → `HomeView.focusSearch(scope)` 统一进入；`#home?scope=stash` 与 `#search?scope=...` 为兼容深链。新增检索能力必须加在主页，不得在时间线重建第二套搜索；
    - **打开目标分流**：独立页中点击链接或结果在**当前标签页（current）**打开；管理中心内以**新标签页（new）**打开；收纳组跳转直接访问，**绝不删除已收纳条目**；
    - **守护隔离与计数排除**：`extension-url.js` 中 `isOwnNewTabUrl` 必须与 `isOwnOptionsUrl` 严格分离；`pinned-tab-guard` 绝不能将 `newtab.html` 误认为 options 固定常驻或执行顺序重排；`isExcludedFromTabCounting` 必须剔除 `newtab.html`，防止被窗口关闭或自动阈值误收纳；
    - **外部联想安全与隐私**：Google/Bing 外部联想默认关闭，必须经用户明确主动同意（`externalSuggestAgreed: true`）；请求限定白名单 URL 并使用 `credentials: 'omit'`，配置 3000ms 超时与 100 条/5分钟有界缓存；网络异常安全隔离；**严禁在审计日志中记录搜索词**；
    - **同意状态本地隔离**：`externalSuggestAgreed` 属于敏感设备偏好，**严禁**被全量备份导出或进入 WebDAV 快照，也绝不进入 `chrome.storage.sync` 账号镜像；
    - **可选权限与隐身保护**：浏览历史属于 `optional_permissions`（`history`），仅在用户点击交互时申请；真实权限以 `chrome.permissions.contains` 为准，随时支持撤销；隐身模式下严禁读取普通历史记录；历史推荐明确标注候选范围（近 7 天/近 30 天）与 `visitCount` 访问次数（非时长）。
+12. **自动收纳触发链（阈值 → 倒计时卡片 → 收口）约束**：
+   - **URL 口径唯一**：标签页目标 URL 一律走 `extension-url.js` 的 `getTabTargetUrl(tab)`（`pendingUrl || url`）。阈值计数（`filterCountableTabs`）、卡片广播（`broadcastBannerToTabs` / `sendBannerToTab`）、表单探测（`FormGuardRule.preload`）**三处必须共用**，任何一处单独退回 `tab.url` 都会造成"算得进阈值却拿不到卡片/探不到表单"的口径分裂；
+   - **卡片必须补播且不重复**：URL 晚提交（会话恢复、慢加载）的标签在首播时拿不到卡片，`tabs.onUpdated` 必须为其补播；`bannerTabIds` 保证同一轮倒计时内每个标签只投递一次（重复投递会把页面上的倒计时重置回整轮秒数），补播载荷必须携带**真实剩余秒数**（`getRemainingSeconds()`）；
+   - **到期即收口，不得当取消**：`checkTabCount` 在标签数回落到阈值以下时，只允许取消**仍在进行**的倒计时；已到期（`deadline <= now`）的倒计时必须走 `finalizeCountdown('expired-check')`，否则"倒计时中途关掉几个标签"会把这次收纳彻底丢弃；
+   - **兜底闹钟必须可持续**：`armBackupAlarm` 使用**重复**闹钟（`periodInMinutes`），由 `clearCountdownUI` 统一清除；**严禁**再引入"重挂次数预算"——预算耗尽叠加 SW 休眠带走进程内 `setTimeout` 会导致倒计时永不收口；
+   - **阈值检查入口三处齐备**：`chrome.runtime.onStartup`（浏览器启动）、`onInstalled`（扩展重载/更新）、SW 冷启动链都必须补检一次阈值。只挂 `onStartup` 会让"重载扩展后标签早已超标"一直静默到下一次标签事件；
+   - **空操作不等于已处理**：`commitCooldown` 按结果区分冷却——确实收掉了标签或用户主动确认才走完整冷却，空操作只写短暂 `noopCooldownUntil`（连续空操作按 1、2、4… 分钟翻倍退避，封顶为完整冷却；与 `lastActionTime` 一并写入会话状态，SW 重启不丢），且必须通过 `notifyStashOutcome` 给出可见提示（可见提示不得包含任何页面标题或搜索词）；
+   - **表单探测失败要区分"无接收端"与"超时"**：只有失败文本匹配 `NO_RECEIVER_PATTERN` 时才动态注入 `content-bundle.js` 后重探（镜像 `broadcastBannerToTabs` 的兜底）；超时说明接收端存在，**重复注入会重复注册监听器**。注入后仍探测不通才保持 fail-closed。

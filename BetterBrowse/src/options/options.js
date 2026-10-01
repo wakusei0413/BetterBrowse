@@ -77,7 +77,13 @@ export class OptionsApp {
         }
       }
     });
-    this.components.set('stash', new StashTabComponent());
+    // 时间线不再内置搜索框，统一跳转到主页承载全部检索
+    this.components.set('stash', new StashTabComponent({
+      onSearchInHome: (scope) => {
+        this.switchTab('home');
+        this.components.get('home')?.focusSearch?.(scope || 'stash');
+      }
+    }));
     this.components.set('search', searchHomeComponent);
     this.components.set('home', searchHomeComponent);
     this.bindNavigation();
@@ -115,6 +121,9 @@ export class OptionsApp {
         if (groupId) {
           setTimeout(() => this.components.get('stash')?.locateGroup?.(groupId), 100);
         }
+      } else if ((targetTab === 'home' || targetTab === 'search') && queryPart) {
+        const scope = new URLSearchParams(queryPart).get('scope');
+        if (scope) setTimeout(() => this.components.get('home')?.focusSearch?.(scope), 100);
       }
     };
     window.addEventListener('hashchange', handleHashNavigation);

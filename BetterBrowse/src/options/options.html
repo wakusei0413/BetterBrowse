@@ -59,19 +59,13 @@
             <p class="panel-desc">查看和还原已收纳的网页</p>
           </div>
           <div class="panel-actions">
-            <div class="search-box-wrapper">
-              <svg class="search-box-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <button id="btnStashSearchInHome" class="btn btn-secondary" type="button" title="在主页中搜索已收纳的网页" aria-label="在主页中搜索已收纳的网页">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <circle cx="11" cy="11" r="8"></circle>
                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
               </svg>
-              <input type="text" id="stashSearchInput" class="search-input" placeholder="搜索已收纳的标题或链接..." aria-label="搜索已收纳的标题或链接" />
-              <button id="btnStashSearchClear" class="search-clear-btn hidden" title="清空搜索" type="button" aria-label="清空搜索">
-                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
+              <span>在主页搜索</span>
+            </button>
             <button id="btnStashNowFromOptions" class="btn btn-primary" type="button">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path>
@@ -429,7 +423,7 @@
                 <span class="setting-hint">标签超标时在网页显示倒计时卡片并自动收纳闲置标签（可随时取消）</span>
               </div>
               <label class="switch">
-                <input type="checkbox" id="chkAutoStash" aria-labelledby="infoAutoStash">
+                <input type="checkbox" id="chkAutoStash" checked aria-labelledby="infoAutoStash">
                 <span class="slider"></span>
               </label>
             </div>
@@ -451,7 +445,7 @@
                 <span class="setting-hint">在系统内置页等无法展示网页卡片时发送系统通知</span>
               </div>
               <label class="switch">
-                <input type="checkbox" id="chkAutoNotify" aria-labelledby="infoAutoNotify">
+                <input type="checkbox" id="chkAutoNotify" checked aria-labelledby="infoAutoNotify">
                 <span class="slider"></span>
               </label>
             </div>
@@ -576,7 +570,7 @@
                 <span class="setting-hint">逐级缩短最近访问窗口并提高高频访问门槛，直到标签数量低于阈值</span>
               </div>
               <label class="switch">
-                <input type="checkbox" id="chkTieredStash" aria-labelledby="infoTieredStash">
+                <input type="checkbox" id="chkTieredStash" checked aria-labelledby="infoTieredStash">
                 <span class="slider"></span>
               </label>
             </div>
@@ -620,7 +614,7 @@
                 <span class="setting-hint">软性保护全部放宽后仍超标时，按活跃度收纳剩余可安全处理的标签</span>
               </div>
               <label class="switch">
-                <input type="checkbox" id="chkTierUltimateFallback" aria-labelledby="infoTierUltimateFallback">
+                <input type="checkbox" id="chkTierUltimateFallback" checked aria-labelledby="infoTierUltimateFallback">
                 <span class="slider"></span>
               </label>
             </div>

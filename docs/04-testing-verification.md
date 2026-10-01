@@ -11,8 +11,8 @@
 
 ## 2. 测试清单
 
-- `critical-flows.test.js`：核心收纳/恢复流程、URL 容错导入；
-- `rules-engine.test.js`：P0~P3 规则优先级；
+- `critical-flows.test.js`：核心收纳/恢复流程、URL 容错导入，以及智能收纳在硬性保护超限时"能收的就收"的部分收纳语义；
+- `rules-engine.test.js`：P0~P3 规则优先级，以及表单探测的"无接收端才注入重探、超时不注入、注入后仍不通才 fail-closed"契约；
 - `stash-settings.test.js`：设置读写兼容；
 - `indexed-db-stash.test.js`：IndexedDB CRUD、去重、分页、迁移幂等与并发写库；
 - `webdav-sync.test.js` / `webdav-two-device.test.js`：ETag、412、批次、快照、墓碑、设备退役与双设备传播；
@@ -22,7 +22,7 @@
 - `python-client.test.js`：由 Deno 调用 `python -B -m unittest discover -s tests/python`，把 Python 客户端单元测试纳入 `deno task test`；
 - `tests/python/test_betterbrowse_client.py`：客户端诊断、参数、文件/标准输入、批处理、分页、分块与错误语义（由上一文件驱动，不再作为独立合入门禁）；
 - `action-contract.test.js`：动作映射、AI 文档、内容白名单、人类 UI 对等；
-- 其余测试覆盖鉴权、日志、URL 判定、规则与阈值契约。
+- 其余测试覆盖鉴权、日志、URL 判定、规则与阈值契约；`threshold-monitor.test.js` 单独覆盖自动收纳触发链：待提交标签的卡片投递与 URL 晚提交补播（不重复投递）、到期倒计时不得被当取消丢弃、重复兜底闹钟持续存在至收口、空操作只进入短暂退避，以及未完全达标时的可见结果提示。
 
 ## 3. 常用验证命令
 

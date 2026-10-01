@@ -336,15 +336,16 @@ class PopupController {
     try {
       const res = await MessageBus.sendToBackground(ActionTypes.EXECUTE_STASH, { forceAll: true });
       if (res.success && res.data) {
-        const { stashedCount } = res.data;
+        const { stashedCount, note } = res.data;
         if (stashedCount > 0) {
           this.showStatus(`已收纳 ${stashedCount} 个标签页至时间线`, 'success');
         } else {
-          this.showStatus('当前窗口没有可收纳的网页', 'info');
+          // 优先展示服务层给出的具体原因（受保护标签过多、均为重复项等），而非笼统的"没有可收纳"
+          this.showStatus(note || '当前窗口没有可收纳的网页', 'info');
         }
         await this.loadTabCountInfo();
       } else {
-        this.showStatus(res.error || '收纳失败', 'error');
+        this.showStatus(res.error || res.data?.error || '收纳失败', 'error');
       }
     } catch (err) {
       this.showStatus('收纳请求异常', 'error');

@@ -10,6 +10,8 @@
 - 顶层 bundle 承载倒计时、日志和完整链接能力；iframe bundle 只承载表单探测、模式同步与点击拦截。倒计时只投递顶层 `frameId: 0`。
 - 后台读取跳转模式时使用 `sender.url`，不能用 `sender.tab.url`，否则跨域 iframe 会继承顶层规则。
 - 表单保护必须聚合标签页所有 HTTP(S) frame：任一 frame 确认有输入即保留；顶层探测失败才 fail-closed；子框架无接收端或超时跳过，避免广告 iframe 把闲置标签全部保下来。
+- 顶层探测失败时须区分失败原因：仅当错误为"无接收端"（`NO_RECEIVER_PATTERN`）才动态注入 `content-bundle.js` 后重探一次（刚打开、会话恢复、扩展刚重载的标签都没有内容脚本，不注入就会成批 fail-closed，进而让整次自动收纳收不掉任何标签）；**超时不注入**，否则会对已有监听器的页面重复注册 `onMessage`。注入后仍探测不通才保持 fail-closed。
+- 卡片广播与表单探测、阈值计数必须共用 `getTabTargetUrl`（`pendingUrl || url`）：只认 `tab.url` 会让未提交导航的标签算得进阈值却拿不到卡片。URL 晚提交时由 `tabs.onUpdated` 补播，同一轮倒计时内每个标签只投递一次。
 - 内容脚本禁止直读 `chrome.storage` / IndexedDB；通过后台消息取最小字段，`GET_PAGE_LINK_CONTEXT` 只返回 `{ effectiveMode }`。
 
 ## 修改后的同步清单

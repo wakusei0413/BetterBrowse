@@ -16,7 +16,7 @@ import { PinnedTabGuard } from './pinned-tab-guard.js';
 import { ContextMenuManager } from './context-menu-manager.js';
 import { SyncScheduler } from './sync-scheduler.js';
 import { AccountConfigSync } from '../core/sync/account-config-sync.js';
-import { isOwnOptionsUrl } from '../core/extension-url.js';
+import { isOwnOptionsTab } from '../core/extension-url.js';
 import { createActionHandlers } from './action-handlers.js';
 import { AIBridgeManager } from './ai-bridge.js';
 import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
@@ -52,7 +52,7 @@ const thresholdMonitor = new ThresholdMonitor({
   onOpenOptions: async () => {
     const targetUrl = chrome.runtime.getURL('src/options/options.html#stash-settings');
     const tabs = await chrome.tabs.query({ currentWindow: true });
-    const existingOptionsTab = tabs.find((t) => isOwnOptionsUrl(t.url));
+    const existingOptionsTab = tabs.find((t) => isOwnOptionsTab(t));
     if (existingOptionsTab) {
       await chrome.tabs.update(existingOptionsTab.id, { url: targetUrl, active: true });
       MessageBus.sendToTab(existingOptionsTab.id, 'SWITCH_OPTIONS_TAB', { tab: 'stash-settings' }, 800).catch(() => {});
@@ -70,6 +70,9 @@ chrome.runtime.onInstalled.addListener((details) => {
     await AccountConfigSync.init();
     const config = await StorageAdapter.getUserConfig();
     if (config.stashSettings?.pinnedTabGuard !== false) await StashService.ensureAllAllWindowsPinnedTab();
+    // 重载/更新扩展属于本事件：此时标签数可能早已超过阈值，不补检就要等到下一次标签事件
+    // 才会出现倒计时，用户会认为"自动收纳完全没有触发"
+    await thresholdMonitor.checkTabCount().catch(() => {});
   })().catch((err) => {
     console.warn('[ServiceWorker] 安装/更新初始化异常:', err?.message || err);
   });
@@ -104,6 +107,12 @@ MigrationManager.runMigrations()
   .then(() => AccountConfigSync.init())
   .catch((err) => {
     console.warn('[ServiceWorker] 浏览器账号偏好同步初始化异常:', err);
+  })
+  // SW 冷启动（含扩展重载、被任意事件唤醒）也补检一次阈值：否则标签数早已超阈值时，
+  // 一切静默直到下一次标签增删或窗口聚焦才可能出现倒计时
+  .then(() => thresholdMonitor.checkTabCount())
+  .catch((err) => {
+    console.warn('[ServiceWorker] 启动阈值检查异常:', err?.message || err);
   });
 
 /**

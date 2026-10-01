@@ -372,3 +372,108 @@ test('LinkInterceptor: 每次手势最多允许开一个标签', () => {
     globalThis.window = originalWindow;
   }
 });
+
+test('智能收纳：硬性保护超限时仍收纳其余可安全回收的标签', async () => {
+  // 20 个标签：16 个受硬性保护（固定/播放媒体/表单输入），4 个可回收。
+  // 目标剩余数为 阈值-1 = 14，硬性保护 16 已超出 → 此前实现会整体放弃，一个都不收，
+  // 在用户看来就是"自动收纳完全不工作"
+  const protectedTabs = Array.from({ length: 16 }, (_, i) => ({
+    id: 200 + i,
+    windowId: 1,
+    url: `https://protected${i}.example`,
+    pinned: true
+  }));
+  const stashableTabs = Array.from({ length: 4 }, (_, i) => ({
+    id: 300 + i,
+    windowId: 1,
+    url: `https://idle${i}.example`,
+    active: false
+  }));
+  const removedIds = [];
+
+  installChrome({
+    tabs: {
+      query: async () => [...protectedTabs, ...stashableTabs],
+      remove: async (ids) => { removedIds.push(...(Array.isArray(ids) ? ids : [ids])); },
+      update: async () => ({}),
+      move: async () => ({})
+    }
+  });
+
+  const origCreateGroup = LocalStashRepository.createGroup;
+  const origEnsure = StashService.ensurePinnedStashTab;
+
+  try {
+    LocalStashRepository.createGroup = async (items) => ({ success: true, group: { id: 'g1', tabs: items } });
+    StashService.ensurePinnedStashTab = async () => ({});
+
+    const service = new StashService({
+      evaluateTabs: async () => ({
+        tabsToKeep: protectedTabs.map((tab) => ({ tab })),
+        tabsToStash: stashableTabs.map((tab) => ({ tab })),
+        total: 20
+      })
+    });
+
+    const result = await service.executeSmartStash({}, 1);
+
+    // 能收的就收：4 个可回收标签全部被收纳，并如实报告未达标
+    assert.equal(result.success, true);
+    assert.equal(result.stashedCount, 4);
+    assert.equal(result.reachedTarget, false);
+    assert.equal(result.tierLevel, 'hardLimit');
+    assert.equal(result.hardProtectedCount, 16);
+    assert.equal(result.remainingOverThreshold, 2);
+    assert.equal(typeof result.note, 'string');
+
+    assert.deepEqual(removedIds.sort((a, b) => a - b), stashableTabs.map((tab) => tab.id));
+    // 红线不变：受硬性保护的标签页一个都不能被关闭
+    assert.equal(protectedTabs.some((tab) => removedIds.includes(tab.id)), false);
+  } finally {
+    LocalStashRepository.createGroup = origCreateGroup;
+    StashService.ensurePinnedStashTab = origEnsure;
+  }
+});
+
+test('智能收纳：确实没有可回收标签时明确报告需手动整理', async () => {
+  const protectedTabs = Array.from({ length: 16 }, (_, i) => ({
+    id: 400 + i,
+    windowId: 1,
+    url: `https://protected${i}.example`,
+    pinned: true
+  }));
+  const removedIds = [];
+
+  installChrome({
+    tabs: {
+      query: async () => protectedTabs,
+      remove: async (ids) => { removedIds.push(...(Array.isArray(ids) ? ids : [ids])); },
+      update: async () => ({}),
+      move: async () => ({})
+    }
+  });
+
+  const origEnsure = StashService.ensurePinnedStashTab;
+
+  try {
+    StashService.ensurePinnedStashTab = async () => ({});
+    const service = new StashService({
+      evaluateTabs: async () => ({
+        tabsToKeep: protectedTabs.map((tab) => ({ tab })),
+        tabsToStash: [],
+        total: 16
+      })
+    });
+
+    const result = await service.executeSmartStash({}, 1);
+
+    assert.equal(result.success, false);
+    assert.equal(result.stashedCount, 0);
+    assert.equal(result.noStashableTabs, true);
+    assert.equal(result.tierLevel, 'hardLimit');
+    assert.equal(typeof result.error, 'string');
+    assert.equal(removedIds.length, 0);
+  } finally {
+    StashService.ensurePinnedStashTab = origEnsure;
+  }
+});

@@ -378,7 +378,7 @@ const identifierBindingFiles = [
   'src/core/stash/stash-service.js',
   'src/core/rules/rule-engine.js'
 ];
-const identifierUseRegex = /\b(isOwnOptionsUrl|isOwnNewTabUrl|isOwnExtensionPageUrl|isExcludedFromTabCounting|isNewTabUrl|filterCountableTabs)\b/g;
+const identifierUseRegex = /\b(isOwnOptionsUrl|isOwnOptionsTab|isOwnNewTabUrl|isOwnExtensionPageUrl|isExcludedFromTabCounting|isNewTabUrl|filterCountableTabs)\b/g;
 for (const file of identifierBindingFiles) {
   const fullPath = resolveProject(file);
   try {

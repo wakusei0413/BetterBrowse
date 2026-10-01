@@ -51,6 +51,14 @@ export class SearchHomeComponent {
   }
 
   /**
+   * 聚焦主页搜索框并按范围检索（时间线等入口的统一跳转目标）
+   * @param {string} [scope='all']
+   */
+  focusSearch(scope = 'all') {
+    this.view?.focusSearch?.(scope);
+  }
+
+  /**
    * 离开主页视图（取消定时器、收起下拉框）
    */
   deactivate() {

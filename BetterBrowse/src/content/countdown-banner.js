@@ -558,8 +558,10 @@ export class CountdownBanner {
         }
       });
 
-      if (response && response.success && response.data) {
-        const { stashedCount, keptCount } = response.data;
+      // 统一消息响应为 { success, data } 双层结构：真正业务结果在 data.success
+      const data = response && response.data ? response.data : null;
+      if (data && data.success) {
+        const { stashedCount, keptCount } = data;
         if (cardBody) {
           if (stashedCount > 0) {
             cardBody.innerHTML = `已按规则收纳 <strong>${stashedCount}</strong> 个闲置标签（已保留 <strong>${keptCount || 0}</strong> 个活跃或保护标签）`;
@@ -567,9 +569,14 @@ export class CountdownBanner {
             cardBody.innerHTML = '当前所有标签均处于活跃或保护状态，未收纳标签';
           }
         }
-      } else if (response && !response.success) {
+      } else if (data && data.success === false) {
+        // 明确区分"未执行"与"执行成功但无闲置标签"，避免误报为全部受保护（动态文本用 textContent 防注入）
         if (cardBody) {
-          cardBody.innerHTML = '当前无可收纳的闲置标签页';
+          cardBody.textContent = data.note || data.error || '本次收纳未执行';
+        }
+      } else if (response && response.success === false) {
+        if (cardBody) {
+          cardBody.textContent = `收纳未执行：${response.error || '后台服务连接失败'}`;
         }
       } else {
         if (cardBody) {

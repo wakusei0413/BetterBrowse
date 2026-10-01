@@ -1,6 +1,17 @@
-# AI 桥接与 WebDAV 子系统运维手册
+# 自动收纳 / AI 桥接 / WebDAV 子系统运维手册
 
-这两套能力都有独立进程、协议和持久化边界。修改前先看本手册、`docs/02-webdav-sync.md`、`docs/03-ai-skill-bridge.md`，不要把它们当成普通 UI 开关。
+这些能力都有独立进程、协议或时序边界。修改前先看本手册、`docs/02-webdav-sync.md`、`docs/03-ai-skill-bridge.md`，不要把它们当成普通 UI 开关。
+
+## 自动收纳不触发排障
+
+自动收纳是一条多环节链路（阈值计数 → 倒计时卡片 → 收口 → 规则过滤 → 关闭标签），任一环断裂表现都是"没反应"。按下列顺序定位：
+
+1. **确认开关与阈值**：`config.autoStashOnThreshold` 必须不是 `false`（`autoStashOnThreshold !== false` 是唯一总闸）；阈值检查 `thresholdMonitor.checkTabCount()` 与收纳判定 `executeSmartStash` 使用同一 `filterCountableTabs` 口径，系统页/新标签页/插件自身页面不计入。
+2. **"完全没反应"**：确认阈值检查的三个入口都在——`chrome.runtime.onStartup`、`onInstalled`（扩展重载走这里）、SW 冷启动链。只挂 `onStartup` 时，重载扩展后超标窗口要等到下一次标签事件才会有反应。
+3. **"只有通知没有卡片"**：卡片只投递普通 http/https 顶层框架，且计数与广播必须共用 `getTabTargetUrl(tab)`（`pendingUrl || url`）。若只有系统通知，检查该批标签是否 `tab.url` 为空（会话恢复/慢加载）以及 `tabs.onUpdated` 的补播是否生效。
+4. **"倒计时走完却不收纳"**：看 `monitor.deadline` 与兜底闹钟。`armBackupAlarm` 必须是**重复**闹钟（`periodInMinutes`）；若倒计时已到期，`checkTabCount` 必须走 `finalizeCountdown('expired-check')` 而不是 `clearCountdownUI()`（后者只取消、不收纳）。
+5. **"有提示但一个标签都没收"**：多数是 `FormGuardRule` 顶层探测失败触发 fail-closed。确认失败文本是否为"无接收端"（应动态注入 `content-bundle.js` 后重探一次；超时**不应**注入）。若硬性保护数量确实超出目标剩余数，行为是"能收的就收 + 可见提示 + `reachedTarget: false`"，而不是整体放弃。
+6. **"刚收完就再也不想动"**：检查 `commitCooldown` 的分类。空操作只写 `noopCooldownUntil`（逐次翻倍的短退避，封顶为完整冷却，随会话状态持久化），只有确实收掉标签或用户主动确认才写 `lastActionTime`（完整冷却）。
 
 ## AI 桥接排障
 
@@ -26,6 +37,7 @@
 - 改写锁：`DeviceEventLog.append` 自持锁，不能在已持锁临界区调用；禁止嵌套 `withWriteLock`。
 - 改账号镜像：`chrome.storage.sync` 只允许 `bb_account_config`，缺失时跳过，不回退 local。
 - 改 Service Worker 超时：必须考虑闹钟或看门狗兜底，不能只加 `setTimeout`。
+- 改阈值/倒计时链路：计数、卡片广播与表单探测必须共用 `getTabTargetUrl`；兜底闹钟保持"重复闹钟 + 收口时统一清除"语义，不要再引入重挂次数预算；`commitCooldown` 必须继续区分"确实收掉了标签"与"空操作"。
 
 ## 核实附录（2026-09-03）
 

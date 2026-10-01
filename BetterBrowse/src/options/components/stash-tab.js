@@ -29,17 +29,18 @@ import { TimeTreeBuilder, SingleLineTimelineScrollbar } from '../ui/time-tree.js
 
 
 export class StashTabComponent {
-  constructor() {
+  /**
+   * @param {object} [options]
+   * @param {(scope?: string) => void} [options.onSearchInHome] 跳转主页搜索的统一入口
+   */
+  constructor(options = {}) {
     this.groups = [];
     this.filteredGroups = [];
     this.groupPages = new Map();
-    this.searchItemFilter = null;
     this.expandedGroupIds = new Set();
     this.pinnedGroupIds = new Set();
     this.recentlyDeletedGroups = new Map();
-    this.searchDebounceTimer = null;
     this.activeTimeRangeFilter = null;
-    this.filterToken = 0;
     this.loadGeneration = 0;
     this.mountedRange = null;
     this.measuredCardHeights = new Map();
@@ -49,13 +50,13 @@ export class StashTabComponent {
     // 站点图标解析结果缓存：URL → data URL / null（失败亦缓存，避免反复抓取）
     this.faviconCache = new Map();
     this.faviconInFlight = new Set();
+    this.onSearchInHome = typeof options.onSearchInHome === 'function' ? options.onSearchInHome : null;
 
     this.container = document.getElementById('stashGroupsContainer');
     this.mainColumn = document.querySelector('.stash-main-column');
     this.emptyState = document.getElementById('stashEmptyState');
     this.badge = document.getElementById('stashCountBadge');
-    this.searchInput = document.getElementById('stashSearchInput');
-    this.btnSearchClear = document.getElementById('btnStashSearchClear');
+    this.btnSearchInHome = document.getElementById('btnStashSearchInHome');
     this.btnStashNow = document.getElementById('btnStashNowFromOptions');
     this.sentinel = document.getElementById('stashScrollSentinel');
     this.loadingIndicator = document.getElementById('stashLoadingIndicator');
@@ -184,29 +185,8 @@ export class StashTabComponent {
   }
 
   bindEvents() {
-    // 1. 搜索输入 200ms 防抖
-    this.searchInput?.addEventListener('input', () => {
-      clearTimeout(this.searchDebounceTimer);
-      if (this.btnSearchClear) {
-        if (this.searchInput.value.trim().length > 0) {
-          this.btnSearchClear.classList.remove('hidden');
-        } else {
-          this.btnSearchClear.classList.add('hidden');
-        }
-      }
-      this.searchDebounceTimer = setTimeout(() => {
-        this.filterAndRender();
-        this.mainColumn?.scrollTo({ top: 0, behavior: 'instant' });
-      }, 200);
-    });
-
-    // 清空搜索
-    this.btnSearchClear?.addEventListener('click', () => {
-      this.searchInput.value = '';
-      this.btnSearchClear.classList.add('hidden');
-      this.filterAndRender();
-      this.searchInput.focus();
-    });
+    // 1. 统一搜索入口：时间线不再内置搜索框，交由主页承载全部检索
+    this.btnSearchInHome?.addEventListener('click', () => this.openHomeSearch());
 
     // 立即收纳当前窗口全部标签页
     this.btnStashNow?.addEventListener('click', async () => {
@@ -516,47 +496,15 @@ export class StashTabComponent {
     if (this.badge) this.badge.textContent = totalTabs;
   }
 
+  /** 按当前时间分块筛选并渲染主列表（搜索已统一由主页承载）。 */
   async filterAndRender(options = {}) {
-    const token = ++this.filterToken;
-    const query = this.searchInput?.value.toLowerCase().trim() || '';
     const inTimeRange = (groupId) =>
       !this.activeTimeRangeFilter || this.activeTimeRangeFilter.groupIds.has(groupId);
 
     this.filteredGroups = this.groups.filter((grp) => inTimeRange(grp.id));
-    this.searchItemFilter = null;
-
-    if (query) {
-      const res = await MessageBus.sendToBackground(ActionTypes.SEARCH_STASH, {
-        keyword: query,
-        limit: 100,
-        paginated: true
-      });
-      if (token !== this.filterToken) return;
-      const rawHits = Array.isArray(res)
-        ? res
-        : (Array.isArray(res?.items) ? res.items : (Array.isArray(res?.data) ? res.data : (Array.isArray(res?.data?.items) ? res.data.items : [])));
-      const hits = (res?.success !== false) ? rawHits : [];
-      const hitsByGroup = new Map();
-      for (const hit of hits) {
-        if (!hit?.groupId || !inTimeRange(hit.groupId)) continue;
-        if (!hitsByGroup.has(hit.groupId)) hitsByGroup.set(hit.groupId, []);
-        hitsByGroup.get(hit.groupId).push({
-          id: hit.itemId,
-          url: hit.url,
-          title: hit.title,
-          favIconUrl: hit.favIconUrl || ''
-        });
-      }
-      this.searchItemFilter = hitsByGroup;
-      this.filteredGroups = this.filteredGroups.filter((grp) => {
-        const titleMatch = Boolean(grp.title && grp.title.toLowerCase().includes(query));
-        return titleMatch || hitsByGroup.has(grp.id);
-      });
-    }
-
     this.mountedRange = null;
     if (this.filteredGroups.length === 0) {
-      this.renderEmptyState(Boolean(query));
+      this.renderEmptyState();
       return;
     }
     if (this.emptyState) this.emptyState.style.display = 'none';
@@ -569,18 +517,13 @@ export class StashTabComponent {
     this.resolveVisibleFavicons();
   }
 
-  /**
-   * 区分"真为空"与"搜索无结果"
-   * @param {boolean} hasSearchQuery
-   */
-  renderEmptyState(hasSearchQuery) {
+  /** 渲染空状态（时间线无数据或当前时段无内容）。 */
+  renderEmptyState() {
     const titleEl = this.emptyState?.querySelector('.empty-title');
     const descEl = this.emptyState?.querySelector('.empty-desc');
-    if (titleEl) titleEl.textContent = hasSearchQuery ? '未找到匹配的标签页' : '时间线目前是空的';
+    if (titleEl) titleEl.textContent = '时间线目前是空的';
     if (descEl) {
-      descEl.textContent = hasSearchQuery
-        ? '请尝试更换搜索关键词。'
-        : '点右上角「收纳本窗口全部标签」，或标签数量超过阈值时，闲置标签会自动出现在这里。';
+      descEl.textContent = '点右上角「收纳本窗口全部标签」，或标签数量超过阈值时，闲置标签会自动出现在这里。';
     }
     if (!this.container || !this.emptyState) return;
     this.container.replaceChildren(this.emptyState);
@@ -590,8 +533,14 @@ export class StashTabComponent {
     this.bottomSpacer = null;
   }
 
-  getSearchQuery() {
-    return this.searchInput?.value.toLowerCase().trim() || '';
+  /** 跳转主页搜索（管理中心内由宿主切换视图，独立页面则打开管理中心主页）。 */
+  openHomeSearch(scope = 'stash') {
+    if (this.onSearchInHome) {
+      this.onSearchInHome(scope);
+      return;
+    }
+    const hash = scope && scope !== 'all' ? `#home?scope=${encodeURIComponent(scope)}` : '#home';
+    window.location.hash = hash;
   }
 
   /**
@@ -603,9 +552,8 @@ export class StashTabComponent {
     if (!this.groups || this.groups.length === 0) {
       await this.loadData();
     }
-    // 如果当前搜索词过滤导致目标组未显示，重置筛选
-    if (this.searchInput?.value) {
-      this.searchInput.value = '';
+    // 若目标组不在当前时间分块内，重置时段筛选以完整展示
+    if (this.activeTimeRangeFilter && !this.activeTimeRangeFilter.groupIds.has(groupId)) {
       this.activeTimeRangeFilter = null;
       await this.filterAndRender();
     }
@@ -652,10 +600,6 @@ export class StashTabComponent {
    * @returns {number}
    */
   getVisibleItemCount(group) {
-    const query = this.getSearchQuery();
-    if (query) {
-      return this.searchItemFilter?.get(group.id)?.length || 0;
-    }
     const total = Number(group.itemCount) || 0;
     if (this.expandedGroupIds.has(group.id) || total <= TABS_INITIAL_LIMIT) return total;
     return TABS_INITIAL_LIMIT;
@@ -794,7 +738,6 @@ export class StashTabComponent {
     for (let i = range.start; i < range.end; i++) {
       const group = this.filteredGroups[i];
       if (!group) continue;
-      if (this.getSearchQuery() && this.searchItemFilter?.has(group.id)) continue;
       const visibleCount = this.getVisibleItemCount(group);
       const itemWindow = this.itemWindowByGroup.get(group.id);
       const start = itemWindow?.start || 0;
@@ -905,10 +848,7 @@ export class StashTabComponent {
     const total = this.getVisibleItemCount(group);
     const compact = this.isCompactDensity();
     const rowHeight = getDensityMetrics(compact).rowHeight;
-    const query = this.getSearchQuery();
-    const useVirtual =
-      (this.expandedGroupIds.has(group.id) || (query && (this.searchItemFilter?.get(group.id)?.length || 0) > TABS_INITIAL_LIMIT)) &&
-      total > TABS_INITIAL_LIMIT;
+    const useVirtual = this.expandedGroupIds.has(group.id) && total > TABS_INITIAL_LIMIT;
     if (!useVirtual) {
       const window = { start: 0, end: total, padTop: 0, padBottom: 0 };
       this.itemWindowByGroup.set(group.id, window);
@@ -930,12 +870,10 @@ export class StashTabComponent {
   }
 
   buildItemRowsHtml(group, window) {
-    const query = this.getSearchQuery();
-    const searchItems = query ? this.searchItemFilter?.get(group.id) : null;
     const cache = this.getGroupPageCache(group.id);
     const rows = [];
     for (let i = window.start; i < window.end; i++) {
-      const tab = searchItems ? searchItems[i] : cache.slots.get(i);
+      const tab = cache.slots.get(i);
       if (tab) rows.push(this.renderItemRowHtml(group.id, tab));
     }
     return rows.join('');
@@ -990,8 +928,7 @@ export class StashTabComponent {
     card.classList.toggle('is-expanded', this.expandedGroupIds.has(group.id));
 
     const tabCount = Number(group.itemCount) || 0;
-    const searching = Boolean(this.getSearchQuery());
-    const hasMoreTabs = !searching && tabCount > TABS_INITIAL_LIMIT && !this.expandedGroupIds.has(group.id);
+    const hasMoreTabs = tabCount > TABS_INITIAL_LIMIT && !this.expandedGroupIds.has(group.id);
     let moreBtn = card.querySelector('.btn-show-more-tabs');
     if (hasMoreTabs) {
       if (!moreBtn) {
@@ -1084,8 +1021,7 @@ export class StashTabComponent {
     const safeGroupId = this.escapeHTML(group.id);
     const itemWindow = this.resolveItemWindow(group, null);
     const itemsHtml = this.buildItemRowsHtml(group, itemWindow);
-    const searching = Boolean(this.getSearchQuery());
-    const hasMoreTabs = !searching && tabCount > TABS_INITIAL_LIMIT && !this.expandedGroupIds.has(group.id);
+    const hasMoreTabs = tabCount > TABS_INITIAL_LIMIT && !this.expandedGroupIds.has(group.id);
 
     card.innerHTML = `
       <div class="stash-group-header">

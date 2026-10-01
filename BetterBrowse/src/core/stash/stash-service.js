@@ -7,7 +7,7 @@
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { RuleEngine } from '../rules/rule-engine.js';
 import { LocalStashRepository } from './local-stash-repo.js';
-import { filterCountableTabs, isExcludedFromTabCounting, isOwnOptionsUrl } from '../extension-url.js';
+import { filterCountableTabs, isExcludedFromTabCounting, isOwnOptionsTab } from '../extension-url.js';
 
 export class StashService {
   /**
@@ -60,50 +60,127 @@ export class StashService {
   }
 
   /**
-   * 确保指定窗口（或当前窗口）第 1 位常驻固定小标签页（Pinned Tab，无字图标常驻模式）死死占位存在
+   * 按窗口串行化常驻收纳箱的创建与去重，避免并发查询都看见“没有”而各建一份。
+   * @type {Map<number, Promise<unknown>>}
+   */
+  static _pinnedStashLocks = new Map();
+
+  /**
+   * @template T
+   * @param {number} windowId
+   * @param {() => Promise<T>} task
+   * @returns {Promise<T>}
+   */
+  static async _withPinnedStashLock(windowId, task) {
+    const previous = this._pinnedStashLocks.get(windowId) || Promise.resolve();
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const current = previous.catch(() => {}).then(() => gate);
+    this._pinnedStashLocks.set(windowId, current);
+    try {
+      await previous.catch(() => {});
+      return await task();
+    } finally {
+      release();
+      if (this._pinnedStashLocks.get(windowId) === current) {
+        this._pinnedStashLocks.delete(windowId);
+      }
+    }
+  }
+
+  /**
+   * 在同一窗口的多个 options 标签中选出唯一保留项。
+   * 优先级：已钉在 index 0 > 已钉住 > index 更小 > id 更小。不改 hash。
+   * @param {chrome.tabs.Tab[]} optionsTabs
+   * @returns {chrome.tabs.Tab|null}
+   */
+  static _pickPinnedStashKeeper(optionsTabs) {
+    if (!Array.isArray(optionsTabs) || optionsTabs.length === 0) return null;
+    return optionsTabs.slice().sort((left, right) => {
+      const rank = (tab) => {
+        if (tab.pinned && tab.index === 0) return 0;
+        if (tab.pinned) return 1;
+        return 2;
+      };
+      const rankDelta = rank(left) - rank(right);
+      if (rankDelta !== 0) return rankDelta;
+      const leftIndex = Number.isInteger(left.index) ? left.index : Number.MAX_SAFE_INTEGER;
+      const rightIndex = Number.isInteger(right.index) ? right.index : Number.MAX_SAFE_INTEGER;
+      if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+      return (Number(left.id) || 0) - (Number(right.id) || 0);
+    })[0];
+  }
+
+  /**
+   * 确保指定窗口（或当前窗口）恰好有一个常驻固定收纳箱（Pinned Tab，无字图标常驻模式）。
+   * 多余的 options.html 会被关闭；newtab.html 绝不纳入去重。
    * @param {boolean} [activate=true]
    * @param {number} [targetWindowId]
    */
   static async ensurePinnedStashTab(activate = true, targetWindowId = null) {
     try {
-      const stashUrl = chrome.runtime.getURL('src/options/options.html');
-      const queryOptions = targetWindowId ? { windowId: targetWindowId } : { currentWindow: true };
-      const tabs = await chrome.tabs.query(queryOptions);
-      if (!tabs || tabs.length === 0) return null;
-
-      const windowId = targetWindowId || tabs[0].windowId;
-      let existingStashTab = tabs.find((t) => isOwnOptionsUrl(t.url));
-
-      if (existingStashTab) {
-        // 若已存在，确保其被死死固定在 index 0
-        if (!existingStashTab.pinned || existingStashTab.index !== 0) {
-          if (!existingStashTab.pinned) {
-            await chrome.tabs.update(existingStashTab.id, { pinned: true });
-          }
-          if (existingStashTab.index !== 0) {
-            await chrome.tabs.move(existingStashTab.id, { index: 0 });
-          }
-        }
-        if (activate && !existingStashTab.active) {
-          await chrome.tabs.update(existingStashTab.id, { active: true });
-        }
-        return existingStashTab;
+      let windowId = typeof targetWindowId === 'number' ? targetWindowId : null;
+      if (windowId === null) {
+        const currentTabs = await chrome.tabs.query({ currentWindow: true });
+        if (!currentTabs || currentTabs.length === 0) return null;
+        windowId = currentTabs[0].windowId;
+        if (typeof windowId !== 'number') return null;
       }
+      return await this._withPinnedStashLock(windowId, () => this._ensurePinnedStashTabInWindow(activate, windowId));
+    } catch (err) {
+      console.warn('[StashService] 确保固定常驻标签页异常:', err);
+      return null;
+    }
+  }
 
-      // 若不存在，在第 1 个位置（index: 0）创建一个固定标签页（Chrome 自动折叠为仅图标）
-      const newPinnedTab = await chrome.tabs.create({
-        windowId: windowId,
+  /**
+   * 在已持有窗口锁的情况下，创建或合并该窗口的唯一常驻收纳箱。
+   * @param {boolean} activate
+   * @param {number} windowId
+   * @returns {Promise<chrome.tabs.Tab|null>}
+   */
+  static async _ensurePinnedStashTabInWindow(activate, windowId) {
+    const stashUrl = chrome.runtime.getURL('src/options/options.html');
+    let tabs = await chrome.tabs.query({ windowId });
+    if (!tabs || tabs.length === 0) return null;
+
+    let optionsTabs = tabs.filter((tab) => isOwnOptionsTab(tab));
+    if (optionsTabs.length === 0) {
+      await chrome.tabs.create({
+        windowId,
         url: `${stashUrl}#stash`,
         pinned: true,
         index: 0,
         active: activate
       });
-
-      return newPinnedTab;
-    } catch (err) {
-      console.warn('[StashService] 确保固定常驻标签页异常:', err);
-      return null;
+      tabs = await chrome.tabs.query({ windowId });
+      if (!tabs || tabs.length === 0) return null;
+      optionsTabs = tabs.filter((tab) => isOwnOptionsTab(tab));
     }
+    if (optionsTabs.length === 0) return null;
+
+    const keeper = this._pickPinnedStashKeeper(optionsTabs);
+    if (!keeper || typeof keeper.id !== 'number') return null;
+    const extras = optionsTabs.filter((tab) => tab.id !== keeper.id);
+    const closedActiveExtra = extras.some((tab) => tab.active);
+
+    if (!keeper.pinned) {
+      await chrome.tabs.update(keeper.id, { pinned: true });
+    }
+    if (keeper.index !== 0) {
+      await chrome.tabs.move(keeper.id, { index: 0 });
+    }
+    if (extras.length > 0) {
+      await this.closeTabsSafely(extras.map((tab) => tab.id).filter((tabId) => typeof tabId === 'number'));
+    }
+    if ((activate || closedActiveExtra) && !keeper.active) {
+      await chrome.tabs.update(keeper.id, { active: true });
+    }
+
+    const refreshed = await chrome.tabs.query({ windowId });
+    return refreshed.find((tab) => tab.id === keeper.id) || keeper;
   }
 
   /**
@@ -266,6 +343,8 @@ export class StashService {
     let evaluation = null;
     let finalTierLevel = 0;
     let reachedTarget = false;
+    // 硬性保护标签数超出目标剩余数时的说明信息（此时仍会收纳其余可安全回收的标签）
+    let hardLimitInfo = null;
 
     // === 阶梯循环：逐级放宽软性保护，直至收纳后降到阈值以下 ===
     for (let level = 0; level <= maxTiers; level++) {
@@ -300,48 +379,66 @@ export class StashService {
 
       const hardCount = hardEvaluation.tabsToKeep.filter(({ tab }) => !isExcludedFromTabCounting(tab)).length;
 
-      // 若硬性保护标签数量本身就超出目标剩余数，则无论如何都无法降到阈值以下
       if (hardCount > targetRemaining) {
-        await StashService.ensurePinnedStashTab(false, windowId);
-        return {
-          success: false,
-          stashedCount: 0,
-          keptCount: hardEvaluation.tabsToKeep.length,
-          tierLevel: 'hardLimit',
-          reachedTarget: false,
-          error: `当前受硬性保护的标签页数量（${hardCount}）已超出目标剩余数量（${targetRemaining}），无法自动降至阈值以下，请手动整理`,
-          note: '硬性保护包括：正在播放媒体、正在输入表单、前台激活、固定标签页及系统页面'
+        // 硬性保护标签数量本身就超出目标剩余数：无法靠本次收纳降到阈值以下。
+        // 但**仍要把其余所有可安全回收的标签全部收掉**——此前的"整体放弃"会让自动收纳
+        // 在表单探测普遍失败等场景下一个标签都收不掉，用户看到的就是"自动收纳完全不工作"。
+        // 红线不变：受硬性保护的标签页一个都不会被关闭。
+        evaluation = {
+          tabsToKeep: hardEvaluation.tabsToKeep,
+          tabsToStash: hardEvaluation.tabsToStash,
+          total: allTabs.length
         };
+        finalTierLevel = 'hardLimit';
+        reachedTarget = false;
+        hardLimitInfo = {
+          hardProtectedCount: hardCount,
+          remainingOverThreshold: Math.max(0, hardCount - targetRemaining)
+        };
+      } else {
+        // 从未被硬性保护的标签页中，按重要度从低到高依次强制回收，直到达标
+        const candidates = hardEvaluation.tabsToStash
+          .map(({ tab }) => ({ tab, score: this.computeImportanceScore(tab, activityStats) }))
+          .sort((a, b) => a.score - b.score);
+
+        const needCount = currentCount - targetRemaining; // 需要回收的可计数标签页数量
+        let collectedCount = 0;
+        const forcedStash = [];
+        for (const item of candidates) {
+          if (collectedCount >= needCount) break;
+          if (isExcludedFromTabCounting(item.tab)) continue; // 跳过不计数的无意义页面
+          collectedCount++;
+          forcedStash.push(item.tab);
+        }
+
+        evaluation = {
+          tabsToKeep: hardEvaluation.tabsToKeep,
+          tabsToStash: forcedStash.map((tab) => ({ tab })),
+          total: allTabs.length
+        };
+        finalTierLevel = 'ultimateFallback';
+        reachedTarget = true;
       }
-
-      // 从未被硬性保护的标签页中，按重要度从低到高依次强制回收，直到达标
-      const candidates = hardEvaluation.tabsToStash
-        .map(({ tab }) => ({ tab, score: this.computeImportanceScore(tab, activityStats) }))
-        .sort((a, b) => a.score - b.score);
-
-      const needCount = currentCount - targetRemaining; // 需要回收的可计数标签页数量
-      let collectedCount = 0;
-      const forcedStash = [];
-      for (const item of candidates) {
-        if (collectedCount >= needCount) break;
-        if (isExcludedFromTabCounting(item.tab)) continue; // 跳过不计数的无意义页面
-        collectedCount++;
-        forcedStash.push(item.tab);
-      }
-
-      evaluation = {
-        tabsToKeep: hardEvaluation.tabsToKeep,
-        tabsToStash: forcedStash.map((tab) => ({ tab })),
-        total: allTabs.length
-      };
-      finalTierLevel = 'ultimateFallback';
-      reachedTarget = true;
     }
 
     const { tabsToKeep, tabsToStash } = evaluation;
 
     if (!tabsToStash || tabsToStash.length === 0) {
       await StashService.ensurePinnedStashTab(false, windowId);
+      if (hardLimitInfo) {
+        // 受硬性保护的标签已超出目标剩余数，且没有其它可回收标签：明确说明原因与下一步动作
+        return {
+          success: false,
+          stashedCount: 0,
+          keptCount: tabsToKeep.length,
+          tierLevel: finalTierLevel,
+          reachedTarget: false,
+          noStashableTabs: true,
+          ...hardLimitInfo,
+          error: `当前受硬性保护的标签页数量（${hardLimitInfo.hardProtectedCount}）已超出目标剩余数量（${targetRemaining}），无法自动降至阈值以下，请手动整理`,
+          note: '硬性保护包括：正在播放媒体、正在输入表单、前台激活、固定标签页及系统页面'
+        };
+      }
       return {
         success: true,
         stashedCount: 0,
@@ -412,6 +509,13 @@ export class StashService {
       keptCount: tabsToKeep.length,
       tierLevel: finalTierLevel,
       reachedTarget,
+      // 受硬性保护的标签仍超出目标数：如实报告部分达标，便于提醒用户手动整理剩余标签
+      ...(hardLimitInfo
+        ? {
+            ...hardLimitInfo,
+            note: `已收纳 ${closedCount} 个闲置标签，但仍有 ${hardLimitInfo.remainingOverThreshold} 个受保护标签超出目标剩余数量，建议手动整理`
+          }
+        : {}),
       groupId: createRes.group?.id || null
     };
   }
