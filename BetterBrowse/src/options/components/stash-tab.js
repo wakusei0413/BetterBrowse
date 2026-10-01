@@ -52,8 +52,6 @@ export class StashTabComponent {
     this.badge = document.getElementById('stashCountBadge');
     this.btnSearchInHome = document.getElementById('btnStashSearchInHome');
     this.btnStashNow = document.getElementById('btnStashNowFromOptions');
-    this.sentinel = document.getElementById('stashScrollSentinel');
-    this.loadingIndicator = document.getElementById('stashLoadingIndicator');
     this.contextMenu = document.getElementById('stashContextMenu');
     this.activeContextItem = null;
     this.topSpacer = null;
@@ -85,7 +83,6 @@ export class StashTabComponent {
     this.bindEvents();
     this.initScrollSpy();
     this.initStorageListener();
-    if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
     this.loadData();
   }
 
@@ -494,7 +491,6 @@ export class StashTabComponent {
       return;
     }
     if (this.emptyState) this.emptyState.style.display = 'none';
-    if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
     this.syncListWindow();
     if (options.preserveScroll && this.mainColumn) {
       this.mainColumn.scrollTop = Number(options.scrollTop) || 0;
@@ -514,7 +510,6 @@ export class StashTabComponent {
     if (!this.container || !this.emptyState) return;
     this.container.replaceChildren(this.emptyState);
     this.emptyState.style.display = 'flex';
-    if (this.loadingIndicator) this.loadingIndicator.classList.add('hidden');
     this.topSpacer = null;
     this.bottomSpacer = null;
   }

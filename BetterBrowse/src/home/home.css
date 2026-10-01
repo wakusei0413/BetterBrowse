@@ -35,7 +35,6 @@
 .bb-home-eyebrow { margin: 0 0 6px; color: #1769e0; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
 .bb-home-clock { margin: 0 0 10px; color: #10213f; font-size: clamp(56px, 9vw, 92px); font-weight: 700; letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; }
 .bb-home-hero h1 { margin: 0 0 22px; color: #3d5273; font-size: clamp(18px, 2.2vw, 24px); line-height: 1.3; letter-spacing: 0; font-weight: 600; }
-.bb-home-description { margin: 14px auto 27px; color: #5d6f8e; font-size: 15px; }
 .bb-home-search-stage { width: min(100%, 760px); margin: 0 auto; text-align: left; position: relative; }
 .bb-home-search-label { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 5px 8px; color: #667797; font-size: 12px; font-weight: 700; }
 .bb-home-search-label > label:first-child { color: #10213f; font-size: 13px; }
@@ -233,7 +232,7 @@
   .bb-home-header button:hover, .bb-home-section-heading button:hover { color: #a9c8f5; }
   .bb-home-clock { color: #e8f0ff; }
   .bb-home-hero h1 { color: #aabbd5; }
-  .bb-home-brand p, .bb-home-description, .bb-home-search-label > label:first-child { color: #aabbd5; }
+  .bb-home-brand p, .bb-home-search-label > label:first-child { color: #aabbd5; }
   .bb-home-search-label { color: #8fa1bd; }
   .bb-home-dialog select { color: #c8d8f0; }
   .bb-home-search-box input { color: #fff; }

@@ -1328,29 +1328,6 @@ a:focus-visible,
 }
 
 /* 卡片平滑聚焦呼吸高亮脉冲动效 */
-@keyframes cardFocusGlow {
-  0% {
-    box-shadow: 0 0 0 0 var(--accent-glow), var(--shadow-sm);
-    border-color: var(--accent-color);
-    transform: scale(1.008);
-  }
-  50% {
-    box-shadow: 0 0 0 6px var(--accent-glow), var(--shadow-md);
-    border-color: var(--accent-color);
-    transform: scale(1.008);
-  }
-  100% {
-    box-shadow: var(--shadow-sm);
-    border-color: var(--border-color);
-    transform: scale(1);
-  }
-}
-
-.stash-group-card.highlight-pulse {
-  animation: cardFocusGlow 1.8s cubic-bezier(0.2, 0, 0, 1) forwards;
-  z-index: 10;
-  position: relative;
-}
 
 /* ==========================================================================
    8.5 收纳箱列表展示密度 (Display Density: comfortable / compact)
@@ -2017,89 +1994,10 @@ input:checked + .slider:before {
   line-height: 1.45;
 }
 
-.setting-divider {
-  height: 1px;
-  background-color: var(--border-light);
-  margin: 14px 0 8px;
-}
-
-.sub-section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin: 0 0 6px;
-}
-
 .setting-item--disabled {
   opacity: 0.45;
   pointer-events: none;
   transition: opacity 0.2s ease;
-}
-
-/* 高级设置折叠块 (details.settings-advanced) */
-details.settings-advanced {
-  background-color: var(--bg-hover);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-md);
-  margin-top: 8px;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
-  overflow: hidden;
-}
-
-details.settings-advanced[open] {
-  background-color: var(--bg-card);
-  border-color: var(--border-color);
-}
-
-details.settings-advanced > summary {
-  padding: 12px 16px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  cursor: pointer;
-  user-select: none;
-  list-style: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-details.settings-advanced > summary::-webkit-details-marker {
-  display: none;
-}
-
-details.settings-advanced > summary:hover {
-  background-color: var(--bg-hover);
-  color: var(--accent-color);
-}
-
-details.settings-advanced > summary:focus-visible {
-  outline: 2px solid var(--accent-color);
-  outline-offset: -2px;
-}
-
-details.settings-advanced > summary::after {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-right: 2px solid var(--text-muted);
-  border-bottom: 2px solid var(--text-muted);
-  transform: rotate(45deg);
-  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  margin-right: 4px;
-  flex-shrink: 0;
-}
-
-details.settings-advanced[open] > summary::after {
-  transform: rotate(-135deg);
-}
-
-details.settings-advanced .settings-advanced-body,
-details.settings-advanced > .setting-item {
-  padding: 10px 16px 12px;
-  border-top: 1px solid var(--border-light);
 }
 
 /* 优先级保留规则链 (P0 ~ P3 徽标) */
@@ -2271,30 +2169,6 @@ details.settings-advanced > .setting-item {
   margin-top: 2px;
 }
 
-.onetab-guide-box {
-  background-color: var(--accent-light);
-  border-color: var(--accent-color);
-  align-items: flex-start;
-}
-
-.onetab-guide-content {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-}
-
-.onetab-guide-title {
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
-.onetab-guide-desc {
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
 .onetab-guide-steps {
   padding-left: 18px;
   font-size: 12px;
@@ -2320,12 +2194,6 @@ details.settings-advanced > .setting-item {
   color: var(--accent-color);
   font-weight: 600;
   user-select: all;
-}
-
-.onetab-guide-footer {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--text-muted);
 }
 
 /* 危险操作区 */
@@ -2375,34 +2243,6 @@ details.settings-advanced > .setting-item {
   font-size: 13px;
   max-width: 420px;
   line-height: 1.5;
-}
-
-.stash-scroll-sentinel {
-  height: 1px;
-  width: 100%;
-}
-
-.stash-loading-indicator {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 16px 0;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.stash-loading-indicator.hidden {
-  display: none;
-}
-
-.spinner-icon {
-  animation: spinnerRotate 1s linear infinite;
-}
-
-@keyframes spinnerRotate {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 
 @keyframes dropdownPopIn {
@@ -3193,7 +3033,6 @@ details.settings-advanced > .setting-item {
     grid-column: 1 / -1;
   }
 }
-
 
 /* ===== 主页面板容器（内容由 src/home 共享视图渲染，滚动交给面板自身） ===== */
 .search-panel {
