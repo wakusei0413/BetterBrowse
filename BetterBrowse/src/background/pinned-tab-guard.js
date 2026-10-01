@@ -136,7 +136,13 @@ export class PinnedTabGuard {
         this.scheduleCheck(100, moveInfo.windowId);
         return;
       }
-      if (moveInfo.toIndex === 0) this.scheduleCheck(100, moveInfo.windowId);
+      if (moveInfo.toIndex === 0) {
+        // 其它标签挤占了首位：快照里收纳箱的 index 已失效，标记为未知以免检查被"已在首位"捷径跳过
+        for (const tab of this.tabsByWindow.get(moveInfo.windowId)?.values() || []) {
+          if (isOwnOptionsTab(tab)) tab.index = -1;
+        }
+        this.scheduleCheck(100, moveInfo.windowId);
+      }
     });
 
     // 6. 监听浏览器窗口聚焦
@@ -177,22 +183,14 @@ export class PinnedTabGuard {
       if (!windowTabsMap) {
         try {
           const liveTabs = await chrome.tabs.query({ windowId });
-          tabsToSave = liveTabs
-            .map((tab) => ({
-              id: tab.id,
-              url: tab.url || '',
-              title: tab.title || tab.url || '无标题页面',
-              favIconUrl: tab.favIconUrl || '',
-              pinned: Boolean(tab.pinned),
-              index: tab.index
-            }))
-            .filter((tab) => !isExcludedFromTabCounting(tab));
+          tabsToSave = liveTabs.filter((tab) => !isExcludedFromTabCounting(tab));
         } catch {}
       }
 
       if (tabsToSave.length > 0) {
         console.info(`[PinnedTabGuard] 正在执行窗口关闭全量收纳 (${tabsToSave.length} 个标签页)...`);
-        await LocalStashRepository.createGroup(tabsToSave);
+        // 快照与实时标签都按 pendingUrl 优先的统一口径入库，导航中的标签不会以空地址或旧地址保存
+        await LocalStashRepository.createGroup(tabsToSave.map((tab) => StashService.tabToStashItem(tab)));
       }
 
       this.tabsByWindow.delete(windowId);

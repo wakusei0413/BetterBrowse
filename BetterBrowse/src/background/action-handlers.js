@@ -426,13 +426,13 @@ export function createActionHandlers(deps) {
 
     // === 智能收纳与规则相关 ===
     [ActionTypes.EVALUATE_TABS]: async () => {
-      return await stashService.evaluateAllTabs(activityTracker.getStats());
+      return await stashService.evaluateAllTabs(await activityTracker.getReadyStats());
     },
 
     [ActionTypes.EXECUTE_STASH]: async (payload) => {
       // 手动点击按钮默认为 forceAll: true 全量收纳
       const forceAll = payload?.forceAll !== false;
-      const res = await stashService.executeStash(activityTracker.getStats(), { forceAll });
+      const res = await stashService.executeStash(await activityTracker.getReadyStats(), { forceAll });
       DeviceEventLog.append('stash_executed', { via: 'manual', success: res?.success !== false }).catch(() => {});
       return res;
     },

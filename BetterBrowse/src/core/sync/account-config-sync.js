@@ -24,12 +24,17 @@ export class AccountConfigSync {
   static _pendingTimer = 0;
   static _pendingCount = 0;
   static _pendingChain = Promise.resolve();
+  static _listenerBound = false;
+  /** @type {{ promise: Promise<void>, resolve: () => void } | null} */
+  static _gate = null;
 
   /**
    * 测试用：清空监听状态与切片缓存
    */
   static resetForTests() {
     this._initialized = false;
+    this._listenerBound = false;
+    this._gate = null;
     this._applying = false;
     this._lastSliceJson = '';
     clearTimeout(this._pendingTimer);
@@ -198,7 +203,27 @@ export class AccountConfigSync {
       await this.hydrate();
     } catch (err) {
       console.warn('[AccountConfigSync] 启动 hydrate 异常:', err?.message || err);
+    } finally {
+      this._readyGate().resolve();
     }
+  }
+
+  /**
+   * 供 Service Worker 顶层同步调用：MV3 只有顶层同步注册的监听器才能在休眠后被事件唤醒。
+   * 远端变更会等到 init()（迁移完成 + hydrate）之后再应用。
+   */
+  static bindListener() {
+    this._bindListener();
+  }
+
+  /** @returns {{ promise: Promise<void>, resolve: () => void }} */
+  static _readyGate() {
+    if (!this._gate) {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      this._gate = { promise, resolve };
+    }
+    return this._gate;
   }
 
   /**
@@ -255,12 +280,14 @@ export class AccountConfigSync {
   }
 
   static _bindListener() {
+    if (this._listenerBound) return;
     if (typeof chrome === 'undefined' || !chrome.storage?.onChanged?.addListener) return;
+    this._listenerBound = true;
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== 'sync') return;
       const change = changes?.[StorageKeys.ACCOUNT_CONFIG];
       if (!change || change.newValue === undefined) return;
-      this.applyRemote(change.newValue).catch((err) => {
+      this._readyGate().promise.then(() => this.applyRemote(change.newValue)).catch((err) => {
         console.warn('[AccountConfigSync] 应用远端偏好失败:', err?.message || err);
       });
     });

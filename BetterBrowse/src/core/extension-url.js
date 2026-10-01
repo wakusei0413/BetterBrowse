@@ -109,6 +109,18 @@ export function isInjectableWebTab(tab) {
 }
 
 /**
+ * 判断标签页是否为扩展自身选项页或浏览器系统页面（收纳时绝对保护，绝不收纳自身）。
+ * @param {{ url?: string, pendingUrl?: string }|null|undefined} tab
+ * @returns {boolean}
+ */
+export function isProtectedSystemTab(tab) {
+  const rawUrl = getTabTargetUrl(tab);
+  if (!rawUrl) return false;
+  return isOwnOptionsUrl(rawUrl)
+    || ['chrome://', 'edge://', 'about:', 'chrome-extension://'].some((prefix) => rawUrl.startsWith(prefix));
+}
+
+/**
  * 过滤出应参与标签页数量统计的标签页。
  * @param {Array<{ url?: string, pendingUrl?: string }>} tabs
  * @returns {Array<{ url?: string, pendingUrl?: string }>}

@@ -41,10 +41,12 @@ ContextMenuManager.init();
 
 // 云端同步调度：变更防抖、启动拉取、定时器与网络恢复（未启用时自动跳过）
 SyncScheduler.init();
+// 账号偏好镜像的 storage.onChanged 必须顶层同步注册，否则其它设备的偏好变更唤醒不了休眠的 SW
+AccountConfigSync.bindListener();
 
 const thresholdMonitor = new ThresholdMonitor({
   onStashRequested: async (targetWindowId = null) => {
-    return await stashService.executeStash(activityTracker.getStats(), {
+    return await stashService.executeStash(await activityTracker.getReadyStats(), {
       forceAll: false,
       windowId: targetWindowId
     });

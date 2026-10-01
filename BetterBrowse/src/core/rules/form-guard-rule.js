@@ -17,6 +17,16 @@ import { isInjectableWebTab } from '../extension-url.js';
  */
 const NO_RECEIVER_PATTERN = /Receiving end does not exist|Could not establish connection/i;
 
+/**
+ * 已被丢弃或尚未加载的标签（内存节省模式、会话恢复）没有任何页面状态，
+ * 不可能存在未提交输入；探测与注入必然失败，若按 fail-closed 保留，
+ * 这些最该被收纳的标签反而会把收纳推向硬性保护超限。
+ * @param {chrome.tabs.Tab} tab
+ */
+function isUnloadedTab(tab) {
+  return tab?.discarded === true || tab?.status === 'unloaded';
+}
+
 export class FormGuardRule extends BaseRule {
   constructor() {
     super({
@@ -42,7 +52,7 @@ export class FormGuardRule extends BaseRule {
     if (!globalThis.chrome?.tabs?.sendMessage || !results) return;
 
     const pendingTabs = (allTabs || []).filter(
-      (tab) => tab?.id && isInjectableWebTab(tab) && !results.has(tab.id)
+      (tab) => tab?.id && isInjectableWebTab(tab) && !isUnloadedTab(tab) && !results.has(tab.id)
     );
     if (pendingTabs.length === 0) return;
 
@@ -140,12 +150,8 @@ export class FormGuardRule extends BaseRule {
       return { retain: false };
     }
 
-    if (!tab.id || !tab.url) {
-      return { retain: false };
-    }
-
-    // 无法注入脚本的特殊协议页面直接跳过本规则
-    if (!tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
+    // 无法注入脚本的特殊协议页面与未加载标签直接跳过本规则（URL 口径与预探测一致，含 pendingUrl）
+    if (!tab.id || !isInjectableWebTab(tab) || isUnloadedTab(tab)) {
       return { retain: false };
     }
     if (!globalThis.chrome?.tabs?.sendMessage) {

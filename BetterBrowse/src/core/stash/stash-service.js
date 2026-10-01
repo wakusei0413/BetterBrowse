@@ -7,7 +7,7 @@
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { RuleEngine } from '../rules/rule-engine.js';
 import { LocalStashRepository } from './local-stash-repo.js';
-import { filterCountableTabs, isExcludedFromTabCounting, isOwnOptionsTab } from '../extension-url.js';
+import { filterCountableTabs, getTabTargetUrl, isExcludedFromTabCounting, isOwnOptionsTab } from '../extension-url.js';
 
 export class StashService {
   /**
@@ -184,6 +184,49 @@ export class StashService {
   }
 
   /**
+   * 浏览器标签 → 收纳条目。URL 口径与阈值计数一致（pendingUrl 优先），
+   * 否则导航中的标签会以旧地址入库后被关闭，新地址就此丢失。
+   * @param {{ url?: string, pendingUrl?: string, title?: string, favIconUrl?: string, pinned?: boolean }} tab
+   */
+  static tabToStashItem(tab) {
+    const url = getTabTargetUrl(tab);
+    return {
+      url,
+      title: tab.title || url,
+      favIconUrl: tab.favIconUrl || '',
+      pinned: Boolean(tab.pinned)
+    };
+  }
+
+  /**
+   * 收纳并关闭一批标签：写入收纳组 → 仅挑出 URL 确实已持久化的标签 → 确保常驻收纳箱 → 安全关闭。
+   * allowDuplicates=false 时重复项会被仓储跳过（group 可能为 null），未保存的标签绝不关闭，
+   * 否则被跳过的 URL 既不在任何收纳组里、标签也已关闭，造成数据静默丢失。
+   * @param {chrome.tabs.Tab[]} tabs
+   * @param {{ windowId?: number|null, activatePinned?: boolean, title?: string, groupOptions?: object }} [options]
+   * @returns {Promise<{ success: boolean, closedCount: number, closedTabIds: number[], groupId: string|null, error?: string }>}
+   */
+  static async stashAndClose(tabs, { windowId = null, activatePinned = false, title = '', groupOptions = {} } = {}) {
+    const createRes = await LocalStashRepository.createGroup(tabs.map((tab) => this.tabToStashItem(tab)), title, groupOptions);
+    if (!createRes?.success) {
+      return { success: false, closedCount: 0, closedTabIds: [], groupId: null, error: createRes?.error || '写入本地收纳仓储失败' };
+    }
+    const groupId = createRes.group?.id || null;
+    const savedUrls = new Set((createRes.group?.tabs || []).map((item) => item.url));
+    const closableTabIds = tabs
+      .filter((tab) => savedUrls.has(getTabTargetUrl(tab)))
+      .map((tab) => tab.id)
+      .filter((id) => typeof id === 'number');
+    if (closableTabIds.length === 0) {
+      return { success: true, closedCount: 0, closedTabIds: [], groupId };
+    }
+    await this.ensurePinnedStashTab(activatePinned, windowId);
+    // 容忍收纳期间个别标签已被用户手动关闭的竞态
+    const closedCount = await this.closeTabsSafely(closableTabIds);
+    return { success: true, closedCount, closedTabIds: closableTabIds, groupId };
+  }
+
+  /**
    * 确保当前所有普通浏览器窗口均死死常驻固定收纳小标签页
    */
   static async ensureAllAllWindowsPinnedTab() {
@@ -232,56 +275,19 @@ export class StashService {
       const windowId = targetWindowId || tabs[0].windowId;
 
       // 过滤出需要收纳的网页（排除插件自身的 options 页面及无意义空白页）
-      const tabsToStash = tabs.filter((tab) => {
-        if (!tab.url) return false;
-        if (isExcludedFromTabCounting(tab)) return false;
-        return true;
-      });
+      // 过滤出需要收纳的网页（排除插件自身的 options 页面及无意义空白页）
+      const tabsToStash = tabs.filter((tab) => !isExcludedFromTabCounting(tab));
+      const settings = (await StorageAdapter.getUserConfig()).stashSettings || {};
+      const activatePinned = settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false;
 
       if (tabsToStash.length === 0) {
-        const settings = (await StorageAdapter.getUserConfig()).stashSettings || {};
-        await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
+        await StashService.ensurePinnedStashTab(activatePinned, windowId);
         return { success: true, stashedCount: 0 };
       }
 
-      const itemsToSave = tabsToStash.map((tab) => ({
-        url: tab.url,
-        title: tab.title || tab.url,
-        favIconUrl: tab.favIconUrl || '',
-        pinned: tab.pinned
-      }));
-
-      // 1. 全量写入本地收纳仓储
-      const createRes = await LocalStashRepository.createGroup(itemsToSave);
-      if (!createRes || !createRes.success) {
-        return { success: false, stashedCount: 0, error: createRes?.error || '写入本地收纳仓储失败' };
-      }
-
-      // 2. 仅关闭 URL 确实已持久化的标签页：
-      //    allowDuplicates=false 时重复项会被仓储跳过（group 可能为 null），绝不关闭未保存的标签
-      const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
-      const closableTabs = tabsToStash.filter((tab) => savedUrls.has(tab.url));
-
-      if (closableTabs.length === 0) {
-        return { success: true, stashedCount: 0 };
-      }
-
-      // 3. 唤起并置顶第 1 个位置的常驻固定小标签页（Pinned Tab）
-      const settings = (await StorageAdapter.getUserConfig()).stashSettings || {};
-      await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
-
-      // 4. 关闭所有被收纳的标签页（容忍收纳期间被用户手动关闭的竞态）
-      const tabIdsToClose = closableTabs
-        .map((tab) => tab.id)
-        .filter((id) => typeof id === 'number');
-
-      const closedCount = await StashService.closeTabsSafely(tabIdsToClose);
-
-      return {
-        success: true,
-        stashedCount: closedCount,
-        groupId: createRes.group?.id || null
-      };
+      const result = await StashService.stashAndClose(tabsToStash, { windowId, activatePinned });
+      if (!result.success) return { success: false, stashedCount: 0, error: result.error };
+      return { success: true, stashedCount: result.closedCount, groupId: result.groupId };
     } catch (err) {
       console.error('[StashService] 全量收纳执行异常:', err);
       return { success: false, stashedCount: 0, error: err.message };
@@ -448,33 +454,23 @@ export class StashService {
       };
     }
 
-    const itemsToSave = tabsToStash.map(({ tab }) => ({
-      url: tab.url,
-      title: tab.title || tab.url,
-      favIconUrl: tab.favIconUrl || '',
-      pinned: tab.pinned
-    }));
-
-    // 1. 写入本地收纳仓储，持久化失败时绝不关闭原标签页
-    const createRes = await LocalStashRepository.createGroup(itemsToSave);
-    if (!createRes?.success) {
+    // 持久化失败时绝不关闭原标签页；只关闭确实已入库的标签。
+    // 智能收纳在用户浏览时后台触发：常驻收纳箱静默确保存在，绝不抢占焦点（否则会闪一下再切回）
+    const stashResult = await StashService.stashAndClose(tabsToStash.map(({ tab }) => tab), {
+      windowId,
+      activatePinned: false
+    });
+    if (!stashResult.success) {
       return {
         success: false,
         stashedCount: 0,
         keptCount: tabsToKeep.length,
         tierLevel: finalTierLevel,
         reachedTarget,
-        error: createRes?.error || '写入本地收纳仓储失败'
+        error: stashResult.error
       };
     }
-
-    // 2. 仅关闭 URL 确实已持久化的标签页：
-    //    allowDuplicates=false 时重复项会被仓储跳过（group 可能为 null），
-    //    此时若照常关闭，被跳过的 URL 将既不在任何可见收纳组中、标签也被关闭，造成数据静默丢失
-    const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
-    const closableStash = tabsToStash.filter(({ tab }) => savedUrls.has(tab.url));
-
-    if (closableStash.length === 0) {
+    if (stashResult.closedTabIds.length === 0) {
       return {
         success: true,
         stashedCount: 0,
@@ -484,20 +480,10 @@ export class StashService {
         note: '所选标签页均已存在于收纳箱中（跳过重复项），未关闭任何标签页'
       };
     }
+    const closedCount = stashResult.closedCount;
 
-    // 3. 确保首位常驻固定小标签存在（静默后台处理，activate: false 绝不抢占用户焦点）
-    const settings = config.stashSettings || {};
-    await StashService.ensurePinnedStashTab(settings.pinnedTabGuard !== false && settings.autoOpenStashTab !== false, windowId);
-
-    // 4. 安全关闭所有被收纳的闲置标签页（容忍收纳期间被用户手动关闭的竞态）
-    const tabIdsToClose = closableStash
-      .map(({ tab }) => tab.id)
-      .filter((id) => typeof id === 'number');
-
-    const closedCount = await StashService.closeTabsSafely(tabIdsToClose);
-
-    // 5. 确保用户当前浏览的前台页面稳固保持激活，实现 100% 无感浏览体验
-    if (currentActiveTab && typeof currentActiveTab.id === 'number' && !tabIdsToClose.includes(currentActiveTab.id)) {
+    // 确保用户当前浏览的前台页面稳固保持激活，实现 100% 无感浏览体验
+    if (currentActiveTab && typeof currentActiveTab.id === 'number' && !stashResult.closedTabIds.includes(currentActiveTab.id)) {
       try {
         await chrome.tabs.update(currentActiveTab.id, { active: true });
       } catch {}
@@ -516,7 +502,7 @@ export class StashService {
             note: `已收纳 ${closedCount} 个闲置标签，但仍有 ${hardLimitInfo.remainingOverThreshold} 个受保护标签超出目标剩余数量，建议手动整理`
           }
         : {}),
-      groupId: createRes.group?.id || null
+      groupId: stashResult.groupId
     };
   }
 
@@ -573,39 +559,22 @@ export class StashService {
       try { targetWindowId = (await chrome.windows.create({ focused: true, type: 'normal' }))?.id || null; } catch {}
     }
 
-    // 批量在当前窗口打开标签页（使用休眠挂起 discarded: true，避免海量标签并发下载网页拖垮内存）
+    // 批量以后台标签打开（Chrome 的 tabs.create 不支持 discarded 参数）
     for (const item of targetGroup.tabs) {
-      if (item.url) {
-        try {
-          // Chrome MV3 支持在创建非活跃标签时标记 discarded: true，挂起不加载，直到用户点击
-          const tab = await chrome.tabs.create({
-            url: item.url,
-            ...(targetWindowId ? { windowId: targetWindowId } : {}),
-            pinned: Boolean(item.pinned),
-            active: false,
-            discarded: true
-          });
-          if (typeof tab?.id === 'number' && !item.pinned) {
-            restoredTabIds.push(tab.id);
-          }
-          restoredCount++;
-        } catch {
-          // 若部分环境不支持 discarded 属性创建，则降级为常规后台标签
-          try {
-            const tab = await chrome.tabs.create({
-              url: item.url,
-              ...(targetWindowId ? { windowId: targetWindowId } : {}),
-              pinned: Boolean(item.pinned),
-              active: false
-            });
-            if (typeof tab?.id === 'number' && !item.pinned) {
-              restoredTabIds.push(tab.id);
-            }
-            restoredCount++;
-          } catch (e) {
-            console.warn('[StashService] 恢复标签页异常:', e);
-          }
+      if (!item.url) continue;
+      try {
+        const tab = await chrome.tabs.create({
+          url: item.url,
+          ...(targetWindowId ? { windowId: targetWindowId } : {}),
+          pinned: Boolean(item.pinned),
+          active: false
+        });
+        if (typeof tab?.id === 'number' && !item.pinned) {
+          restoredTabIds.push(tab.id);
         }
+        restoredCount++;
+      } catch (e) {
+        console.warn('[StashService] 恢复标签页异常:', e);
       }
     }
 

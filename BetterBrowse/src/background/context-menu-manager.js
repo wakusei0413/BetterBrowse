@@ -5,7 +5,6 @@
  */
 
 import { StashService } from '../core/stash/stash-service.js';
-import { LocalStashRepository } from '../core/stash/local-stash-repo.js';
 import { isExcludedFromTabCounting } from '../core/extension-url.js';
 
 export class ContextMenuManager {
@@ -146,32 +145,7 @@ export class ContextMenuManager {
     });
 
     if (targetTabs.length === 0) return;
-
-    const itemsToSave = targetTabs.map((tab) => ({
-      url: tab.url,
-      title: tab.title || tab.url,
-      favIconUrl: tab.favIconUrl || '',
-      pinned: tab.pinned
-    }));
-
-    const createRes = await LocalStashRepository.createGroup(itemsToSave);
-    if (!createRes?.success) return;
-
-    // 仅关闭 URL 确实已持久化的标签页（allowDuplicates=false 时重复项会被仓储跳过）
-    const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
-    const closableTabs = targetTabs.filter((tab) => savedUrls.has(tab.url));
-    if (closableTabs.length === 0) return;
-
-    await StashService.ensurePinnedStashTab(false, windowId);
-
-    const tabIdsToClose = closableTabs
-      .map((tab) => tab.id)
-      .filter((id) => typeof id === 'number');
-
-    if (tabIdsToClose.length > 0) {
-      // 容忍右键菜单操作期间个别标签页已被用户关闭的竞态
-      await StashService.closeTabsSafely(tabIdsToClose);
-    }
+    await StashService.stashAndClose(targetTabs, { windowId });
   }
 
   /**
@@ -198,33 +172,10 @@ export class ContextMenuManager {
     const targetTabs = tabs.filter((tab) => !isExcludedFromTabCounting(tab));
     if (targetTabs.length === 0) return;
 
-    const itemsToSave = targetTabs.map((tab) => ({
-      url: tab.url,
-      title: tab.title || tab.url,
-      favIconUrl: tab.favIconUrl || '',
-      pinned: tab.pinned
-    }));
-
     const colors = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
     const groupTitle = groupInfo?.title || '标签分组';
     const groupColor = groupInfo?.color || colors[Math.floor(Math.random() * colors.length)];
 
-    const createRes = await LocalStashRepository.createGroup(itemsToSave, groupTitle, { color: groupColor });
-    if (!createRes?.success) return;
-
-    // 仅关闭 URL 确实已持久化的标签页（allowDuplicates=false 时重复项会被仓储跳过）
-    const savedUrls = new Set((createRes.group?.tabs || []).map((tab) => tab.url));
-    const closableTabs = targetTabs.filter((tab) => savedUrls.has(tab.url));
-    if (closableTabs.length === 0) return;
-
-    await StashService.ensurePinnedStashTab(false, windowId);
-
-    const tabIdsToClose = closableTabs
-      .map((tab) => tab.id)
-      .filter((id) => typeof id === 'number');
-
-    if (tabIdsToClose.length > 0) {
-      await StashService.closeTabsSafely(tabIdsToClose);
-    }
+    await StashService.stashAndClose(targetTabs, { windowId, title: groupTitle, groupOptions: { color: groupColor } });
   }
 }

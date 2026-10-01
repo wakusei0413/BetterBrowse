@@ -11,9 +11,9 @@ export class RecentActiveRule extends BaseRule {
   constructor() {
     super({
       id: 'recentActive',
-      name: '最近访问与当前活跃',
+      name: '最近访问保护',
       priority: RulePriorities.P1,
-      description: '保护当前激活中的标签页及在设定时间窗口（如5分钟）内访问过的标签页'
+      description: '保护在设定时间窗口（如5分钟）内访问过的标签页（前台激活标签由规则引擎硬性保护）'
     });
   }
 
@@ -23,28 +23,15 @@ export class RecentActiveRule extends BaseRule {
    * @param {chrome.tabs.Tab} params.tab - 待评估标签页
    * @param {Record<number, { lastActivated: number, activationTimestamps: number[] }>} params.activityStats - 活跃度统计
    * @param {typeof import('../../constants/config.js').DefaultConfig} params.config - 用户全局配置
-   * @param {object|null} [params.tierContext] - 阶梯式降级上下文（可缩短"最近访问"窗口；终极兜底 hardCoreOnly 时仅保留前台激活分支）
+   * @param {object|null} [params.tierContext] - 阶梯式降级上下文（可缩短"最近访问"窗口；终极兜底 hardCoreOnly 时放弃本规则）
    */
   async evaluate({ tab, activityStats, config, tierContext }) {
-    if (!config.rulesEnabled?.recentActive) {
+    // 终极兜底阶段放弃"最近访问窗口"软性保护（前台激活由 RuleEngine 硬性保护，不经本规则）
+    if (!config.rulesEnabled?.recentActive || tierContext?.hardCoreOnly) {
       return { retain: false };
     }
 
-    // 1. 当前正在前台激活的标签页直接保留（硬性保护，不随阶梯降级）
-    if (tab.active === true) {
-      return {
-        retain: true,
-        reason: '当前正在浏览的前台标签页',
-        matchedRuleId: this.id
-      };
-    }
-
-    // 2. 终极兜底阶段：放弃"最近访问窗口"软性保护，仅保留前台激活
-    if (tierContext?.hardCoreOnly) {
-      return { retain: false };
-    }
-
-    // 3. 检查最近访问时间（阶梯降级时窗口逐级缩短，可为 0 = 不再保护）
+    // 检查最近访问时间（阶梯降级时窗口逐级缩短，可为 0 = 不再保护）
     // ⚠️ 不能用 `|| 5` 兜底：阶梯降级到最深层时窗口合法地为 0，`|| 5` 会把它重置回 5 分钟
     let windowMinutes;
     if (tierContext && tierContext.recentActiveMinutes !== undefined) {

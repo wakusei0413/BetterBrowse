@@ -135,7 +135,7 @@ const HUMAN_UI_ACTIONS = [
 function buildHandlers() {
   return createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: {

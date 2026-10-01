@@ -371,3 +371,74 @@ test('FormGuardRule: preload 覆盖仅有 pendingUrl 的待提交标签', async 
     restore();
   }
 });
+
+test('RuleEngine: 关闭“最近访问”开关时前台标签仍受硬性保护', async () => {
+  const engine = new RuleEngine();
+  const config = { ...DefaultConfig, rulesEnabled: { ...DefaultConfig.rulesEnabled, recentActive: false, formGuard: false } };
+  const res = await engine.evaluateTabs({
+    allTabs: [
+      { id: 1, url: 'https://viewing.example', active: true },
+      { id: 2, url: 'https://idle.example', active: false }
+    ],
+    activityStats: {},
+    config,
+    tierContext: { hardCoreOnly: true }
+  });
+  const kept = res.tabsToKeep.find((item) => item.tab.id === 1);
+  assert.equal(kept?.matchedRuleId, 'activeTab');
+  assert.equal(res.tabsToStash.some((item) => item.tab.id === 2), true);
+});
+
+test('RuleEngine: 传入跨轮次缓存时仍并行预探测表单，且仅有 pendingUrl 的标签也受表单保护', async () => {
+  const probed = [];
+  const restore = installFormProbeChrome((tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    probed.push(tabId);
+    chrome.runtime.lastError = null;
+    cb?.({ success: true, data: { hasActiveInput: tabId === 8 } });
+  });
+  try {
+    const engine = new RuleEngine();
+    const cache = new Map();
+    const res = await engine.evaluateTabs({
+      allTabs: [
+        { id: 7, url: 'https://a.example/' },
+        { id: 8, url: '', pendingUrl: 'https://typing.example/' }
+      ],
+      activityStats: {},
+      config: DefaultConfig,
+      formResultsCache: cache
+    });
+    assert.equal(cache.has(7) && cache.has(8), true);
+    assert.equal(res.tabsToKeep.some((item) => item.tab.id === 8 && item.matchedRuleId === 'formGuard'), true);
+    assert.equal(res.tabsToStash.some((item) => item.tab.id === 7), true);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: 已丢弃 / 未加载的标签不探测、不 fail-closed', async () => {
+  const probed = [];
+  const restore = installFormProbeChrome((tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    probed.push(tabId);
+    chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+    cb?.();
+    chrome.runtime.lastError = null;
+  });
+  try {
+    const engine = new RuleEngine();
+    const res = await engine.evaluateTabs({
+      allTabs: [
+        { id: 21, url: 'https://discarded.example/', discarded: true },
+        { id: 22, url: 'https://unloaded.example/', status: 'unloaded' }
+      ],
+      activityStats: {},
+      config: DefaultConfig
+    });
+    assert.deepEqual(probed, []);
+    assert.equal(res.tabsToStash.length, 2);
+  } finally {
+    restore();
+  }
+});

@@ -151,7 +151,7 @@ test('聚合联想 Action: 默认未同意时拒绝请求，同意后支持白�
   setupEnvironment();
   const handlers = createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }
@@ -227,7 +227,7 @@ test('History 权限与推荐: 真实权限为准、隐身保护、候选范围�
   setupEnvironment();
   const handlers = createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }
@@ -286,7 +286,7 @@ test('主页统计 Action: 准确统计当前窗口可计数标签与收纳总�
 
   const handlers = createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }
@@ -353,7 +353,7 @@ test('收纳检索与分页: SEARCH_STASH 分页游标支持', async () => {
   setupEnvironment();
   const handlers = createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }
@@ -389,7 +389,7 @@ test('安全边界: 隐身模式下保护浏览历史（覆盖 sender.tab 存在
   setupEnvironment();
   const handlers = createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }
@@ -421,7 +421,7 @@ test('安全边界: 权限撤销在途泄漏防护与外部联想关闭在途返
   setupEnvironment();
   const handlers = createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }
@@ -527,7 +527,7 @@ test('主页快捷操作: EXECUTE_STASH 全量语义与 RESTORE_STASH_GROUP 结�
         return { success: true, stashedCount: 5 };
       }
     },
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }
@@ -597,7 +597,7 @@ test('SEARCH_STASH 规范化: 兼容 query/keyword 并返回一致的 items/data
   setupEnvironment();
   const handlers = createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }
@@ -630,7 +630,7 @@ test('主页统计 Action: 与 thresholdMonitor.getActiveWindowInfo 窗口口径
   let calledActiveWindow = false;
   const handlers = createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {
       getActiveWindowInfo: async (targetId) => {
         calledActiveWindow = true;
@@ -758,7 +758,7 @@ test('主页偏好面板: details 结构、复选框 UPDATE_CONFIG 持久化、�
   setupEnvironment();
   const handlers = createActionHandlers({
     stashService: {},
-    activityTracker: { getStats: () => ({}) },
+    activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
     thresholdMonitor: {},
     broadcastToTabs: async () => {},
     aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }

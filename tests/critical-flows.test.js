@@ -477,3 +477,38 @@ test('智能收纳：确实没有可回收标签时明确报告需手动整理',
     StashService.ensurePinnedStashTab = origEnsure;
   }
 });
+
+test('全量收纳：导航中的标签按 pendingUrl 入库并关闭，重复跳过的标签保留', async () => {
+  const closedTabIds = [];
+  installChrome({
+    tabs: {
+      query: async () => [
+        { id: 31, windowId: 1, url: 'https://old.example/', pendingUrl: 'https://new.example/', title: '' },
+        { id: 32, windowId: 1, url: 'https://dup.example/', title: '重复' }
+      ],
+      remove: async (ids) => { closedTabIds.push(...[].concat(ids)); },
+      update: async () => ({}),
+      move: async () => ({})
+    }
+  });
+  const origCreateGroup = LocalStashRepository.createGroup;
+  const origEnsure = StashService.ensurePinnedStashTab;
+  let savedItems = [];
+  try {
+    LocalStashRepository.createGroup = async (items) => {
+      savedItems = items;
+      // 模拟仓储按 allowDuplicates=false 跳过了重复项
+      return { success: true, group: { id: 'grp_pending', tabs: items.filter((item) => item.url !== 'https://dup.example/') } };
+    };
+    StashService.ensurePinnedStashTab = async () => ({});
+
+    const result = await new StashService().executeAllTabsStash(1);
+    assert.equal(result.success, true);
+    assert.equal(savedItems[0].url, 'https://new.example/');
+    assert.equal(savedItems[0].title, 'https://new.example/');
+    assert.deepEqual(closedTabIds, [31]);
+  } finally {
+    LocalStashRepository.createGroup = origCreateGroup;
+    StashService.ensurePinnedStashTab = origEnsure;
+  }
+});
