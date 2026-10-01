@@ -6,10 +6,12 @@
 
 import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
 import { StorageKeys } from '../../constants/storage-keys.js';
-import { SYNC_CLOCK_KEY, WEBDAV_FORMAT_REVISION, SyncEntityTypes } from './sync-constants.js';
+import { SYNC_CLOCK_KEY, WEBDAV_FORMAT_REVISION, SyncEntityTypes, isValidLinkRule, pickSyncableConfig } from './sync-constants.js';
 import { sha256Hex } from './crypto-util.js';
 import { AccountConfigSync } from './account-config-sync.js';
 import { DeviceEventLog } from './device-events.js';
+import { IndexedStashRepository } from '../stash/indexed-stash-repo.js';
+import { StorageAdapter } from '../storage/storage-adapter.js';
 
 export class SyncSnapshot {
   /**
@@ -52,19 +54,14 @@ export class SyncSnapshot {
         const tombs = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.TOMBSTONES).getAll());
         const clock = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.SYNC_META).get(SYNC_CLOCK_KEY));
 
+        // 快照只携带可同步配置：凭据、自动备份与设备本地偏好（AI 桥接开关、主页与外部联想同意）绝不外传
         const settings = {};
         for (const record of settingsAll || []) {
-          if (record.key === StorageKeys.WEBDAV_CREDENTIALS) continue;
-          if (record.key === StorageKeys.AUTO_BACKUPS) continue;
           if (record.key === StorageKeys.USER_CONFIG && record.value && typeof record.value === 'object') {
-            const copy = { ...record.value };
-            if (copy.home && typeof copy.home === 'object') {
-              copy.home = { ...copy.home, externalSuggestAgreed: false };
-            }
-            settings[record.key] = copy;
-            continue;
+            settings[record.key] = pickSyncableConfig(record.value);
+          } else if (record.key === StorageKeys.LINK_RULES) {
+            settings[record.key] = record.value;
           }
-          settings[record.key] = record.value;
         }
 
         const liveTombs = (tombs || []).filter((item) => Number(item.expiresAt) > Date.now());
@@ -157,9 +154,30 @@ export class SyncSnapshot {
 
         const settingsStore = tx.objectStore(IDBStores.SETTINGS);
         const incomingSettings = payload.settings && typeof payload.settings === 'object' ? payload.settings : {};
-        for (const [key, value] of Object.entries(incomingSettings)) {
-          if (key === StorageKeys.WEBDAV_CREDENTIALS || key === StorageKeys.AUTO_BACKUPS) continue;
-          settingsStore.put({ key, value, updatedAt: Date.now() });
+        const incomingConfig = incomingSettings[StorageKeys.USER_CONFIG];
+        if (incomingConfig && typeof incomingConfig === 'object') {
+          // 只把可同步部分合并进本机配置，设备本地偏好保持不变（快照可被远端伪造，不能整体覆盖）
+          const record = await IndexedDBManager.requestToPromise(settingsStore.get(StorageKeys.USER_CONFIG));
+          const local = record?.value && typeof record.value === 'object' ? record.value : {};
+          const synced = pickSyncableConfig(incomingConfig);
+          const next = { ...local };
+          for (const [key, value] of Object.entries(synced)) {
+            if (key === 'fieldRevs') continue;
+            next[key] = value && typeof value === 'object' && !Array.isArray(value)
+              ? { ...(local[key] && typeof local[key] === 'object' ? local[key] : {}), ...value }
+              : value;
+          }
+          next.fieldRevs = { ...(local.fieldRevs && typeof local.fieldRevs === 'object' ? local.fieldRevs : {}), ...synced.fieldRevs };
+          settingsStore.put({ key: StorageKeys.USER_CONFIG, value: next, updatedAt: Date.now() });
+        }
+        const incomingRules = incomingSettings[StorageKeys.LINK_RULES];
+        if (incomingRules && typeof incomingRules === 'object') {
+          const safeRules = {};
+          for (const [domain, mode] of Object.entries(incomingRules)) {
+            if (domain === 'fieldRevs' && mode && typeof mode === 'object') safeRules.fieldRevs = mode;
+            else if (isValidLinkRule(domain, mode)) safeRules[domain.toLowerCase()] = mode;
+          }
+          settingsStore.put({ key: StorageKeys.LINK_RULES, value: safeRules, updatedAt: Date.now() });
         }
 
         const activityStore = tx.objectStore(IDBStores.ACTIVITY_STATS);
@@ -182,8 +200,11 @@ export class SyncSnapshot {
             updatedAt: Date.now()
           });
         }
+        // 合并模式下本地与快照条目并存，组计数以实际条目为准
+        await IndexedStashRepository.recountGroupsInTx(tx);
       }
     );
+    await StorageAdapter.bumpStashRevision();
     for (const event of payload.deviceEvents || []) {
       DeviceEventLog.appendRuntimeLog(event).catch(() => {});
     }

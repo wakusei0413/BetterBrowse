@@ -538,7 +538,8 @@ export class SyncEngine {
   static async _maybeSnapshot(client, manifest, etag) {
     const clock = await SyncOutbox.getClock();
     const files = manifest?.operationFiles || [];
-    const lastSnap = Number(manifest?.updatedAt) || 0;
+    // 只能用快照自身的生成时间：manifest.updatedAt 每次上传批次都会刷新，按它计龄 7 天条件永远不满足
+    const lastSnap = Number(manifest?.snapshotCreatedAt) || 0;
     const needByAge = Date.now() - lastSnap >= SNAPSHOT_MIN_AGE_MS && files.length > 0;
     const needByCount = files.length >= 1 && this._countOps(files) >= SNAPSHOT_MIN_OPS;
     if (!needByAge && !needByCount && (manifest?.generation || 0) === 0 && files.length > 0) {
@@ -575,6 +576,7 @@ export class SyncEngine {
         snapshotId,
         snapshotSha256: sha256,
         snapshotWatermarks: payload.watermarks,
+        snapshotCreatedAt: Date.now(),
         updatedAt: Date.now()
       };
     });

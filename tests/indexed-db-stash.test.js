@@ -603,3 +603,25 @@ Deno.test("MigrationManager: 一键回退同时导回 本地数据修订 7 配�
     await idb.restore();
   }
 });
+
+Deno.test("自愈修复：用户清空全部收纳组后，重启不得从旧快照复活已删除的组", async () => {
+  const idb = installFakeIndexedDB();
+  const legacyGroups = [
+    { id: "g_old", createdAt: 1000, title: "旧数据", tabs: [{ id: "t1", url: "https://old.example", title: "旧页面" }] }
+  ];
+  try {
+    installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 4, [StorageKeys.STASH_GROUPS]: legacyGroups });
+    await MigrationManager.runMigrations();
+    assertEquals((await LocalStashRepository.getAllGroups()).length, 1);
+
+    await LocalStashRepository.clearAll(true);
+    assertEquals((await LocalStashRepository.getAllGroups()).length, 0);
+
+    // 模拟 SW 重启：重新打开连接后再跑迁移（旧快照仍在 30 天保留期内）
+    IndexedDBManager._dbPromise = null;
+    await MigrationManager.runMigrations();
+    assertEquals((await LocalStashRepository.getAllGroups()).length, 0);
+  } finally {
+    await idb.restore();
+  }
+});

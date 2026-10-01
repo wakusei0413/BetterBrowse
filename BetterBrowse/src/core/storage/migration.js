@@ -31,11 +31,17 @@ export class MigrationManager {
     try {
       // 打开（必要时升级建表）：磁盘残留修订低于 INDEXED_DB_SCHEMA_REVISION 时触发 upgradeneeded 重建全部仓储
       await IndexedDBManager.open();
+      // 一次性消费"仓储经升级新建"标记：同一进程后续的迁移重入不得再次据此回填
+      const storeRecreated = IndexedDBManager.stashStoreRecreated;
+      IndexedDBManager.stashStoreRecreated = false;
 
       const groupCount = await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
         return await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_GROUPS).count());
       });
       if (groupCount > 0) return; // 主库已有数据：结构健康，无需修复
+      // 仓储本来就在、只是用户清空了全部收纳组：绝不能从 30 天保留期内的旧快照回填，
+      // 否则已删除的组会复活并经 WebDAV 扩散到其它设备
+      if (!storeRecreated) return;
 
       // 数据架构尚未进入 IndexedDB 时代：旧数据由正式迁移管线（本地数据修订 5、7、8）负责回填，此处不抢
       const schemaVersion = Number(await StorageAdapter.get(StorageKeys.SCHEMA_VERSION, 0));
@@ -43,7 +49,7 @@ export class MigrationManager {
 
       const legacyGroups = await StorageAdapter.get(StorageKeys.STASH_GROUPS, []);
       if (Array.isArray(legacyGroups) && legacyGroups.length > 0) {
-        const imported = await IndexedStashRepository.importGroups(legacyGroups);
+        const imported = await IndexedDBManager.withWriteLock(() => IndexedStashRepository.importGroups(legacyGroups));
         console.info(`[MigrationManager] 自愈修复完成：已重建 IndexedDB 结构并回填 ${imported.groupCount} 个收纳组（${imported.entryCount} 条记录）`);
       } else {
         console.info('[MigrationManager] 自愈修复完成：IndexedDB 结构已重建（旧存储无收纳数据）');
@@ -64,7 +70,17 @@ export class MigrationManager {
    *   迁移期间并发写入旧存储不会被漏拷；
    * - 30 天保留：迁移成功后旧数组保留 30 天再清理，期间可一键回退。
    */
-  static async runMigrations() {
+  static runMigrations() {
+    // 单飞：onInstalled 与 SW 冷启动链会在同一进程并发调用，两次迁移交错会让较慢的一次把修订号写回旧值
+    if (!this._migrationPromise) {
+      this._migrationPromise = this._runMigrationsOnce().finally(() => {
+        this._migrationPromise = null;
+      });
+    }
+    return this._migrationPromise;
+  }
+
+  static async _runMigrationsOnce() {
     // 自愈修复：磁盘库存在但业务仓储缺失时重建结构并回填旧存储数据（幂等，见方法文档）
     await this.repairMissingObjectStores();
 
@@ -603,20 +619,7 @@ export class MigrationManager {
           [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES],
           'readwrite',
           async (tx) => {
-            const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
-            const entryIndex = tx.objectStore(IDBStores.STASH_ENTRIES).index('groupId');
-            const groups = await IndexedDBManager.requestToPromise(groupsStore.getAll());
-            for (const group of groups) {
-              const entries = await IndexedDBManager.requestToPromise(entryIndex.getAll(group.groupId));
-              let maxPosition = -1;
-              for (const entry of entries) {
-                maxPosition = Math.max(maxPosition, Number(entry.position) || 0);
-              }
-              group.itemCount = entries.length;
-              group.starRank = group.starred ? 1 : 0;
-              group.nextPosition = maxPosition + 1;
-              groupsStore.put(group);
-            }
+            await IndexedStashRepository.recountGroupsInTx(tx);
           }
         );
       });

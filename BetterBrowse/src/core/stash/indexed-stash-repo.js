@@ -415,13 +415,24 @@ export class IndexedStashRepository {
    */
   static async _applyTitleUpdates(titleUpdates) {
     if (!titleUpdates || titleUpdates.size === 0) return;
-    await IndexedDBManager.runTransaction([IDBStores.PAGES], 'readwrite', async (tx) => {
+    // 标题刷新与 outbox 同事务入队：否则本机标题更新永远不会同步到其它设备
+    const enqueue = await SyncOutbox.isActive();
+    const stores = [IDBStores.PAGES];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+    await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
       const store = tx.objectStore(IDBStores.PAGES);
       for (const [pageId, title] of titleUpdates) {
         const page = await IndexedDBManager.requestToPromise(store.get(pageId));
-        if (page) {
-          page.title = String(title).slice(0, 4096);
-          store.put(page);
+        if (!page) continue;
+        page.title = String(title).slice(0, 4096);
+        store.put(page);
+        if (enqueue) {
+          await SyncOutbox.enqueueInTx(tx, {
+            entityType: SyncEntityTypes.PAGE,
+            entityId: pageId,
+            op: SyncOps.PATCH,
+            fields: { title: page.title }
+          });
         }
       }
     });
@@ -1457,6 +1468,34 @@ export class IndexedStashRepository {
   }
 
   /**
+   * 在事务内按实际条目重算收纳组派生字段（itemCount / nextPosition / starRank）。
+   * 导入、同步合并等直接写条目的路径不会逐条维护计数，写完后必须调用本方法，
+   * 否则组摘要显示 0 项、分页导出按 total 提前截断。
+   * 事务须包含 STASH_GROUPS 与 STASH_ENTRIES 仓储。
+   * @param {IDBTransaction} tx
+   * @param {Iterable<string>|null} [groupIds=null] - 为空则重算全部组
+   */
+  static async recountGroupsInTx(tx, groupIds = null) {
+    const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
+    const entryIndex = tx.objectStore(IDBStores.STASH_ENTRIES).index('groupId');
+    const groups = groupIds
+      ? await Promise.all([...new Set(groupIds)].map((id) => IndexedDBManager.requestToPromise(groupsStore.get(id))))
+      : await IndexedDBManager.requestToPromise(groupsStore.getAll());
+    for (const group of groups) {
+      if (!group?.groupId) continue;
+      const entries = await IndexedDBManager.requestToPromise(entryIndex.getAll(group.groupId));
+      let maxPosition = -1;
+      for (const entry of entries) {
+        maxPosition = Math.max(maxPosition, Number(entry.position) || 0);
+      }
+      group.itemCount = entries.length;
+      group.starRank = group.starred ? 1 : 0;
+      group.nextPosition = maxPosition + 1;
+      groupsStore.put(group);
+    }
+  }
+
+  /**
    * 导入旧版结构（chrome.storage 数组 / 解析后的外部数据）的收纳组
    * 主键完全由源数据推导（entryId 以 groupId 命名空间隔离），重复执行为幂等 upsert，
    * 迁移中断后重跑不会产生重复记录。
@@ -1598,12 +1637,15 @@ export class IndexedStashRepository {
     }
 
     for (const batch of IndexedDBManager.chunk(groupRecords, WRITE_BATCH_SIZE)) {
-      const stores = [IDBStores.STASH_GROUPS];
+      const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES];
       if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
       await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
         const store = tx.objectStore(IDBStores.STASH_GROUPS);
         for (const record of batch) {
-          store.put(record);
+          // 合并进已有组：保留同步元数据（fieldRevs / revision / originDeviceId）与派生字段，
+          // 重复导入不得抹掉字段版本，否则下一次同步合并会被旧值覆盖
+          const existing = await IndexedDBManager.requestToPromise(store.get(record.groupId));
+          store.put(existing ? { ...existing, ...record } : record);
           if (enqueue) {
             await SyncOutbox.enqueueInTx(tx, {
               entityType: SyncEntityTypes.STASH_GROUP,
@@ -1611,6 +1653,7 @@ export class IndexedStashRepository {
               op: SyncOps.UPSERT,
               fields: {
                 title: record.title,
+                color: record.color,
                 locked: record.locked,
                 starred: record.starred,
                 archived: record.archived,
@@ -1619,6 +1662,7 @@ export class IndexedStashRepository {
             });
           }
         }
+        await this.recountGroupsInTx(tx, batch.map((record) => record.groupId));
       });
     }
     if (enqueue) SyncOutbox.flushDirty();

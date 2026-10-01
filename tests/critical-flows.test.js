@@ -512,3 +512,10 @@ test('全量收纳：导航中的标签按 pendingUrl 入库并关闭，重复�
     StashService.ensurePinnedStashTab = origEnsure;
   }
 });
+
+test('OneTab 文本：URL 自身含竖线时按 " | " 分隔，不截断地址', () => {
+  const groups = OneTabConverter.parseOneTabText('https://a.example/?q=x|y | 带竖线的页面\nhttps://b.example/ | 普通页面');
+  assert.equal(groups[0].tabs[0].url, 'https://a.example/?q=x|y');
+  assert.equal(groups[0].tabs[0].title, '带竖线的页面');
+  assert.equal(groups[0].tabs[1].title, '普通页面');
+});

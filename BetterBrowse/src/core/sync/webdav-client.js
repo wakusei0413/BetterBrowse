@@ -13,6 +13,9 @@ import { CAPABILITY_PROBE_NAME, SYNC_ROOT_DIR } from './sync-constants.js';
  * @property {string} etag
  */
 
+/** 单次 WebDAV 请求超时（大快照上传留足余量） */
+const WEBDAV_REQUEST_TIMEOUT_MS = 60000;
+
 export class WebdavClient {
   /**
    * @param {{ serverUrl: string, username?: string, password?: string, fetchImpl?: typeof fetch }} options
@@ -42,7 +45,9 @@ export class WebdavClient {
    */
   _authHeaders() {
     if (!this.username && !this.password) return {};
-    const token = btoa(`${this.username}:${this.password}`);
+    // btoa 只接受 Latin-1：中文用户名或密码需先按 UTF-8 编码，否则每次同步都直接抛错
+    const bytes = new TextEncoder().encode(`${this.username}:${this.password}`);
+    const token = btoa(String.fromCharCode(...bytes));
     return { Authorization: `Basic ${token}` };
   }
 
@@ -71,7 +76,9 @@ export class WebdavClient {
       response = await this.fetchImpl(this.resolve(relPath), {
         method,
         headers,
-        body: options.body
+        body: options.body,
+        // 服务器挂起时不得让同步引擎永久处于运行中（_running 不释放，后续同步全部被跳过）
+        signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(WEBDAV_REQUEST_TIMEOUT_MS) : undefined
       });
     } catch (err) {
       const detail = err?.message || String(err);

@@ -54,6 +54,8 @@ export class IndexedDBManager {
    * 下一次操作会惰性重建连接，这是应对 MV3 Service Worker 休眠的核心手段。
    */
   static _dbPromise = null;
+  /** 本进程内收纳组仓储是否经升级新建（供自愈修复判断是否需要从旧存储回填） */
+  static stashStoreRecreated = false;
 
   /** 进程内串行写入队列（Web Locks API 不可用时的降级方案） */
   static _localWriteQueue = Promise.resolve();
@@ -99,7 +101,10 @@ export class IndexedDBManager {
 
       request.onupgradeneeded = (event) => {
         // 首次创建或版本升级时建立对象仓储与索引；已有仓储的新增索引必须通过升级事务补建
-        this._ensureSchema(event.target.result, event.target.transaction);
+        const db = event.target.result;
+        // 记录收纳组仓储是否在本次升级中新建：只有"仓储曾经缺失"才说明主库数据丢失、需要从旧存储回填
+        if (!db.objectStoreNames.contains(IDBStores.STASH_GROUPS)) this.stashStoreRecreated = true;
+        this._ensureSchema(db, event.target.transaction);
       };
 
       request.onsuccess = () => {

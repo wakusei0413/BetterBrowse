@@ -47,14 +47,7 @@ export class LocalStashRepository {
    * 通过修订号（bb_stash_revision）通知各上下文（选项页监听此键实现 0 刷新即时呈现）。
    */
   static async _notifyStashChanged() {
-    try {
-      await StorageAdapter.set(
-        StorageKeys.STASH_REV,
-        `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-      );
-    } catch {
-      // 通知失败不影响主流程
-    }
+    await StorageAdapter.bumpStashRevision();
   }
 
   /**
@@ -243,7 +236,15 @@ export class LocalStashRepository {
     }
     const groups = (await this._legacyGetAllGroups()).map((group) => this._toGroupSummary(group));
     const safeLimit = Math.min(500, Math.max(1, Math.floor(Number(options.limit) || 100)));
-    return { items: groups.slice(0, safeLimit), nextCursor: null, hasMore: groups.length > safeLimit };
+    // 旧存储按偏移分页（游标形如 legacy:<offset>），否则分页导出永远只拿到第一页
+    const legacyCursor = /^legacy:(\d+)$/.exec(String(options.cursor || ''));
+    const offset = legacyCursor ? Number(legacyCursor[1]) : 0;
+    const hasMore = groups.length > offset + safeLimit;
+    return {
+      items: groups.slice(offset, offset + safeLimit),
+      nextCursor: hasMore ? `legacy:${offset + safeLimit}` : null,
+      hasMore
+    };
   }
 
   static async readExportChunk(options = {}) {
@@ -384,7 +385,8 @@ export class LocalStashRepository {
           }, 8));
         }
         state.entryOffset = (Number(state.entryOffset) || 0) + items.length;
-        if (items.length < 20 || state.entryOffset >= (Number(page.total) || 0)) {
+        // 以分页自身的 hasMore 判定结束：total 来自组的派生计数，计数失真时会把导出提前截断
+        if (items.length === 0 || !this._pageHasMore(page, items.length, 20, state.entryOffset)) {
           push('\n      ]\n    }');
           state.phase = state.noMoreGroups ? 'footer' : 'groups';
           state.groupId = null;
@@ -446,7 +448,7 @@ export class LocalStashRepository {
           lines.push(title ? `${url} | ${title}` : url);
         }
         entryOffset += items.length;
-        if (items.length < 100 || entryOffset >= (Number(entries.total) || 0)) break;
+        if (items.length === 0 || !this._pageHasMore(entries, items.length, 100, entryOffset)) break;
       }
       if (!state.firstGroup && lines.length > 0) chunk += '\n';
       state.firstGroup = false;
@@ -463,6 +465,18 @@ export class LocalStashRepository {
         return { chunk, nextCursor: null, done: true, stashRevision: revision };
       }
     }
+  }
+
+  /**
+   * 组内分页是否还有下一页：优先信任后端返回的 hasMore，缺失时按页大小与 total 推断
+   * @param {{ hasMore?: boolean, total?: number }} page
+   * @param {number} received - 本页条目数
+   * @param {number} pageSize
+   * @param {number} consumed - 累计已读取条目数
+   */
+  static _pageHasMore(page, received, pageSize, consumed) {
+    if (typeof page?.hasMore === 'boolean') return page.hasMore;
+    return received >= pageSize && consumed < (Number(page?.total) || 0);
   }
 
   /**
@@ -1019,7 +1033,13 @@ export class LocalStashRepository {
       favIconUrl: tab.favIconUrl || '',
       pinned: Boolean(tab.pinned)
     }));
-    return { items, total: tabs.length, offset: safeOffset, limit: safeLimit };
+    return {
+      items,
+      total: tabs.length,
+      offset: safeOffset,
+      limit: safeLimit,
+      hasMore: safeOffset + items.length < tabs.length
+    };
   }
 
   /**

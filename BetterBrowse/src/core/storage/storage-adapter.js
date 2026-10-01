@@ -354,6 +354,18 @@ export class StorageAdapter {
   }
 
   /**
+   * 更新收纳数据修订号：扩展页面监听该键实现 0 刷新呈现（IndexedDB 写入不经过 chrome.storage）。
+   * 门面写入、同步合并与快照应用后都必须调用，否则其它设备同步来的收纳组要手动刷新才可见。
+   */
+  static async bumpStashRevision() {
+    try {
+      await this.set(StorageKeys.STASH_REV, `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+    } catch {
+      // 通知失败不影响主流程
+    }
+  }
+
+  /**
    * 读取存储值
    * 本地数据修订 7 起配置/规则/备份/活跃度优先走 IndexedDB；读失败时回退旧 chrome.storage 快照（30 天保留期内仍可读）
    * @param {string} key - 存储键名

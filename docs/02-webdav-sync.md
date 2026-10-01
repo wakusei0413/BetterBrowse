@@ -56,6 +56,7 @@
   snapshotSha256,
   snapshotWatermarks: { [deviceId]: maxSequence },
   previousSnapshotId,
+  snapshotCreatedAt,      // 当前快照生成时间（快照计龄只看它，updatedAt 每次上传都会刷新）
   updatedAt,
   knownDevices: [{ deviceId, lastSeenAt, retired }],
   operationFiles: [{ deviceId, start, end, batchId, path, sha256 }],
@@ -86,7 +87,7 @@
 
 - 快照是某 generation 的**全量基线**（全部可同步实体 + 未过期墓碑），并写入 `snapshotWatermarks`。
 - 应用快照后，**只重放** `(deviceId, sequence) > watermark[deviceId]` 的操作；禁止重放快照已覆盖的批次。
-- 推进 generation：距上一次快照 ≥ 7 天，**或**未压缩操作 ≥ 200 条，且本机已完整 PUT 快照文件后再用 `If-Match` 更新清单。
+- 推进 generation：距上一次快照（`snapshotCreatedAt`，缺失视为从未生成）≥ 7 天，**或**未压缩操作 ≥ 200 条，且本机已完整 PUT 快照文件后再用 `If-Match` 更新清单。
 - 快照损坏 / 缺失：校验 `snapshotSha256` 失败则回退 `previousSnapshotId`；再失败则状态为「数据损坏」，**不**从零重建，除非用户在界面点「危险：从零重建」。
 - 新设备 / 退役回归：应用最新快照 → 重放 watermark 之后的操作 → 本机多出来的实体作为新 outbox 操作上传（配对合并）。`deviceId` 保持不变，`sequence` 从 `max(本地, watermark) + 1` 续写。
 

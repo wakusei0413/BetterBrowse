@@ -81,7 +81,12 @@ export class OneTabConverter {
       let url = '';
       let title = '';
 
-      if (line.includes('|')) {
+      // OneTab 以 " | " 分隔地址与标题；URL 本身可能含 "|"（如查询参数），不能按第一个竖线切
+      const separatorIndex = line.indexOf(' | ');
+      if (separatorIndex >= 0) {
+        url = line.slice(0, separatorIndex).trim();
+        title = line.slice(separatorIndex + 3).trim();
+      } else if (/\s\|/.test(line) || /\|\s/.test(line)) {
         const parts = line.split('|');
         url = parts[0].trim();
         title = parts.slice(1).join('|').trim();
