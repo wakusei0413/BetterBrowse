@@ -2,7 +2,7 @@
  * @file frame-content-bundle.js
  * @description BetterBrowse iframe 轻量内容脚本打包产物
  * @encoding UTF-8
- * @betterbrowse-sources src/constants/action-types.js=20e5172d;src/constants/config.js=8c03a32d;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=5130ff18;src/content/frame-index.js=ecaaf4df
+ * @betterbrowse-sources src/constants/action-types.js=082bafad;src/constants/config.js=8c03a32d;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=5130ff18;src/content/frame-index.js=ecaaf4df
  */
 (function() {
   'use strict';
@@ -100,6 +100,7 @@ const ActionTypes = {
   DELETE_AUTO_BACKUP: 'DELETE_AUTO_BACKUP',   // 删除指定自动备份快照（需 confirm）
   GET_AI_CAPABILITIES: 'GET_AI_CAPABILITIES', // AI 能力自描述清单（动作、参数、确认位要求与版本）
   GET_AI_BRIDGE_STATUS: 'GET_AI_BRIDGE_STATUS', // AI 桥接连接状态（选项页与 AI 共用）
+  RELOAD_EXTENSION: 'RELOAD_EXTENSION',       // 重载扩展以加载磁盘上的最新代码（开发调试，需 confirm）
 
   // === 统一运行日志 ===
   APPEND_RUNTIME_LOG: 'APPEND_RUNTIME_LOG',      // 扩展内部上下文向后台追加运行日志（不暴露给 AI）

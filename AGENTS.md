@@ -72,6 +72,7 @@ BetterBrowse/
     │
     ├── native-host/               # AI 桥接本机宿主 (阶段三 M4, 由 Chrome Native Messaging 按需拉起)
     │   ├── bb_native_host.js      # 宿主主程序 (stdio 帧 ↔ 127.0.0.1 令牌侧信道、SW 保活 ping、串行转发)
+    │   ├── liveness.js            # 活性看门狗判定 (从上次 pong 与本请求转发时刻中较晚者计时)
     │   ├── run-host.cmd / run-host.sh # 平台启动包装 (Chrome 拉起入口)
     │   ├── install.js             # 安装器 (Windows 注册表 / macOS、Linux 目录, deno task ai-host-install)
     │   ├── host-paths.js          # 安装/卸载共用路径与注册位置 (Chrome/Edge 清单分开)
@@ -133,6 +134,7 @@ BetterBrowse/
     │   │       ├── merge.js       # 字段级合并、墓碑与冲突记录
     │   │       ├── snapshot.js    # generation 快照生成/应用 (watermark 重放)
     │   │       ├── sync-engine.js # 推/拉/合并/清单条件更新/压缩与设备退役
+    │   │       ├── remote-gc.js   # 远端占用统计与按清单引用关系回收（旧快照、未登记批次、陌生设备文件）
     │   │       ├── device-events.js # 跨设备可见、仅来源设备执行的倒计时/收纳事件
     │   │       └── account-config-sync.js # 浏览器账号偏好镜像 (chrome.storage.sync，不含收纳列表)
     │   │
@@ -539,7 +541,7 @@ deno task ai-host-uninstall
    - **扩展来源参数不是最后一个**：新版 Chrome 给宿主追加 `--parent-window=<句柄>` 等参数，宿主必须**扫描全部启动参数**寻找 `chrome-extension://<ID>/`，不能只看末位参数；
    - **启动器不依赖 PATH**：Chrome 是长驻进程，其子进程环境可能滞后于当前 shell（装完 deno 未重启 Chrome 时 `deno` 解析失败）；安装器把 `Deno.execPath()` 绝对路径烘焙进生成的启动器；
    - **分块重组后必须回填 reqId**：大响应分块传输时，信封 `id` 承载 reqId，重组后的正文本身不含它——宿主与客户端两侧重组完成后都必须回填，否则响应匹配不上在途请求被静默丢弃、串行转发器永久卡死；
-   - **宿主健壮性三件套**：stdin EOF 退出时必须关闭 TCP 监听器（否则僵尸进程）；在途请求 120 秒超时自动放行（响应丢失不能卡死队列）；90 秒无 pong 活性看门狗自动退出；
+   - **宿主健壮性三件套**：stdin EOF 退出时必须关闭 TCP 监听器（否则僵尸进程）；在途请求 120 秒超时自动放行（响应丢失不能卡死队列）；90 秒无 pong 活性看门狗自动退出——计时起点必须取「上次 pong」与「本请求转发时刻」的较晚者（`native-host/liveness.js`），空闲期间不发 ping，只看上次 pong 会让空闲后的第一个慢请求直接把宿主判死；
    - **SW 定时器可能冻结**：经 Native Messaging 唤醒并保活的 Service Worker 存在 setTimeout 回调不触发的 Chrome 异常类行为——扩展侧与宿主侧的一切健壮性超时都不能只依赖 setTimeout（宿主侧看门狗闹钟 + 队列强制重置兜底），`AIBridgeManager._onWatchdog` 检测队列连续停滞会强制重置；
    - **审计绝不阻塞响应**：`_appendAudit` 为发射后不管（内部串行队列防丢条目），await 审计会在存储层挂起时饿死响应与整个请求队列；
    - **IDB 自愈**：`MigrationManager.repairMissingObjectStores` 在启动时重建"有库无表"的残留库并从旧存储回填；`INDEXED_DB_SCHEMA_REVISION` 只能单调递增（IndexedDB 拒绝用更低修订号打开），裸抬高修订号不建表会制造出需要再次提升修订号才能修复的空库。

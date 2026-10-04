@@ -198,14 +198,25 @@ export class WebdavSyncComponent {
       return;
     }
     if (!window.confirm(`将删除远端 ${usage.garbageFiles} 个不再被同步清单引用的文件（${formatBytes(usage.garbageBytes)}），当前数据不受影响。确定继续？`)) return;
-    if (this.$remoteUsage) this.$remoteUsage.textContent = '正在清理远端文件…';
-    const res = await MessageBus.sendToBackground(ActionTypes.CLEAN_SYNC_REMOTE, { confirm: true });
-    const data = res?.data || {};
-    if (res?.success && data.success !== false) {
-      Toast.show(`已清理 ${data.deleted} 个文件，释放 ${formatBytes(data.freedBytes)}${data.failed ? `，${data.failed} 个删除失败` : ''}`);
-    } else {
-      Toast.show(data.error || res?.error || '清理失败');
+    // 后台单次最多清理约 40 秒，剩余部分自动续跑
+    const total = { deleted: 0, freedBytes: 0, failed: 0 };
+    let error = '';
+    for (let round = 0; round < 100; round += 1) {
+      if (this.$remoteUsage) {
+        this.$remoteUsage.textContent = `正在清理远端文件…已删除 ${total.deleted} 个（${formatBytes(total.freedBytes)}）`;
+      }
+      const res = await MessageBus.sendToBackground(ActionTypes.CLEAN_SYNC_REMOTE, { confirm: true });
+      const data = res?.data || {};
+      if (!res?.success || data.success === false) {
+        error = data.error || res?.error || '清理失败';
+        break;
+      }
+      total.deleted += data.deleted || 0;
+      total.freedBytes += data.freedBytes || 0;
+      total.failed += data.failed || 0;
+      if (!data.remaining || (data.deleted || 0) === 0) break;
     }
+    Toast.show(error || `已清理 ${total.deleted} 个文件，释放 ${formatBytes(total.freedBytes)}${total.failed ? `，${total.failed} 个删除失败` : ''}`);
     await this.loadRemoteUsage();
   }
 

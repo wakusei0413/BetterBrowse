@@ -38,7 +38,15 @@ python "$CLIENT" config-set '{"tabThreshold":20}'
 
 Windows 若 `python` 未指向 Python 3.9+，可使用 `py -3`；仓库测试与静态门禁可通过 `PYTHON` 环境变量指定解释器路径。退出码 0 表示成功，1 表示传输失败或业务失败；输出统一为 JSON 信封 `{"success":true,"data":...}` / `{"success":false,"code":"...","error":"..."}`。
 
-常用命令速查（完整清单运行 `python "$CLIENT" help`）：`doctor` `status` `capabilities` `stash-list` `stash-search` `group-show` `stash-add` `group-rename` `group-delete` `item-update` `config-get` `config-set` `rule-set` `sync-status` `sync-now` `backups` `backup-export`。超长请求可通过 `BB_BRIDGE_TIMEOUT_MS` 调整等待时间（默认 120 秒）。
+常用命令速查（完整清单运行 `python "$CLIENT" help`）：`doctor` `status` `capabilities` `stash-list` `stash-search` `group-show` `stash-add` `group-rename` `group-delete` `item-update` `config-get` `config-set` `rule-set` `sync-status` `sync-now` `sync-usage` `sync-clean --confirm` `backups` `backup-export` `reload --confirm`。超长请求可通过 `BB_BRIDGE_TIMEOUT_MS` 调整等待时间（默认 120 秒）。
+
+## 开发调试：重载扩展
+
+修改扩展源码后，用 `python "$CLIENT" reload --confirm` 让扩展加载磁盘上的最新代码（等同扩展管理页的「重新加载」）。命令发出后桥接会断开，客户端自动轮询直到新实例重新连上（默认最多 60 秒，可用 `--wait=秒` 调整）。重载会中断进行中的操作并关闭已打开的扩展页面，只在用户要求测试新代码时使用。
+
+## 远端空间
+
+`sync-usage` 只读统计远端文件数、体积与可清理量；`sync-clean --confirm` 删除未被同步清单引用的旧快照、批次与设备文件。扩展单次清理约 40 秒，客户端会自动续跑直到删完。同步本身每天也会自动清理一次。
 
 ## 文件、标准输入与批处理
 
@@ -71,7 +79,7 @@ python "$CLIENT" batch --file operations.json
 
 ## 硬性安全规则（必须遵守）
 
-1. **不可逆操作必须带确认位**：`group-delete` / `backup-import` / `backup-restore` / `backup-delete` / `config-reset` 必须加 `--confirm`；经 `call` 直调 `DELETE_STASH_GROUP`、`CLEAR_ALL_STASH`、`RESTORE_FULL_BACKUP`、`DEDUPLICATE_STASH_DATA`、`RESET_CONFIG`、`RESTORE_AUTO_BACKUP`、`DELETE_AUTO_BACKUP`、`RESTORE_STASH_GROUP_DATA`、`CLEAR_RUNTIME_LOGS`、`REBUILD_SYNC_FROM_SCRATCH`、`FALLBACK_PREVIOUS_SNAPSHOT`、`RETIRE_SYNC_DEVICE` 时 payload 必须含 `"confirm": true`。运行时以 `capabilities` 返回的 `confirmRequired` 为唯一事实源，缺少确认位时插件会直接拒绝。
+1. **不可逆操作必须带确认位**：`group-delete` / `backup-import` / `backup-restore` / `backup-delete` / `config-reset` 必须加 `--confirm`；经 `call` 直调 `DELETE_STASH_GROUP`、`CLEAR_ALL_STASH`、`RESTORE_FULL_BACKUP`、`DEDUPLICATE_STASH_DATA`、`RESET_CONFIG`、`RESTORE_AUTO_BACKUP`、`DELETE_AUTO_BACKUP`、`RESTORE_STASH_GROUP_DATA`、`CLEAR_RUNTIME_LOGS`、`REBUILD_SYNC_FROM_SCRATCH`、`FALLBACK_PREVIOUS_SNAPSHOT`、`RETIRE_SYNC_DEVICE`、`CLEAN_SYNC_REMOTE`、`RELOAD_EXTENSION` 时 payload 必须含 `"confirm": true`。运行时以 `capabilities` 返回的 `confirmRequired` 为唯一事实源，缺少确认位时插件会直接拒绝。
 2. **破坏性操作前先备份**：执行清空、恢复备份、去重前，先运行 `python "$CLIENT" backup-export --output <文件>`。
 3. **凭据只写不可读**：可以用 `sync-credentials` 保存 WebDAV 凭据，但任何响应都不会包含密码；不要尝试读取。
 4. **所有操作有审计**：每次调用写入插件选项页「运行日志」Tab，用户可见。不要执行用户没有要求的操作。

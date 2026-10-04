@@ -221,6 +221,9 @@ class ArgumentAndMappingTests(unittest.TestCase):
             ("rules-get", [], {}, "GET_DOMAIN_RULES"),
             ("sync-now", [], {}, "RUN_SYNC_NOW"),
             ("sync-status", [], {}, "GET_SYNC_STATUS"),
+            ("sync-usage", [], {}, "GET_SYNC_REMOTE_USAGE"),
+            ("sync-clean", [], {"confirm": True}, "CLEAN_SYNC_REMOTE"),
+            ("reload", [], {"confirm": True}, "RELOAD_EXTENSION"),
             ("sync-credentials", ["{\"username\":\"u\"}"], {}, "SAVE_WEBDAV_CREDENTIALS"),
             ("eval-tabs", [], {}, "EVALUATE_TABS"),
             ("tab-count", [], {}, "GET_TAB_COUNT_INFO"),
@@ -364,6 +367,36 @@ class PaginationExportAndBatchTests(unittest.TestCase):
         self.assertEqual("BATCH_FAILED", response["code"])
         self.assertEqual(1, response["data"]["completed"])
         self.assertEqual(["ONE", "TWO"], [action for action, _payload in session.requests])
+
+    def test_sync_clean_repeats_until_remaining_is_zero(self) -> None:
+        session = RecordingSession(
+            [
+                {"success": True, "data": {"success": True, "deleted": 200, "freedBytes": 2000, "failed": 0, "remaining": 150}},
+                {"success": True, "data": {"success": True, "deleted": 150, "freedBytes": 1500, "failed": 1, "remaining": 0}},
+                {"success": True, "data": {"success": True, "deleted": 0, "remaining": 0}},
+            ]
+        )
+        built = client.build_request("sync-clean", [], {"confirm": True})
+        response = client.execute_repeat(session, built)
+        self.assertTrue(response["success"])
+        self.assertEqual({"deleted": 350, "freedBytes": 3500, "failed": 1, "rounds": 2, "remaining": 0}, response["data"])
+        self.assertEqual([{"confirm": True}, {"confirm": True}], [payload for _action, payload in session.requests])
+
+    def test_sync_clean_stops_when_a_round_makes_no_progress(self) -> None:
+        session = RecordingSession(
+            [
+                {"success": True, "data": {"success": True, "deleted": 0, "failed": 5, "remaining": 5}},
+                {"success": True, "data": {"success": True, "deleted": 0, "failed": 5, "remaining": 5}},
+            ]
+        )
+        response = client.execute_repeat(session, client.build_request("sync-clean", [], {"confirm": True}))
+        self.assertEqual(1, response["data"]["rounds"], "没有进展必须停止，不能空转 100 轮")
+        self.assertEqual(5, response["data"]["remaining"])
+
+    def test_reload_requires_confirmation_bit_and_waits_for_reconnect(self) -> None:
+        built = client.build_request("reload", [], {})
+        self.assertEqual({"confirm": False}, built["payload"])
+        self.assertTrue(built["waitReconnect"])
 
     def test_stash_list_stops_on_repeated_cursor(self) -> None:
         session = RecordingSession(

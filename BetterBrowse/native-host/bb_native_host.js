@@ -21,6 +21,7 @@
 
 import { join } from 'jsr:@std/path@^1.0.8';
 import { API_VERSION, apiVersionMismatchMessage, readApiVersion } from '../src/constants/api-version.js';
+import { isExtensionUnresponsive } from './liveness.js';
 
 const HOST_NAME = 'com.betterbrowse.bridge';
 const MAINTENANCE_INTERVAL_MS = 25000;
@@ -271,7 +272,7 @@ class BridgeHost {
       const now = Date.now();
       // 空闲宿主只维持 TCP 与 Native Messaging 通道，不主动唤醒 Service Worker。
       // 有在途请求时才用 ping 检查扩展活性，并保留原有超时放行保障。
-      if (this.inflight && now - this.lastPongAt > LIVENESS_TIMEOUT_MS) {
+      if (isExtensionUnresponsive({ inflight: this.inflight, lastPongAt: this.lastPongAt, now, timeoutMs: LIVENESS_TIMEOUT_MS })) {
         log(`在途请求期间超过 ${Math.round(LIVENESS_TIMEOUT_MS / 1000)} 秒未收到扩展响应，宿主自动退出`);
         await this.shutdown();
         Deno.exit(0);

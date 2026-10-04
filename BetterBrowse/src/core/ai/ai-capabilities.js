@@ -36,6 +36,7 @@ export const AI_CONFIRM_REQUIRED_ACTIONS = new Set([
   ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT, // 回退上一份快照（非合并应用，覆盖本地收纳数据）
   ActionTypes.RETIRE_SYNC_DEVICE,     // 退役同步设备（从远端清单移除）
   ActionTypes.CLEAN_SYNC_REMOTE,      // 删除远端未被清单引用的文件
+  ActionTypes.RELOAD_EXTENSION,       // 重载扩展（中断进行中的操作，关闭扩展页面）
   ActionTypes.RESTORE_STASH_GROUP_DATA // 恢复组快照（写入任意 URL 载荷）
 ]);
 
@@ -270,7 +271,7 @@ export const AI_ACTION_DOCS = {
     summary: '统计远端文件数、体积与可清理量（PROPFIND 逐目录列出，以最新清单的引用关系判定）'
   },
   [ActionTypes.CLEAN_SYNC_REMOTE]: {
-    summary: '删除远端未被清单引用的旧快照、批次、设备文件与探测残留；15 分钟内新写的文件保留',
+    summary: '删除远端未被清单引用的旧快照、批次、设备文件与探测残留；15 分钟内新写的文件保留；单次约 40 秒，remaining > 0 时需再次调用',
     note: '需 confirm'
   },
   [ActionTypes.GET_SYNC_RECOVERY_INFO]: { summary: '读取同步损坏状态与本机快照可用性' },
@@ -283,6 +284,10 @@ export const AI_ACTION_DOCS = {
   // === 桥自身 ===
   [ActionTypes.GET_AI_CAPABILITIES]: { summary: '获取本能力清单（动作、参数、确认位要求与版本）' },
   [ActionTypes.GET_AI_BRIDGE_STATUS]: { summary: '获取桥接连接状态（选项页共用）' },
+  [ActionTypes.RELOAD_EXTENSION]: {
+    summary: '重载扩展以加载磁盘上的最新代码（等同扩展管理页的「重新加载」）；约 0.5 秒后执行，桥接会断开并自动重连',
+    note: '需 confirm'
+  },
   [ActionTypes.QUERY_RUNTIME_LOGS]: {
     summary: '查询本机运行日志',
     params: { level: 'debug | info | warn | error（可选）', source: 'string（可选）', keyword: 'string（可选）', limit: 'number，最大 1000' }

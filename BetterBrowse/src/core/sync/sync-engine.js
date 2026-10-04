@@ -37,6 +37,10 @@ const PROBE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const REMOTE_GC_KEY = 'remoteGc';
 /** 兼容模式写清单后回读校验前的等待（让并发写入方的 PUT 先落地） */
 const COMPAT_VERIFY_DELAY_MS = 1500;
+/** 手动清理单次时间预算：AI 桥接单请求上限 60 秒，留出盘点与响应余量；剩余部分由调用方续跑 */
+const MANUAL_GC_BUDGET_MS = 40000;
+/** 同步内自动回收的时间预算：不让一次同步被大量删除拖长，没删完的下次同步继续 */
+const AUTO_GC_BUDGET_MS = 20000;
 
 /**
  * @param {number} bytes
@@ -535,7 +539,7 @@ export class SyncEngine {
         garbageFiles: usage.garbage.length,
         garbageBytes: usage.garbageBytes,
         skippedRecent: usage.skippedRecent,
-        lastCleanupAt: Number(lastGc?.at) || 0
+        lastCleanupAt: Number(lastGc?.lastRunAt || lastGc?.at) || 0
       };
     } catch (err) {
       return { success: false, error: `服务器不支持列出目录（PROPFIND）：${err.message}` };
@@ -543,7 +547,8 @@ export class SyncEngine {
   }
 
   /**
-   * 清理远端未被清单引用的文件（快照、批次、设备文件与探测残留）
+   * 清理远端未被清单引用的文件（快照、批次、设备文件与探测残留）。
+   * 单次最多执行约 40 秒，结果中的 remaining 大于 0 时需再次调用。
    * @param {{ confirm?: boolean }} [options]
    */
   static async cleanRemote({ confirm } = {}) {
@@ -553,7 +558,7 @@ export class SyncEngine {
     try {
       const creds = await WebdavCredentials.get();
       if (!creds.serverUrl) return { success: false, error: '未配置 WebDAV' };
-      const result = await this._collectRemote(this._client(creds));
+      const result = await this._collectRemote(this._client(creds), MANUAL_GC_BUDGET_MS);
       return result ? { success: true, ...result } : { success: false, error: '远端没有清单，拒绝清理' };
     } catch (err) {
       return { success: false, error: err.message };
@@ -570,21 +575,25 @@ export class SyncEngine {
   /**
    * 以最新清单为准执行一次回收；没有清单时拒绝（无法判断引用关系）
    * @param {WebdavClient} client
-   * @returns {Promise<{ deleted: number, freedBytes: number, failed: number, scannedFiles: number, totalBytes: number } | null>}
+   * @param {number} [budgetMs]
+   * @returns {Promise<{ deleted: number, freedBytes: number, failed: number, remaining: number, remainingBytes: number, scannedFiles: number, totalBytes: number } | null>}
    */
-  static async _collectRemote(client) {
+  static async _collectRemote(client, budgetMs = Infinity) {
+    const startedAt = Date.now();
     const loaded = await this._loadManifest(client);
     if (loaded.corrupt || !loaded.manifest) return null;
     const usage = await RemoteGarbageCollector.inventory(client, loaded.manifest, {
       protect: await this._protectedPaths()
     });
-    const result = await RemoteGarbageCollector.collect(client, usage.garbage);
+    const result = await RemoteGarbageCollector.collect(client, usage.garbage, { deadline: startedAt + budgetMs });
     const summary = { ...result, scannedFiles: usage.totalFiles, totalBytes: usage.totalBytes };
-    await this._setMeta(REMOTE_GC_KEY, { at: Date.now(), ...summary });
+    // 没删完：时间记为 0，下次同步继续回收
+    await this._setMeta(REMOTE_GC_KEY, { at: result.remaining > 0 ? 0 : Date.now(), lastRunAt: Date.now(), ...summary });
     if (result.deleted > 0 || result.failed > 0) {
       console.info(
         `[SyncEngine] 远端回收：扫描 ${usage.totalFiles} 个文件（${formatBytes(usage.totalBytes)}），`
         + `删除 ${result.deleted} 个（${formatBytes(result.freedBytes)}），失败 ${result.failed} 个`
+        + (result.remaining > 0 ? `，剩余 ${result.remaining} 个待下次继续` : '')
       );
     }
     return summary;
@@ -594,7 +603,7 @@ export class SyncEngine {
     const last = await this._getMeta(REMOTE_GC_KEY);
     if (Date.now() - (Number(last?.at) || 0) < REMOTE_GC_INTERVAL_MS) return null;
     try {
-      return await this._collectRemote(client);
+      return await this._collectRemote(client, AUTO_GC_BUDGET_MS);
     } catch (err) {
       // 不支持 PROPFIND 的服务器：记下时间，避免每次同步都重试
       await this._setMeta(REMOTE_GC_KEY, { at: Date.now(), error: err.message });

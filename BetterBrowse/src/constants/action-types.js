@@ -88,6 +88,7 @@ export const ActionTypes = {
   DELETE_AUTO_BACKUP: 'DELETE_AUTO_BACKUP',   // 删除指定自动备份快照（需 confirm）
   GET_AI_CAPABILITIES: 'GET_AI_CAPABILITIES', // AI 能力自描述清单（动作、参数、确认位要求与版本）
   GET_AI_BRIDGE_STATUS: 'GET_AI_BRIDGE_STATUS', // AI 桥接连接状态（选项页与 AI 共用）
+  RELOAD_EXTENSION: 'RELOAD_EXTENSION',       // 重载扩展以加载磁盘上的最新代码（开发调试，需 confirm）
 
   // === 统一运行日志 ===
   APPEND_RUNTIME_LOG: 'APPEND_RUNTIME_LOG',      // 扩展内部上下文向后台追加运行日志（不暴露给 AI）

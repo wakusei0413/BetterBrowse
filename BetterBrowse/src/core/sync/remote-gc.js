@@ -119,13 +119,18 @@ export class RemoteGarbageCollector {
    * 删除盘点出的可回收文件
    * @param {import('./webdav-client.js').WebdavClient} client
    * @param {Array<{ path: string, size: number }>} garbage
-   * @returns {Promise<{ deleted: number, freedBytes: number, failed: number }>}
+   * @param {{ deadline?: number }} [options] - 到达截止时间即停止，剩余数量随结果返回，由调用方续跑
+   * @returns {Promise<{ deleted: number, freedBytes: number, failed: number, remaining: number, remainingBytes: number }>}
    */
-  static async collect(client, garbage) {
+  static async collect(client, garbage, { deadline = Infinity } = {}) {
     let deleted = 0;
     let freedBytes = 0;
     let failed = 0;
-    for (const item of garbage || []) {
+    const list = garbage || [];
+    let index = 0;
+    for (; index < list.length; index += 1) {
+      if (Date.now() >= deadline) break;
+      const item = list[index];
       try {
         const res = await client.delete(item.path);
         if (res.status < 400 || res.status === 404) {
@@ -138,6 +143,13 @@ export class RemoteGarbageCollector {
         failed += 1;
       }
     }
-    return { deleted, freedBytes, failed };
+    const rest = list.slice(index);
+    return {
+      deleted,
+      freedBytes,
+      failed,
+      remaining: rest.length,
+      remainingBytes: rest.reduce((sum, item) => sum + item.size, 0)
+    };
   }
 }

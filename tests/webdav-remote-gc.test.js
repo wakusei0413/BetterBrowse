@@ -226,3 +226,23 @@ Deno.test("WebdavClient.listDetailed：解析绝对 URL href、目录与大小�
   assert(embeddedTimestamp(`gen-0001_${Date.now().toString(36)}_abcdefgh.json`) > 0);
   assertEquals(embeddedTimestamp('gen-0412.json'), 0);
 });
+
+Deno.test("远端回收：按时间预算分段删除，返回剩余数量供续跑", async () => {
+  const { RemoteGarbageCollector } = await import("../BetterBrowse/src/core/sync/remote-gc.js");
+  const deleted = [];
+  const slowClient = {
+    delete: async (path) => {
+      deleted.push(path);
+      await new Promise((r) => setTimeout(r, 20));
+      return { status: 204 };
+    }
+  };
+  const garbage = Array.from({ length: 50 }, (_, i) => ({ path: `snapshots/gen-${i}.json`, size: 10 }));
+  const first = await RemoteGarbageCollector.collect(slowClient, garbage, { deadline: Date.now() + 100 });
+  assert(first.deleted > 0 && first.deleted < 50, `应在预算内只删一部分，实际 ${first.deleted}`);
+  assertEquals(first.remaining, 50 - first.deleted);
+  assertEquals(first.remainingBytes, first.remaining * 10);
+  const rest = await RemoteGarbageCollector.collect(slowClient, garbage.slice(first.deleted));
+  assertEquals(rest.remaining, 0);
+  assertEquals(deleted.length, 50);
+});
