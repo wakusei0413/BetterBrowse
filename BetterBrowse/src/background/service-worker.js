@@ -16,14 +16,12 @@ import { PinnedTabGuard } from './pinned-tab-guard.js';
 import { ContextMenuManager } from './context-menu-manager.js';
 import { SyncScheduler } from './sync-scheduler.js';
 import { AccountConfigSync } from '../core/sync/account-config-sync.js';
-import { isOwnOptionsUrl } from '../core/extension-url.js';
-import { createActionHandlers } from './action-handlers.js';
+import { createActionHandlers, openOptionsPage } from './action-handlers.js';
 import { AIBridgeManager } from './ai-bridge.js';
 import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
 import { RuntimeLogRepository } from '../core/logging/runtime-log-repository.js';
 import { DeviceEventLog } from '../core/sync/device-events.js';
 import { isTrustedPopupLifecyclePort } from '../core/security/message-authorizer.js';
-import { notifyTopFrame } from './link-notifier.js';
 
 installRuntimeLogger({
   context: 'background',
@@ -41,25 +39,17 @@ ContextMenuManager.init();
 
 // 云端同步调度：变更防抖、启动拉取、定时器与网络恢复（未启用时自动跳过）
 SyncScheduler.init();
+// 账号偏好镜像的 storage.onChanged 必须顶层同步注册，否则其它设备的偏好变更唤醒不了休眠的 SW
+AccountConfigSync.bindListener();
 
 const thresholdMonitor = new ThresholdMonitor({
   onStashRequested: async (targetWindowId = null) => {
-    return await stashService.executeStash(activityTracker.getStats(), {
+    return await stashService.executeStash(await activityTracker.getReadyStats(), {
       forceAll: false,
       windowId: targetWindowId
     });
   },
-  onOpenOptions: async () => {
-    const targetUrl = chrome.runtime.getURL('src/options/options.html#stash-settings');
-    const tabs = await chrome.tabs.query({ currentWindow: true });
-    const existingOptionsTab = tabs.find((t) => isOwnOptionsUrl(t.url));
-    if (existingOptionsTab) {
-      await chrome.tabs.update(existingOptionsTab.id, { url: targetUrl, active: true });
-      MessageBus.sendToTab(existingOptionsTab.id, 'SWITCH_OPTIONS_TAB', { tab: 'stash-settings' }, 800).catch(() => {});
-    } else {
-      await chrome.tabs.create({ url: targetUrl, active: true });
-    }
-  }
+  onOpenOptions: () => openOptionsPage('stash-settings')
 });
 
 // 扩展安装/升级时运行迁移并强制死守首位固定小标签
@@ -70,6 +60,9 @@ chrome.runtime.onInstalled.addListener((details) => {
     await AccountConfigSync.init();
     const config = await StorageAdapter.getUserConfig();
     if (config.stashSettings?.pinnedTabGuard !== false) await StashService.ensureAllAllWindowsPinnedTab();
+    // 重载/更新扩展属于本事件：此时标签数可能早已超过阈值，不补检就要等到下一次标签事件
+    // 才会出现倒计时，用户会认为"自动收纳完全没有触发"
+    await thresholdMonitor.checkTabCount().catch(() => {});
   })().catch((err) => {
     console.warn('[ServiceWorker] 安装/更新初始化异常:', err?.message || err);
   });
@@ -104,24 +97,13 @@ MigrationManager.runMigrations()
   .then(() => AccountConfigSync.init())
   .catch((err) => {
     console.warn('[ServiceWorker] 浏览器账号偏好同步初始化异常:', err);
+  })
+  // SW 冷启动（含扩展重载、被任意事件唤醒）也补检一次阈值：否则标签数早已超阈值时，
+  // 一切静默直到下一次标签增删或窗口聚焦才可能出现倒计时
+  .then(() => thresholdMonitor.checkTabCount())
+  .catch((err) => {
+    console.warn('[ServiceWorker] 启动阈值检查异常:', err?.message || err);
   });
-
-/**
- * 兼容旧注入：仅向 HTTP(S) 顶层框架发送，倒计时等路径应改用 notifyTopFrame。
- * @param {string} action
- * @param {any} [data={}]
- */
-async function broadcastToTabs(action, data = {}) {
-  try {
-    const tabs = await chrome.tabs.query({});
-    await Promise.all(tabs.map((tab) => {
-      if (!tab.id || !tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) return Promise.resolve();
-      return notifyTopFrame(tab.id, action, data);
-    }));
-  } catch (err) {
-    console.warn('[ServiceWorker] 广播消息异常:', err);
-  }
-}
 
 try { chrome.action?.setBadgeText?.({ text: '' }); } catch {}
 
@@ -132,7 +114,6 @@ const actionHandlers = createActionHandlers({
   stashService,
   activityTracker,
   thresholdMonitor,
-  broadcastToTabs,
   aiBridge
 });
 const messageHandlers = {

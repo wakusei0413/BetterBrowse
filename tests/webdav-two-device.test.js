@@ -13,106 +13,7 @@ import { LocalStashRepository } from "../BetterBrowse/src/core/stash/local-stash
 import { WebdavCredentials } from "../BetterBrowse/src/core/sync/credentials.js";
 import { SyncEngine } from "../BetterBrowse/src/core/sync/sync-engine.js";
 import { FakeIDBFactory } from "./helpers/fake-indexeddb.js";
-
-/**
- * 安装 chrome.storage 内存模拟（每台设备独立一份，可复用已有数据对象）
- */
-function installChromeStore(data = {}) {
-  const store = data;
-  globalThis.chrome = {
-    runtime: {
-      lastError: null,
-      getURL: (p) => `chrome-extension://test/${p}`,
-      sendMessage: () => {}
-    },
-    storage: {
-      local: {
-        get: (keys, callback) => {
-          if (keys === null) return callback({ ...store });
-          if (typeof keys === 'string') return callback({ [keys]: store[keys] });
-          if (Array.isArray(keys)) {
-            const res = {};
-            keys.forEach((k) => { res[k] = store[k]; });
-            return callback(res);
-          }
-          callback({ ...store });
-        },
-        set: (items, callback) => {
-          Object.assign(store, items);
-          callback?.();
-        }
-      }
-    },
-    alarms: {
-      create: () => {},
-      clear: () => {},
-      onAlarm: { addListener: () => {} }
-    }
-  };
-  return store;
-}
-
-/**
- * 内存版 WebDAV 服务器（与 webdav-sync.test.js 语义一致）
- */
-class FakeWebdavServer {
-  constructor() {
-    this.files = new Map();
-    this.counter = 0;
-  }
-
-  etag() {
-    return `etag-${++this.counter}`;
-  }
-
-  _response(status, body = '', etag = undefined) {
-    const headers = {};
-    if (etag !== undefined) headers['ETag'] = etag;
-    return new Response(body, { status, headers });
-  }
-
-  async fetch(url, options = {}) {
-    const method = (options.method || 'GET').toUpperCase();
-    const path = decodeURIComponent(new URL(url).pathname).replace(/^.*\/BetterBrowse\/?/, '');
-    const headers = options.headers || {};
-    const file = this.files.get(path);
-
-    if (method === 'MKCOL') {
-      if (this.files.has(path)) return this._response(405);
-      this.files.set(path, { body: '', etag: this.etag() });
-      return this._response(201);
-    }
-    if (method === 'GET') {
-      if (!file) return this._response(404);
-      return this._response(200, file.body, file.etag);
-    }
-    if (method === 'DELETE') {
-      if (!file) return this._response(404);
-      this.files.delete(path);
-      return this._response(204);
-    }
-    if (method === 'PUT') {
-      if (headers['If-Match'] && (!file || file.etag !== headers['If-Match'])) return this._response(412);
-      if (headers['If-None-Match'] === '*' && file) return this._response(412);
-      const etag = this.etag();
-      this.files.set(path, { body: options.body ?? '', etag });
-      return this._response(201, '', etag);
-    }
-    return this._response(405);
-  }
-
-  getManifest() {
-    const raw = this.files.get('manifest.json');
-    return raw ? JSON.parse(raw.body) : null;
-  }
-}
-
-/** 切换到指定设备的本地环境（IndexedDB 工厂 + chrome.storage） */
-async function useDevice(factory, store) {
-  await IndexedDBManager.close();
-  globalThis.indexedDB = factory;
-  installChromeStore(store);
-}
+import { FakeWebdavServer, installChromeStore, useDevice } from "./helpers/fake-webdav.js";
 
 Deno.test("双设备端到端：新设备配对不丢本机数据、双向传播、删除同步", async () => {
   const server = new FakeWebdavServer();
@@ -221,8 +122,9 @@ Deno.test("双设备端到端：连错数据集目录时报数据损坏而非静
     assertEquals(runB1.success, true);
 
     // 远端被替换为另一个全新数据集（模拟 A 清空重建 / B 连错目录）
+    const staleSnapshotId = server.getManifest().snapshotId;
     server.files.delete('manifest.json');
-    server.files.delete('snapshots/gen-0001.json');
+    server.files.delete(`snapshots/${staleSnapshotId}.json`);
     const runB2 = await SyncEngine.run({ manual: true });
     assertEquals(runB2.success, false);
     assertEquals(runB2.status, 'corrupt', "有同步历史的设备遇到陌生数据集应报数据损坏");

@@ -54,6 +54,12 @@ export class IndexedDBManager {
    * 下一次操作会惰性重建连接，这是应对 MV3 Service Worker 休眠的核心手段。
    */
   static _dbPromise = null;
+  /** 本进程内收纳组仓储是否经升级新建（供自愈修复判断是否需要从旧存储回填） */
+  static stashStoreRecreated = false;
+  /** 本次打开是否新建了整个库（onupgradeneeded 的 oldVersion 为 0） */
+  static _createdFresh = false;
+  /** 主库被重建后的回调（由迁移管理器注册为自愈回填，运行中途重建也能及时恢复） */
+  static onRecreated = null;
 
   /** 进程内串行写入队列（Web Locks API 不可用时的降级方案） */
   static _localWriteQueue = Promise.resolve();
@@ -99,7 +105,12 @@ export class IndexedDBManager {
 
       request.onupgradeneeded = (event) => {
         // 首次创建或版本升级时建立对象仓储与索引；已有仓储的新增索引必须通过升级事务补建
-        this._ensureSchema(event.target.result, event.target.transaction);
+        const db = event.target.result;
+        // oldVersion 为 0 表示磁盘上原本没有这个库：首次安装，或已迁移的主库被浏览器删除后重建
+        if (event.oldVersion === 0) this._createdFresh = true;
+        // 记录收纳组仓储是否在本次升级中新建：只有"仓储曾经缺失"才说明主库数据丢失、需要从旧存储回填
+        if (!db.objectStoreNames.contains(IDBStores.STASH_GROUPS)) this.stashStoreRecreated = true;
+        this._ensureSchema(db, event.target.transaction);
       };
 
       request.onsuccess = () => {
@@ -115,6 +126,10 @@ export class IndexedDBManager {
         settled = true;
         clearTimeout(timeout);
         const db = request.result;
+        if (this._createdFresh) {
+          this._createdFresh = false;
+          this._recordRecreationIfDataExpected();
+        }
         // 连接被浏览器强制关闭（数据库被删除 / 私密模式回收）时清空缓存，下次操作重新打开
         db.onclose = () => {
           this._dbPromise = null;
@@ -141,6 +156,34 @@ export class IndexedDBManager {
         // 不立即失败：等待超时保护兜底（其他上下文通常会在 onversionchange 中主动让出）
       };
     });
+  }
+
+  /**
+   * 新建出来的库若本应已有数据（本地数据修订 ≥ 5，即数据早已迁入主库），说明主库被浏览器删除重建
+   * （数据库损坏、清除站点数据等）。把这一事实持久化到 chrome.storage：主库可能在运行中途重建，
+   * 进程内标记会随 Service Worker 休眠丢失，下一次启动的自愈修复必须仍能据此回填。
+   * 这里直接使用 chrome.storage 回调接口，避免与 StorageAdapter 形成循环依赖。
+   */
+  static _recordRecreationIfDataExpected() {
+    const local = globalThis.chrome?.storage?.local;
+    if (!local?.get || !local?.set) return;
+    try {
+      local.get(['bb_schema_version', 'bb_idb_recreated_at'], (items) => {
+        if (globalThis.chrome.runtime?.lastError) return;
+        if (Number(items?.bb_schema_version) < 5 || items?.bb_idb_recreated_at) return;
+        local.set({ bb_idb_recreated_at: Date.now() }, () => {
+          void globalThis.chrome.runtime?.lastError;
+          console.warn('[IndexedDBManager] 检测到收纳主库被重建，下次启动将从灾备副本自动回填');
+          try {
+            this.onRecreated?.();
+          } catch {
+            // 回填钩子失败不影响当前写入
+          }
+        });
+      });
+    } catch {
+      // 测试环境或浏览器关闭过程中忽略
+    }
   }
 
   /**

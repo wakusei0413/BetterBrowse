@@ -4,12 +4,17 @@
  * @encoding UTF-8
  */
 
-import { dirname, fromFileUrl, resolve } from '@std/path';
+import { dirname, fromFileUrl, relative, resolve } from '@std/path';
+import { walk } from '@std/fs';
 import { buildContentBundle, buildFrameContentBundle } from './build-content.js';
+import { runActionContractChecks } from './verify-action-contract.js';
+import { runVersioningChecks } from './verify-versioning.js';
+import { runStorageDisciplineChecks } from './verify-storage-discipline.js';
 
 const projectRoot = resolve(dirname(fromFileUrl(import.meta.url)), '..');
+const repositoryRoot = resolve(projectRoot, '..');
 
-const allJsFiles = [
+const allJsFiles = new Set([
   'src/constants/api-version.js',
   'src/constants/action-types.js',
   'src/constants/config.js',
@@ -36,6 +41,8 @@ const allJsFiles = [
   'src/core/stash/indexed-stash-repo.js',
   'src/core/stash/onetab-converter.js',
   'src/core/stash/stash-service.js',
+  'src/core/stash/stash-result.js',
+  'src/core/stash/group-title.js',
   'src/core/ai/ai-capabilities.js',
   'src/core/sync/sync-constants.js',
   'src/core/sync/crypto-util.js',
@@ -56,6 +63,7 @@ const allJsFiles = [
   'src/background/ai-bridge.js',
   'src/background/service-worker.js',
   'src/content/link-interceptor.js',
+  'src/content/runtime-message.js',
   'src/content/form-detector.js',
   'src/content/countdown-banner.js',
   'src/content/main-world-bridge.js',
@@ -66,13 +74,57 @@ const allJsFiles = [
   'src/background/link-notifier.js',
   'src/popup/popup.js',
   'src/options/list-window.js',
+  'src/options/constants.js',
+  'src/options/components/toast.js',
+  'src/options/components/stash-tab.js',
+  'src/options/components/stash-card.js',
+  'src/options/components/stash-favicons.js',
+  'src/options/components/stash-settings.js',
+  'src/options/components/rules-config.js',
+  'src/options/components/domain-rules.js',
+  'src/options/components/backup.js',
+  'src/options/components/webdav-sync.js',
+  'src/options/components/ai-bridge.js',
+  'src/options/components/runtime-log.js',
+  'src/options/components/about.js',
+  'src/options/components/search-home.js',
+  'src/options/ui/custom-select.js',
+  'src/options/ui/time-tree.js',
   'src/options/options.js',
   'native-host/bb_native_host.js',
+  'native-host/host-paths.js',
   'native-host/install.js',
   'native-host/uninstall.js',
   'scripts/bump-api-version.js',
-  '../skills/better-browse/scripts/bb-bridge-client.js'
-];
+  'scripts/verify-action-contract.js',
+  'scripts/verify-versioning.js'
+]);
+
+const allPythonFiles = new Set([
+  '../skills/BetterBrowse/scripts/betterbrowse_client.py',
+  '../tests/python/test_betterbrowse_client.py'
+]);
+
+// 自动纳入扩展根目录下新增的 JavaScript 模块，避免手写清单遗漏新文件。
+for await (const entry of walk(projectRoot, { includeDirs: false, exts: ['.js'] })) {
+  allJsFiles.add(relative(projectRoot, entry.path).replaceAll('\\', '/'));
+}
+
+// 自动纳入 Skill 与测试目录中的 Python 源文件，缓存目录由 .gitignore 排除且不参与校验。
+for (const pythonRoot of [
+  resolve(repositoryRoot, 'skills/BetterBrowse'),
+  resolve(repositoryRoot, 'tests/python')
+]) {
+  try {
+    for await (const entry of walk(pythonRoot, { includeDirs: false, exts: ['.py'] })) {
+      allPythonFiles.add(relative(projectRoot, entry.path).replaceAll('\\', '/'));
+    }
+  } catch (err) {
+    if (!(err instanceof Deno.errors.NotFound)) throw err;
+  }
+}
+
+const allSourceFiles = new Set([...allJsFiles, ...allPythonFiles]);
 
 console.log('=== 开始代码与静态规范校验 ===\n');
 
@@ -82,8 +134,8 @@ function resolveProject(relPath) {
   return resolve(projectRoot, relPath);
 }
 
-// 1. 验证文件存在性与 UTF-8 编码
-for (const file of allJsFiles) {
+// 1. 验证 JavaScript 与 Python 文件存在性及 UTF-8 编码
+for (const file of allSourceFiles) {
   const fullPath = resolveProject(file);
   try {
     const buffer = await Deno.readFile(fullPath);
@@ -104,6 +156,36 @@ for (const file of allJsFiles) {
     console.error(`[FAIL] 文件不存在: ${file}`);
     hasError = true;
   }
+}
+
+// Python 使用内存 AST 编译检查语法；-B 与 sys.dont_write_bytecode 双重确保不生成 __pycache__。
+try {
+  const pythonExecutable = Deno.env.get('PYTHON') || 'python';
+  const pythonPaths = [...allPythonFiles].map(resolveProject);
+  const syntaxScript = [
+    'import ast, pathlib, sys',
+    'sys.dont_write_bytecode = True',
+    'minimum = (3, 9)',
+    'if sys.version_info < minimum:',
+    '    raise SystemExit(f"需要 Python 3.9+，当前为 {sys.version.split()[0]}")',
+    'for filename in sys.argv[1:]:',
+    '    source = pathlib.Path(filename).read_text(encoding="utf-8")',
+    '    ast.parse(source, filename=filename, feature_version=(3, 9))'
+  ].join('\n');
+  const output = await new Deno.Command(pythonExecutable, {
+    args: ['-B', '-c', syntaxScript, ...pythonPaths],
+    stdout: 'piped',
+    stderr: 'piped'
+  }).output();
+  if (!output.success) {
+    console.error('[FAIL] Python 3.9+ 语法检查失败:', new TextDecoder().decode(output.stderr).trim());
+    hasError = true;
+  } else {
+    console.log(`[PASS] Python 3.9+ 语法检查通过（${pythonPaths.length} 个文件，未生成 pycache）`);
+  }
+} catch (err) {
+  console.error('[FAIL] 无法执行 Python 3.9+ 语法检查:', err.message);
+  hasError = true;
 }
 
 // 2. 验证 manifest.json
@@ -144,8 +226,7 @@ try {
 const duplicateVersionFiles = [
   'src/core/ai/ai-capabilities.js',
   'src/background/ai-bridge.js',
-  'native-host/bb_native_host.js',
-  '../skills/better-browse/scripts/bb-bridge-client.js'
+  'native-host/bb_native_host.js'
 ];
 const duplicateVersionPattern = /\b(?:AI_BRIDGE_PROTO|PROTOCOL_VERSION)\b|\b(?:const|let|var)\s+API_VERSION\s*=/;
 for (const file of duplicateVersionFiles) {
@@ -156,6 +237,19 @@ for (const file of duplicateVersionFiles) {
   } else {
     console.log(`[PASS] ${file} 未定义独立 API 版本`);
   }
+}
+
+const pythonClientPath = '../skills/BetterBrowse/scripts/betterbrowse_client.py';
+const pythonClientSource = await Deno.readTextFile(resolveProject(pythonClientPath));
+const pythonHardcodedVersionPattern = /^\s*(?:API_VERSION|PROTOCOL_VERSION|AI_BRIDGE_PROTO)\s*=|["']apiVersion["']\s*:\s*\d+/m;
+if (pythonHardcodedVersionPattern.test(pythonClientSource)) {
+  console.error(`[FAIL] ${pythonClientPath} 硬编码了 API 版本，必须从 bridge.json.apiVersion 读取`);
+  hasError = true;
+} else if (!/info\[["']apiVersion["']\]/.test(pythonClientSource)) {
+  console.error(`[FAIL] ${pythonClientPath} 未从 bridge.json 信息读取 apiVersion`);
+  hasError = true;
+} else {
+  console.log(`[PASS] ${pythonClientPath} 从 bridge.json 读取 API 版本且未硬编码`);
 }
 
 const apiBumpSource = await Deno.readTextFile(resolveProject('scripts/bump-api-version.js'));
@@ -185,7 +279,7 @@ for (const size of iconSizes) {
 }
 
 // 5. 验证 HTML 文件 ID 唯一性与编码
-const htmlFiles = ['src/popup/popup.html', 'src/options/options.html'];
+const htmlFiles = ['src/popup/popup.html', 'src/options/options.html', 'src/newtab/newtab.html'];
 for (const htmlFile of htmlFiles) {
   const fullPath = resolveProject(htmlFile);
   try {
@@ -256,6 +350,7 @@ try {
 // 7. 内容脚本不得直读 chrome.storage / IndexedDB（必须经后台消息返回最小必要字段）
 const contentSourceFiles = [
   'src/content/link-interceptor.js',
+  'src/content/runtime-message.js',
   'src/content/form-detector.js',
   'src/content/countdown-banner.js',
   'src/content/index.js',
@@ -290,7 +385,7 @@ const identifierBindingFiles = [
   'src/core/stash/stash-service.js',
   'src/core/rules/rule-engine.js'
 ];
-const identifierUseRegex = /\b(isOwnOptionsUrl|isExcludedFromTabCounting|isNewTabUrl|filterCountableTabs)\b/g;
+const identifierUseRegex = /\b(isOwnOptionsUrl|isOwnOptionsTab|isOwnNewTabUrl|isOwnExtensionPageUrl|isExcludedFromTabCounting|isNewTabUrl|filterCountableTabs)\b/g;
 for (const file of identifierBindingFiles) {
   const fullPath = resolveProject(file);
   try {
@@ -316,6 +411,58 @@ for (const file of identifierBindingFiles) {
     console.error(`[FAIL] 无法读取绑定校验文件: ${file}`);
     hasError = true;
   }
+}
+
+// 9. 校验后台动作与 AI / 内容脚本 / 人类 UI 的静态契约
+try {
+  const actionContract = await runActionContractChecks(projectRoot);
+  if (!actionContract.pass) hasError = true;
+} catch (err) {
+  console.error('[FAIL] 动作静态契约校验异常:', err);
+  hasError = true;
+}
+
+// 10. 校验五套版本号的唯一事实源与迁移边界
+try {
+  const versioning = await runVersioningChecks(projectRoot);
+  if (!versioning.pass) hasError = true;
+} catch (err) {
+  console.error('[FAIL] 版本号护栏校验异常:', err);
+  hasError = true;
+}
+
+// 11. 校验存储门面、写锁与内容脚本产物访问纪律
+try {
+  const storageDiscipline = await runStorageDisciplineChecks(projectRoot);
+  if (storageDiscipline.errors.length > 0) hasError = true;
+} catch (err) {
+  console.error('[FAIL] 存储纪律校验异常:', err);
+  hasError = true;
+}
+
+// 12. 对外品牌名称统一使用 BetterBrowse，禁止重新引入带空格写法。
+// 禁用短语用拼接生成，避免校验器源码自身被扫成违规。
+const spacedBrand = ['Better', 'Browse'].join(' ');
+const verifierRelPath = relative(repositoryRoot, fromFileUrl(import.meta.url)).replaceAll('\\', '/');
+const brandScanSkip = /(?:^|[\\/])(?:\.git|\.zcode|\.vscode|\.idea|node_modules|\.deno|\.tmp-verify|\.thumbnails|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|dist|build|coverage|htmlcov)(?:[\\/]|$)/;
+const spacedBrandMatches = [];
+for await (const entry of walk(repositoryRoot, {
+  includeDirs: false,
+  exts: ['.js', '.py', '.html', '.md', '.json'],
+  skip: [brandScanSkip]
+})) {
+  const relPath = relative(repositoryRoot, entry.path).replaceAll('\\', '/');
+  if (relPath === verifierRelPath) continue;
+  const content = await Deno.readTextFile(entry.path);
+  if (content.includes(spacedBrand)) {
+    spacedBrandMatches.push(relPath);
+  }
+}
+if (spacedBrandMatches.length > 0) {
+  console.error(`[FAIL] 项目品牌名称必须写作 BetterBrowse，以下文件仍使用带空格写法: ${spacedBrandMatches.join(', ')}`);
+  hasError = true;
+} else {
+  console.log('[PASS] 项目品牌展示名称已统一为 BetterBrowse');
 }
 
 if (hasError) {

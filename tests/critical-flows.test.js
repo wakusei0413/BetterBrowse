@@ -372,3 +372,174 @@ test('LinkInterceptor: 每次手势最多允许开一个标签', () => {
     globalThis.window = originalWindow;
   }
 });
+
+test('智能收纳：硬性保护超限时仍收纳其余可安全回收的标签', async () => {
+  // 20 个标签：16 个受硬性保护（固定/播放媒体/表单输入），4 个可回收。
+  // 目标剩余数为 阈值-1 = 14，硬性保护 16 已超出 → 此前实现会整体放弃，一个都不收，
+  // 在用户看来就是"自动收纳完全不工作"
+  const protectedTabs = Array.from({ length: 16 }, (_, i) => ({
+    id: 200 + i,
+    windowId: 1,
+    url: `https://protected${i}.example`,
+    pinned: true
+  }));
+  const stashableTabs = Array.from({ length: 4 }, (_, i) => ({
+    id: 300 + i,
+    windowId: 1,
+    url: `https://idle${i}.example`,
+    active: false
+  }));
+  const removedIds = [];
+
+  installChrome({
+    tabs: {
+      query: async () => [...protectedTabs, ...stashableTabs],
+      remove: async (ids) => { removedIds.push(...(Array.isArray(ids) ? ids : [ids])); },
+      update: async () => ({}),
+      move: async () => ({})
+    }
+  });
+
+  const origCreateGroup = LocalStashRepository.createGroup;
+  const origEnsure = StashService.ensurePinnedStashTab;
+
+  try {
+    LocalStashRepository.createGroup = async (items) => ({ success: true, group: { id: 'g1', tabs: items } });
+    StashService.ensurePinnedStashTab = async () => ({});
+
+    const service = new StashService({
+      evaluateTabs: async () => ({
+        tabsToKeep: protectedTabs.map((tab) => ({ tab })),
+        tabsToStash: stashableTabs.map((tab) => ({ tab })),
+        total: 20
+      })
+    });
+
+    const result = await service.executeSmartStash({}, 1);
+
+    // 能收的就收：4 个可回收标签全部被收纳，并如实报告未达标
+    assert.equal(result.success, true);
+    assert.equal(result.stashedCount, 4);
+    assert.equal(result.reachedTarget, false);
+    assert.equal(result.tierLevel, 'hardLimit');
+    assert.equal(result.hardProtectedCount, 16);
+    assert.equal(result.remainingOverThreshold, 2);
+    assert.equal(typeof result.note, 'string');
+
+    assert.deepEqual(removedIds.sort((a, b) => a - b), stashableTabs.map((tab) => tab.id));
+    // 红线不变：受硬性保护的标签页一个都不能被关闭
+    assert.equal(protectedTabs.some((tab) => removedIds.includes(tab.id)), false);
+  } finally {
+    LocalStashRepository.createGroup = origCreateGroup;
+    StashService.ensurePinnedStashTab = origEnsure;
+  }
+});
+
+test('智能收纳：确实没有可回收标签时明确报告需手动整理', async () => {
+  const protectedTabs = Array.from({ length: 16 }, (_, i) => ({
+    id: 400 + i,
+    windowId: 1,
+    url: `https://protected${i}.example`,
+    pinned: true
+  }));
+  const removedIds = [];
+
+  installChrome({
+    tabs: {
+      query: async () => protectedTabs,
+      remove: async (ids) => { removedIds.push(...(Array.isArray(ids) ? ids : [ids])); },
+      update: async () => ({}),
+      move: async () => ({})
+    }
+  });
+
+  const origEnsure = StashService.ensurePinnedStashTab;
+
+  try {
+    StashService.ensurePinnedStashTab = async () => ({});
+    const service = new StashService({
+      evaluateTabs: async () => ({
+        tabsToKeep: protectedTabs.map((tab) => ({ tab })),
+        tabsToStash: [],
+        total: 16
+      })
+    });
+
+    const result = await service.executeSmartStash({}, 1);
+
+    assert.equal(result.success, false);
+    assert.equal(result.stashedCount, 0);
+    assert.equal(result.noStashableTabs, true);
+    assert.equal(result.tierLevel, 'hardLimit');
+    assert.equal(typeof result.error, 'string');
+    assert.equal(removedIds.length, 0);
+  } finally {
+    StashService.ensurePinnedStashTab = origEnsure;
+  }
+});
+
+test('全量收纳：导航中的标签按 pendingUrl 入库并关闭，重复跳过的标签保留', async () => {
+  const closedTabIds = [];
+  installChrome({
+    tabs: {
+      query: async () => [
+        { id: 31, windowId: 1, url: 'https://old.example/', pendingUrl: 'https://new.example/', title: '' },
+        { id: 32, windowId: 1, url: 'https://dup.example/', title: '重复' }
+      ],
+      remove: async (ids) => { closedTabIds.push(...[].concat(ids)); },
+      update: async () => ({}),
+      move: async () => ({})
+    }
+  });
+  const origCreateGroup = LocalStashRepository.createGroup;
+  const origEnsure = StashService.ensurePinnedStashTab;
+  let savedItems = [];
+  try {
+    LocalStashRepository.createGroup = async (items) => {
+      savedItems = items;
+      // 模拟仓储按 allowDuplicates=false 跳过了重复项
+      return { success: true, group: { id: 'grp_pending', tabs: items.filter((item) => item.url !== 'https://dup.example/') } };
+    };
+    StashService.ensurePinnedStashTab = async () => ({});
+
+    const result = await new StashService().executeAllTabsStash(1);
+    assert.equal(result.success, true);
+    assert.equal(savedItems[0].url, 'https://new.example/');
+    assert.equal(savedItems[0].title, 'https://new.example/');
+    assert.deepEqual(closedTabIds, [31]);
+  } finally {
+    LocalStashRepository.createGroup = origCreateGroup;
+    StashService.ensurePinnedStashTab = origEnsure;
+  }
+});
+
+test('OneTab 文本：URL 自身含竖线时按 " | " 分隔，不截断地址', () => {
+  const groups = OneTabConverter.parseOneTabText('https://a.example/?q=x|y | 带竖线的页面\nhttps://b.example/ | 普通页面');
+  assert.equal(groups[0].tabs[0].url, 'https://a.example/?q=x|y');
+  assert.equal(groups[0].tabs[0].title, '带竖线的页面');
+  assert.equal(groups[0].tabs[1].title, '普通页面');
+});
+
+test('LinkInterceptor: 页面进入往返缓存时不拆除，真正卸载才拆除', () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = { location: { hostname: 'example.com', href: 'https://example.com/' } };
+  try {
+    const interceptor = new LinkInterceptor();
+    let destroyed = 0;
+    interceptor.destroy = () => { destroyed += 1; };
+    interceptor._destroyOnPageHide({ persisted: true });
+    assert.equal(destroyed, 0);
+    interceptor._destroyOnPageHide({ persisted: false });
+    assert.equal(destroyed, 1);
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test('describeStashResult: 区分写入失败、跳过与确实无可收纳', async () => {
+  const { describeStashResult } = await import('../BetterBrowse/src/core/stash/stash-result.js');
+  assert.deepEqual(describeStashResult({ success: false, error: '总线异常' }), { ok: false, stashedCount: 0, message: '总线异常' });
+  assert.equal(describeStashResult({ success: true, data: { success: false, error: '写入失败' } }).message, '写入失败');
+  assert.equal(describeStashResult({ success: true, data: { success: true, stashedCount: 0, note: '均为重复项' } }).message, '均为重复项');
+  assert.equal(describeStashResult({ success: true, data: { success: true, stashedCount: 3 } }).message, '已收纳 3 个标签页');
+});

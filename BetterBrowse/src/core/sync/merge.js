@@ -8,10 +8,11 @@ import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { StorageKeys } from '../../constants/storage-keys.js';
 import { DefaultConfig } from '../../constants/config.js';
-import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS } from './sync-constants.js';
+import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS, isSyncableConfigPath, isValidLinkRule } from './sync-constants.js';
 import { SyncOutbox } from './outbox.js';
 import { AccountConfigSync } from './account-config-sync.js';
 import { DeviceEventLog } from './device-events.js';
+import { IndexedStashRepository } from '../stash/indexed-stash-repo.js';
 
 const PAGE_OWNED_FIELDS = new Set(['title', 'url', 'favIconUrl', 'domain']);
 
@@ -74,10 +75,9 @@ export class SyncMerge {
   /**
    * 应用一批远端操作（调用方须已持写锁）
    * @param {object[]} operations
-   * @param {{ originIsCloudTentative?: boolean }} [options]
    * @returns {Promise<{ applied: number, conflicts: number, skipped: number }>}
    */
-  static async applyOperations(operations, options = {}) {
+  static async applyOperations(operations) {
     const ops = Array.isArray(operations) ? operations : [];
     let applied = 0;
     let conflicts = 0;
@@ -85,6 +85,8 @@ export class SyncMerge {
 
     const clock = await SyncOutbox.getClock();
     let seenLamport = Number(clock?.seenLamport) || 0;
+    /** 本批受影响的收纳组：条目增删不会逐条维护组计数，批末统一重算 */
+    const touchedGroups = new Set();
 
     for (const op of ops) {
       if (!op?.operationId || !op.entityType || !op.entityId) {
@@ -92,11 +94,22 @@ export class SyncMerge {
         continue;
       }
       seenLamport = Math.max(seenLamport, Number(op.lamport) || 0);
-      const result = await this._applyOne(op, { originIsCloudTentative: options.originIsCloudTentative === true });
+      const result = await this._applyOne(op, { touchedGroups });
       if (result === 'conflict') conflicts += 1;
       else if (result === 'applied') applied += 1;
       else skipped += 1;
     }
+
+    if (touchedGroups.size > 0) {
+      await IndexedDBManager.runTransaction(
+        [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES],
+        'readwrite',
+        async (tx) => {
+          await IndexedStashRepository.recountGroupsInTx(tx, touchedGroups);
+        }
+      );
+    }
+    if (applied > 0 || conflicts > 0) await StorageAdapter.bumpStashRevision();
 
     await IndexedDBManager.runTransaction(
       [IDBStores.SYNC_META, IDBStores.OPERATION_LOGS],
@@ -122,7 +135,7 @@ export class SyncMerge {
 
   /**
    * @param {object} op
-   * @param {{ originIsCloudTentative?: boolean }} options
+   * @param {{ touchedGroups?: Set<string> }} options
    * @returns {Promise<'applied' | 'conflict' | 'skipped'>}
    */
   static async _applyOne(op, options) {
@@ -131,17 +144,17 @@ export class SyncMerge {
     });
     if (already) return 'skipped';
 
-    if (op.entityType === SyncEntityTypes.PAGE) return await this._applyPage(op, options);
+    if (op.entityType === SyncEntityTypes.PAGE) return await this._applyPage(op);
     if (op.entityType === SyncEntityTypes.STASH_GROUP) return await this._applyGroup(op, options);
     if (op.entityType === SyncEntityTypes.STASH_ENTRY) return await this._applyEntry(op, options);
-    if (op.entityType === SyncEntityTypes.SETTINGS) return await this._applySettings(op, options);
-    if (op.entityType === SyncEntityTypes.LINK_RULES) return await this._applyLinkRules(op, options);
+    if (op.entityType === SyncEntityTypes.SETTINGS) return await this._applySettings(op);
+    if (op.entityType === SyncEntityTypes.LINK_RULES) return await this._applyLinkRules(op);
     if (op.entityType === SyncEntityTypes.ACTIVITY) return await this._applyActivity(op);
     if (op.entityType === SyncEntityTypes.DEVICE_EVENT) return await this._applyDeviceEvent(op);
     return 'skipped';
   }
 
-  static async _applyPage(op, options) {
+  static async _applyPage(op) {
     return await IndexedDBManager.runTransaction(
       [IDBStores.PAGES, IDBStores.TOMBSTONES, IDBStores.CONFLICTS],
       'readwrite',
@@ -163,7 +176,7 @@ export class SyncMerge {
           createdAt: op.createdAt || Date.now(),
           fieldRevs: {}
         };
-        const merged = this._mergeFields(existing, op, tx, SyncEntityTypes.PAGE, op.entityId, options);
+        const merged = this._mergeFields(existing, op, tx, SyncEntityTypes.PAGE, op.entityId);
         existing.updatedAt = Date.now();
         existing.originDeviceId = op.deviceId;
         existing.revision = op.lamport;
@@ -195,7 +208,8 @@ export class SyncMerge {
           archived: false,
           fieldRevs: {}
         };
-        const merged = this._mergeFields(existing, op, tx, SyncEntityTypes.STASH_GROUP, op.entityId, options);
+        const merged = this._mergeFields(existing, op, tx, SyncEntityTypes.STASH_GROUP, op.entityId);
+        options.touchedGroups?.add(op.entityId);
         existing.updatedAt = Date.now();
         existing.originDeviceId = op.deviceId;
         existing.revision = op.lamport;
@@ -213,6 +227,8 @@ export class SyncMerge {
         const tomb = await this.getTombstone(tx, SyncEntityTypes.STASH_ENTRY, op.entityId);
         if (tomb && tomb.expiresAt > Date.now() && op.op !== SyncOps.DELETE) return 'skipped';
         if (op.op === SyncOps.DELETE) {
+          const removed = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_ENTRIES).get(op.entityId));
+          if (removed?.groupId) options.touchedGroups?.add(removed.groupId);
           tx.objectStore(IDBStores.STASH_ENTRIES).delete(op.entityId);
           this.putTombstone(tx, SyncEntityTypes.STASH_ENTRY, op.entityId);
           return 'applied';
@@ -228,7 +244,10 @@ export class SyncMerge {
           archived: false,
           fieldRevs: {}
         };
-        const merged = this._mergeFields(existing, op, tx, SyncEntityTypes.STASH_ENTRY, op.entityId, options);
+        const previousGroupId = existing.groupId;
+        const merged = this._mergeFields(existing, op, tx, SyncEntityTypes.STASH_ENTRY, op.entityId);
+        if (previousGroupId) options.touchedGroups?.add(previousGroupId);
+        if (existing.groupId) options.touchedGroups?.add(existing.groupId);
         existing.updatedAt = Date.now();
         existing.originDeviceId = op.deviceId;
         existing.revision = op.lamport;
@@ -238,7 +257,13 @@ export class SyncMerge {
     );
   }
 
-  static async _applySettings(op, options) {
+  static async _applySettings(op) {
+    // 只接受同步白名单路径：设备本地开关（如 aiBridge.enabled）与原型链路径一律丢弃
+    const fields = Object.fromEntries(
+      Object.entries(op.fields || {}).filter(([path]) => isSyncableConfigPath(path))
+    );
+    if (Object.keys(fields).length === 0) return 'skipped';
+    op = { ...op, fields };
     const merged = await IndexedDBManager.runTransaction(
       [IDBStores.SETTINGS, IDBStores.CONFLICTS],
       'readwrite',
@@ -251,9 +276,7 @@ export class SyncMerge {
         for (const [path, value] of Object.entries(op.fields || {})) {
           wrapper[path] = this._getPath(current, path);
         }
-        const result = this._mergeFields(wrapper, op, tx, SyncEntityTypes.SETTINGS, 'userConfig', {
-          originIsCloudTentative: options.originIsCloudTentative === true
-        });
+        const result = this._mergeFields(wrapper, op, tx, SyncEntityTypes.SETTINGS, 'userConfig');
         for (const [path, value] of Object.entries(wrapper)) {
           if (path === 'fieldRevs') continue;
           this._setPath(current, path, value);
@@ -267,7 +290,17 @@ export class SyncMerge {
     return merged;
   }
 
-  static async _applyLinkRules(op, options) {
+  static async _applyLinkRules(op) {
+    // 规则值为空表示删除；其余必须是合法域名与模式
+    const fields = Object.fromEntries(
+      Object.entries(op.fields || {}).filter(([domain, mode]) => (
+        domain !== 'fieldRevs'
+        && /^[a-z0-9.-]+$/i.test(domain)
+        && (mode === null || mode === undefined || isValidLinkRule(domain, mode))
+      ))
+    );
+    if (Object.keys(fields).length === 0) return 'skipped';
+    op = { ...op, fields };
     return await IndexedDBManager.runTransaction(
       [IDBStores.SETTINGS, IDBStores.CONFLICTS],
       'readwrite',
@@ -280,9 +313,7 @@ export class SyncMerge {
         for (const domain of Object.keys(op.fields || {})) {
           wrapper[domain] = current[domain];
         }
-        const merged = this._mergeFields(wrapper, op, tx, SyncEntityTypes.LINK_RULES, 'root', {
-          originIsCloudTentative: options.originIsCloudTentative === true
-        });
+        const merged = this._mergeFields(wrapper, op, tx, SyncEntityTypes.LINK_RULES, 'root');
         for (const [domain, value] of Object.entries(wrapper)) {
           if (domain === 'fieldRevs') continue;
           if (value === undefined || value === null || value === 'auto') delete current[domain];
@@ -372,9 +403,8 @@ export class SyncMerge {
    * 将 incoming.fields 合并进 existing，冲突写入 conflicts 仓储
    * @returns {'applied' | 'conflict'}
    */
-  static _mergeFields(existing, op, tx, entityType, entityId, options = {}) {
+  static _mergeFields(existing, op, tx, entityType, entityId) {
     existing.fieldRevs = existing.fieldRevs && typeof existing.fieldRevs === 'object' ? existing.fieldRevs : {};
-    const tentativeIncoming = options.originIsCloudTentative === true;
     let hasConflict = false;
     for (const [field, incomingValue] of Object.entries(op.fields || {})) {
       const incomingRev = op.fieldRevs?.[field] || { lamport: op.lamport, deviceId: op.deviceId, operationId: op.operationId };
@@ -388,10 +418,9 @@ export class SyncMerge {
       if (cmp < 0) continue;
       hasConflict = true;
       const localValue = existing[field];
-      const preferred = tentativeIncoming
-        ? incomingRev
-        : this.preferredRev(localRev || incomingRev, incomingRev);
-      const useIncoming = preferred === incomingRev || tentativeIncoming;
+      // 并列时所有设备必须按同一规则（deviceId 字典序较大者）取暂定值，否则双方互换、永久分叉
+      const preferred = this.preferredRev(localRev, incomingRev);
+      const useIncoming = preferred === incomingRev;
       if (useIncoming) existing[field] = incomingValue;
       existing.fieldRevs[field] = preferred;
       const conflictId = `${entityType}::${entityId}::${field}::${op.operationId}`;
@@ -425,6 +454,52 @@ export class SyncMerge {
       cursor = cursor[key];
     }
     cursor[parts[parts.length - 1]] = value;
+  }
+
+  /**
+   * 清理本地同步历史（调用方须已持写锁）：
+   * - operationLogs 只用于去重；远端批次已按路径登记为"已应用"，不会再整批重下，超过回收期的记录可删；
+   * - 已裁决冲突与过期墓碑不再参与任何判断。
+   * 逐条游标删除，避免把可能很大的日志一次性读进内存。
+   * @param {number} [now]
+   * @returns {Promise<{ logs: number, conflicts: number, tombstones: number }>}
+   */
+  static async pruneHistory(now = Date.now()) {
+    const cutoff = now - TOMBSTONE_TTL_MS;
+    const sweep = (request, shouldDelete) => new Promise((resolve, reject) => {
+      let deleted = 0;
+      request.onerror = () => reject(request.error || new Error('同步历史游标读取失败'));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          resolve(deleted);
+          return;
+        }
+        if (shouldDelete(cursor.value)) {
+          cursor.delete();
+          deleted += 1;
+        }
+        cursor.continue();
+      };
+    });
+    return await IndexedDBManager.runTransaction(
+      [IDBStores.OPERATION_LOGS, IDBStores.CONFLICTS, IDBStores.TOMBSTONES],
+      'readwrite',
+      async (tx) => ({
+        logs: await sweep(
+          tx.objectStore(IDBStores.OPERATION_LOGS).openCursor(),
+          (log) => (Number(log?.appliedAt) || Number(log?.createdAt) || 0) < cutoff
+        ),
+        conflicts: await sweep(
+          tx.objectStore(IDBStores.CONFLICTS).openCursor(),
+          (item) => item?.resolved === true && (Number(item.resolvedAt) || 0) < cutoff
+        ),
+        tombstones: await sweep(
+          tx.objectStore(IDBStores.TOMBSTONES).openCursor(),
+          (tomb) => Number(tomb?.expiresAt) <= now
+        )
+      })
+    );
   }
 
   /**

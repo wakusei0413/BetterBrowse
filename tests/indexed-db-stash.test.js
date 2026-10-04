@@ -603,3 +603,93 @@ Deno.test("MigrationManager: 一键回退同时导回 本地数据修订 7 配�
     await idb.restore();
   }
 });
+
+Deno.test("自愈修复：用户清空全部收纳组后，重启不得从旧快照复活已删除的组", async () => {
+  const idb = installFakeIndexedDB();
+  const legacyGroups = [
+    { id: "g_old", createdAt: 1000, title: "旧数据", tabs: [{ id: "t1", url: "https://old.example", title: "旧页面" }] }
+  ];
+  try {
+    installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 4, [StorageKeys.STASH_GROUPS]: legacyGroups });
+    await MigrationManager.runMigrations();
+    assertEquals((await LocalStashRepository.getAllGroups()).length, 1);
+
+    await LocalStashRepository.clearAll(true);
+    assertEquals((await LocalStashRepository.getAllGroups()).length, 0);
+
+    // 模拟 SW 重启：重新打开连接后再跑迁移（旧快照仍在 30 天保留期内）
+    IndexedDBManager._dbPromise = null;
+    await MigrationManager.runMigrations();
+    assertEquals((await LocalStashRepository.getAllGroups()).length, 0);
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("主库丢失自愈：浏览器运行中删除并重建主库后，从灾备副本回填全部收纳组且保留新建的组", async () => {
+  const idb = installFakeIndexedDB();
+  try {
+    const store = installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 4, [StorageKeys.STASH_GROUPS]: [] });
+    await MigrationManager.runMigrations();
+    await LocalStashRepository.createGroup([{ url: "https://april.example/", title: "四月的页面" }], "四月");
+    await LocalStashRepository.createGroup([{ url: "https://august.example/", title: "八月的页面" }], "八月");
+    assertEquals(Array.isArray(store[StorageKeys.RECOVERY_SNAPSHOT]?.groups), true);
+    assertEquals(store[StorageKeys.RECOVERY_SNAPSHOT].groups.length, 2);
+
+    // 浏览器删除主库（数据库损坏 / 清除站点数据），扩展仍在运行：下一次写入静默建出空库
+    IndexedDBManager.onRecreated = null; // 先观察"未及时回填"的最坏情况
+    idb.factory.deleteDatabase("betterbrowse");
+    IndexedDBManager._dbPromise = null;
+    await LocalStashRepository.createGroup([{ url: "https://september.example/", title: "九月新建" }], "九月");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(store[StorageKeys.IDB_RECREATED_AT] > 0, true);
+
+    // 保留期清理在回填完成前不得删除旧副本
+    store[StorageKeys.IDB_MIGRATED_AT] = Date.now() - 40 * 86400000;
+    store[StorageKeys.STASH_GROUPS] = [{ id: "g_legacy", createdAt: 1, title: "旧数组", tabs: [{ id: "t", url: "https://legacy.example/" }] }];
+
+    // Service Worker 重启：自愈修复按持久化标记回填
+    IndexedDBManager._dbPromise = null;
+    IndexedDBManager.stashStoreRecreated = false;
+    await MigrationManager.runMigrations();
+    const titles = (await LocalStashRepository.listGroupSummaries()).map((group) => group.title).sort();
+    assertEquals(titles, ["九月", "八月", "四月", "旧数组"].sort());
+    assertEquals(store[StorageKeys.IDB_RECREATED_AT], 0);
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("摘要分页：沿排序索引游标翻页，星标在前、新组在前且不重不漏", async () => {
+  const idb = installFakeIndexedDB();
+  try {
+    installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 4, [StorageKeys.STASH_GROUPS]: [] });
+    await MigrationManager.runMigrations();
+    const groups = Array.from({ length: 23 }, (_, i) => ({
+      id: `grp_page_${String(i).padStart(2, "0")}`,
+      createdAt: 1000 + i,
+      starred: i % 7 === 0,
+      title: `组 ${i}`,
+      tabs: [{ id: "t", url: `https://page.example/${i}` }]
+    }));
+    await LocalStashRepository.importDataJSON(JSON.stringify(groups));
+    const seen = [];
+    let cursor = null;
+    do {
+      const page = await IndexedStashRepository.listGroupSummariesPage({ cursor, limit: 5 });
+      seen.push(...page.items);
+      cursor = page.nextCursor;
+    } while (cursor);
+    assertEquals(seen.length, 23);
+    assertEquals(new Set(seen.map((g) => g.id)).size, 23);
+    const starredCount = groups.filter((g) => g.starred).length;
+    assertEquals(seen.slice(0, starredCount).every((g) => g.starred), true);
+    const rest = seen.slice(starredCount).map((g) => g.createdAt);
+    assertEquals(rest, [...rest].sort((a, b) => b - a));
+
+    const ranged = await IndexedStashRepository.listGroupSummariesPage({ limit: 100, createdAtFrom: 1010, createdAtTo: 1015 });
+    assertEquals(ranged.items.map((g) => g.createdAt).sort(), [1010, 1011, 1012, 1013, 1014, 1015]);
+  } finally {
+    await idb.restore();
+  }
+});

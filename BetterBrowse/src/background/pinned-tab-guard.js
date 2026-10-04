@@ -6,16 +6,19 @@
 
 import { StashService } from '../core/stash/stash-service.js';
 import { LocalStashRepository } from '../core/stash/local-stash-repo.js';
-import { isExcludedFromTabCounting, isOwnOptionsUrl } from '../core/extension-url.js';
+import { isExcludedFromTabCounting, isOwnOptionsTab } from '../core/extension-url.js';
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
 
 export class PinnedTabGuard {
   constructor() {
     this.isGuarding = false;
     this.checkDebounceTimer = null;
+    /** @type {Set<number>} */
+    this.pendingWindowIds = new Set();
+    this.pendingAllWindows = false;
     /**
      * 维护各窗口当前已打开的所有标签页信息快照
-     * Map<windowId, Map<tabId, { url: string, title: string, favIconUrl: string, pinned: boolean, index: number }>>
+     * Map<windowId, Map<tabId, { url: string, pendingUrl: string, title: string, favIconUrl: string, pinned: boolean, index: number }>>
      */
     this.tabsByWindow = new Map();
     this.closingWindows = new Set();
@@ -53,6 +56,7 @@ export class PinnedTabGuard {
     this.tabsByWindow.get(tab.windowId).set(tab.id, {
       id: tab.id,
       url: tab.url || '',
+      pendingUrl: tab.pendingUrl || '',
       title: tab.title || tab.url || '无标题页面',
       favIconUrl: tab.favIconUrl || '',
       pinned: Boolean(tab.pinned),
@@ -70,14 +74,17 @@ export class PinnedTabGuard {
     // 2. 标签页创建与更新时同步快照
     chrome.tabs.onCreated.addListener((tab) => {
       this.recordTab(tab);
+      if (isOwnOptionsTab(tab) && typeof tab.windowId === 'number') {
+        this.scheduleCheck(100, tab.windowId);
+      }
     });
 
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       this.recordTab(tab);
 
-      // 固定小标签防脱落/防解绑守护
-      if (tab && isOwnOptionsUrl(tab.url)) {
-        if (changeInfo.pinned === false || (typeof tab.index === 'number' && tab.index !== 0)) {
+      // 固定小标签防脱落/防解绑/防重复守护
+      if (tab && isOwnOptionsTab(tab)) {
+        if (changeInfo.pinned === false || changeInfo.url || (typeof tab.index === 'number' && tab.index !== 0)) {
           this.scheduleCheck(100, tab.windowId);
         }
       }
@@ -86,13 +93,9 @@ export class PinnedTabGuard {
     // 3. 监听新窗口创建（新窗口打开时自动在第 1 位生成固定小标签）
     if (chrome.windows && chrome.windows.onCreated) {
       chrome.windows.onCreated.addListener((window) => {
-        if (window.type === 'normal') {
+        if (window.type === 'normal' && typeof window.id === 'number') {
           setTimeout(() => {
-            StorageAdapter.getUserConfig().then((config) => {
-              if (config.stashSettings?.pinnedTabGuard !== false) {
-                return StashService.ensurePinnedStashTab(false, window.id);
-              }
-            }).catch(() => {});
+            this.scheduleCheck(0, window.id);
           }, 350);
         }
       });
@@ -114,7 +117,7 @@ export class PinnedTabGuard {
       } else {
         // 单个标签页常规关闭
         const existing = windowId ? this.tabsByWindow.get(windowId)?.get(tabId) : null;
-        const wasOptions = existing ? isOwnOptionsUrl(existing.url) : false;
+        const wasOptions = existing ? isOwnOptionsTab(existing) : false;
         if (windowId && this.tabsByWindow.has(windowId)) {
           this.tabsByWindow.get(windowId).delete(tabId);
         }
@@ -128,12 +131,18 @@ export class PinnedTabGuard {
     chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
       if (!moveInfo || typeof moveInfo.windowId !== 'number') return;
       const snapshot = this.tabsByWindow.get(moveInfo.windowId)?.get(tabId);
-      if (snapshot && isOwnOptionsUrl(snapshot.url)) {
+      if (snapshot && isOwnOptionsTab(snapshot)) {
         snapshot.index = moveInfo.toIndex;
         this.scheduleCheck(100, moveInfo.windowId);
         return;
       }
-      if (moveInfo.toIndex === 0) this.scheduleCheck(100, moveInfo.windowId);
+      if (moveInfo.toIndex === 0) {
+        // 其它标签挤占了首位：快照里收纳箱的 index 已失效，标记为未知以免检查被"已在首位"捷径跳过
+        for (const tab of this.tabsByWindow.get(moveInfo.windowId)?.values() || []) {
+          if (isOwnOptionsTab(tab)) tab.index = -1;
+        }
+        this.scheduleCheck(100, moveInfo.windowId);
+      }
     });
 
     // 6. 监听浏览器窗口聚焦
@@ -174,22 +183,14 @@ export class PinnedTabGuard {
       if (!windowTabsMap) {
         try {
           const liveTabs = await chrome.tabs.query({ windowId });
-          tabsToSave = liveTabs
-            .map((tab) => ({
-              id: tab.id,
-              url: tab.url || '',
-              title: tab.title || tab.url || '无标题页面',
-              favIconUrl: tab.favIconUrl || '',
-              pinned: Boolean(tab.pinned),
-              index: tab.index
-            }))
-            .filter((tab) => !isExcludedFromTabCounting(tab));
+          tabsToSave = liveTabs.filter((tab) => !isExcludedFromTabCounting(tab));
         } catch {}
       }
 
       if (tabsToSave.length > 0) {
         console.info(`[PinnedTabGuard] 正在执行窗口关闭全量收纳 (${tabsToSave.length} 个标签页)...`);
-        await LocalStashRepository.createGroup(tabsToSave);
+        // 快照与实时标签都按 pendingUrl 优先的统一口径入库，导航中的标签不会以空地址或旧地址保存
+        await LocalStashRepository.createGroup(tabsToSave.map((tab) => StashService.tabToStashItem(tab)));
       }
 
       this.tabsByWindow.delete(windowId);
@@ -199,39 +200,65 @@ export class PinnedTabGuard {
   }
 
   /**
-   * 防抖检查与常驻固定标签守护执行
+   * 防抖检查与常驻固定标签守护执行。检查进行中时只记录 pending，结束后再跑一轮，避免漏掉并发出现的第二份 options。
    * @param {number} [delay=150]
    * @param {number} [windowId]
    */
   scheduleCheck(delay = 150, windowId = null) {
-    if (this.isGuarding) return;
+    if (typeof windowId === 'number' && windowId !== chrome.windows.WINDOW_ID_NONE) {
+      this.pendingWindowIds.add(windowId);
+    } else {
+      this.pendingAllWindows = true;
+    }
 
     clearTimeout(this.checkDebounceTimer);
-    this.checkDebounceTimer = setTimeout(async () => {
-      this.isGuarding = true;
-      try {
-        if (windowId && windowId !== chrome.windows.WINDOW_ID_NONE) {
-          const windowTabs = this.tabsByWindow.get(windowId);
-          const optionsTab = windowTabs
-            ? [...windowTabs.values()].find((tab) => isOwnOptionsUrl(tab.url))
-            : null;
-          if (optionsTab && optionsTab.pinned && optionsTab.index === 0) return;
-        }
-        const config = await StorageAdapter.getUserConfig();
-        if (config.stashSettings?.pinnedTabGuard === false) return;
-        if (windowId && windowId !== chrome.windows.WINDOW_ID_NONE) {
-          const win = await chrome.windows.get(windowId).catch(() => null);
-          if (win && win.type === 'normal') {
-            await StashService.ensurePinnedStashTab(false, windowId);
-          }
-        } else {
-          await StashService.ensureAllAllWindowsPinnedTab();
-        }
-      } catch {
-        // 忽略守护检查异常
-      } finally {
-        this.isGuarding = false;
-      }
+    this.checkDebounceTimer = setTimeout(() => {
+      this.runScheduledCheck();
     }, delay);
+  }
+
+  /**
+   * 执行已排队的常驻收纳箱检查
+   */
+  async runScheduledCheck() {
+    if (this.isGuarding) return;
+    this.isGuarding = true;
+    try {
+      while (this.pendingAllWindows || this.pendingWindowIds.size > 0) {
+        const checkAll = this.pendingAllWindows;
+        const windowIds = [...this.pendingWindowIds];
+        this.pendingAllWindows = false;
+        this.pendingWindowIds.clear();
+
+        const config = await StorageAdapter.getUserConfig();
+        if (config.stashSettings?.pinnedTabGuard === false) continue;
+
+        if (checkAll) {
+          await StashService.ensureAllAllWindowsPinnedTab();
+          continue;
+        }
+
+        for (const pendingWindowId of windowIds) {
+          const windowTabs = this.tabsByWindow.get(pendingWindowId);
+          if (windowTabs) {
+            const optionsTabs = [...windowTabs.values()].filter((tab) => isOwnOptionsTab(tab));
+            if (optionsTabs.length === 1 && optionsTabs[0].pinned && optionsTabs[0].index === 0) {
+              continue;
+            }
+          }
+          const win = await chrome.windows.get(pendingWindowId).catch(() => null);
+          if (win && win.type === 'normal') {
+            await StashService.ensurePinnedStashTab(false, pendingWindowId);
+          }
+        }
+      }
+    } catch {
+      // 忽略守护检查异常
+    } finally {
+      this.isGuarding = false;
+      if (this.pendingAllWindows || this.pendingWindowIds.size > 0) {
+        this.scheduleCheck(50);
+      }
+    }
   }
 }

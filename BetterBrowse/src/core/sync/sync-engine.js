@@ -6,7 +6,6 @@
 
 import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
-import { StorageKeys } from '../../constants/storage-keys.js';
 import { WebdavCredentials } from './credentials.js';
 import { WebdavClient } from './webdav-client.js';
 import { SyncOutbox } from './outbox.js';
@@ -26,6 +25,8 @@ import {
 
 const STATUS_KEY = 'status';
 const MANIFEST_CACHE_KEY = 'manifestCache';
+/** 已应用过的远端批次路径：批次文件不可变，应用过的不必每次同步重新下载 */
+const APPLIED_FILES_KEY = 'appliedFiles';
 
 export class SyncEngine {
   /** 测试可注入的 fetch */
@@ -240,6 +241,8 @@ export class SyncEngine {
       await this._ackDevice(client, finalManifest);
       await this._retireStaleDevices(client, finalManifest, finalEtag);
 
+      await IndexedDBManager.withWriteLock(() => SyncMerge.pruneHistory()).catch(() => {});
+
       const leftover = await SyncOutbox.listPending();
       const status = leftover.length > 0 ? SyncStatus.PENDING : SyncStatus.SYNCED;
       await this._setStatus(status, compatNote, {
@@ -389,6 +392,7 @@ export class SyncEngine {
       return { success: false, error: res.error, status: res.status || SyncStatus.UNKNOWN };
     }
     await SyncOutbox.markUploaded(pending.map((op) => op.operationId));
+    await this._markFilesApplied([path]);
     await this._setMeta(MANIFEST_CACHE_KEY, { manifest: res.manifest, etag: res.etag });
     return { success: true, manifest: res.manifest, etag: res.etag };
   }
@@ -469,20 +473,24 @@ export class SyncEngine {
         await IndexedDBManager.withWriteLock(async () => {
           await SyncSnapshot.applyPayload(payload, { merge });
         });
+        // 整体替换后本地状态只等于快照，此前应用过的批次需按 watermark 重新补放
+        if (!merge) await this.resetAppliedFiles();
         await this._setStatus(SyncStatus.PENDING, currentUsable ? '已应用远端快照' : '已回退上一份快照', {
           appliedSnapshotId
         });
       }
-      const ops = await this._downloadOperations(client, manifest);
-      const replay = SyncSnapshot.filterAfterWatermark(ops, watermarks);
+      const { operations, paths } = await this._downloadOperations(client, manifest);
+      const replay = SyncSnapshot.filterAfterWatermark(operations, watermarks);
       await IndexedDBManager.withWriteLock(async () => {
-        await SyncMerge.applyOperations(replay, { originIsCloudTentative: true });
+        await SyncMerge.applyOperations(replay);
       });
+      await this._markFilesApplied(paths, manifest);
     } else {
-      const ops = await this._downloadOperations(client, manifest);
+      const { operations, paths } = await this._downloadOperations(client, manifest);
       await IndexedDBManager.withWriteLock(async () => {
-        await SyncMerge.applyOperations(ops, { originIsCloudTentative: true });
+        await SyncMerge.applyOperations(operations);
       });
+      await this._markFilesApplied(paths, manifest);
     }
     return { success: true, manifest, etag: remote.etag };
   }
@@ -506,10 +514,18 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * 下载清单中尚未应用过的批次
+   * @returns {Promise<{ operations: object[], paths: string[] }>}
+   */
   static async _downloadOperations(client, manifest) {
-    const files = Array.isArray(manifest.operationFiles) ? manifest.operationFiles : [];
+    const applied = new Set((await this._getMeta(APPLIED_FILES_KEY))?.paths || []);
+    const files = (Array.isArray(manifest.operationFiles) ? manifest.operationFiles : [])
+      .filter((file) => !applied.has(file.path));
     const operations = [];
+    const paths = [];
     for (const file of files) {
+      paths.push(file.path);
       const res = await client.get(file.path);
       if (res.status >= 400) {
         throw Object.assign(new Error(`批次文件缺失：${file.path}`), { code: 'CORRUPT' });
@@ -529,18 +545,45 @@ export class SyncEngine {
         }
       }
     }
-    return operations.sort((a, b) => {
+    operations.sort((a, b) => {
       if (a.deviceId === b.deviceId) return (a.sequence || 0) - (b.sequence || 0);
       return String(a.deviceId).localeCompare(String(b.deviceId));
     });
+    return { operations, paths };
+  }
+
+  /**
+   * 本地状态被快照整体替换后调用：此前应用过的批次需按 watermark 重新补放
+   */
+  static async resetAppliedFiles() {
+    await this._setMeta(APPLIED_FILES_KEY, { paths: [] });
+  }
+
+  /**
+   * 登记已应用的批次；传入清单时顺带剔除清单已不再引用（已被压缩）的路径，保持集合有界
+   * @param {string[]} paths
+   * @param {object} [manifest]
+   */
+  static async _markFilesApplied(paths, manifest = null) {
+    const current = new Set((await this._getMeta(APPLIED_FILES_KEY))?.paths || []);
+    for (const path of paths || []) current.add(path);
+    let next = [...current];
+    if (manifest && Array.isArray(manifest.operationFiles)) {
+      const referenced = new Set(manifest.operationFiles.map((file) => file.path));
+      next = next.filter((path) => referenced.has(path));
+    }
+    await this._setMeta(APPLIED_FILES_KEY, { paths: next });
   }
 
   static async _maybeSnapshot(client, manifest, etag) {
     const clock = await SyncOutbox.getClock();
     const files = manifest?.operationFiles || [];
-    const lastSnap = Number(manifest?.updatedAt) || 0;
+    // 只能用快照自身的生成时间：manifest.updatedAt 每次上传批次都会刷新，按它计龄 7 天条件永远不满足
+    const lastSnap = Number(manifest?.snapshotCreatedAt) || 0;
     const needByAge = Date.now() - lastSnap >= SNAPSHOT_MIN_AGE_MS && files.length > 0;
-    const needByCount = files.length >= 1 && this._countOps(files) >= SNAPSHOT_MIN_OPS;
+    // 只统计当前快照尚未覆盖的操作：按批次总数计时，压缩一旦受阻（或刚超过阈值）
+    // 之后每一次同步都会再上传一份全量快照，远端与本地缓存随之无限膨胀
+    const needByCount = this._countOps(this._filesAfterWatermark(files, manifest?.snapshotWatermarks)) >= SNAPSHOT_MIN_OPS;
     if (!needByAge && !needByCount && (manifest?.generation || 0) === 0 && files.length > 0) {
       // 首次同步：生成 generation 1 基线，便于新设备配对
     } else if (!needByAge && !needByCount) {
@@ -553,7 +596,9 @@ export class SyncEngine {
       [clock.deviceId]: clock.sequence
     };
     const generation = (Number(manifest.generation) || 0) + 1;
-    const snapshotId = `gen-${String(generation).padStart(4, '0')}`;
+    // 文件名必须唯一：多台设备可能基于同一份清单同时生成"下一代"，同名 PUT 会互相覆盖，
+    // 使清单记录的摘要与文件内容不符。代号仅作排序提示，真正的代数以清单 generation 为准。
+    const snapshotId = SyncOutbox.randomId(`gen-${String(generation).padStart(4, '0')}`);
     const { body, sha256 } = await SyncSnapshot.serialize(payload);
     if (body.length > REMOTE_HARD_QUOTA_BYTES) {
       await this._setStatus(SyncStatus.UNKNOWN, '远端体积超过硬上限，请先压缩或清理');
@@ -575,6 +620,7 @@ export class SyncEngine {
         snapshotId,
         snapshotSha256: sha256,
         snapshotWatermarks: payload.watermarks,
+        snapshotCreatedAt: Date.now(),
         updatedAt: Date.now()
       };
     });
@@ -587,7 +633,8 @@ export class SyncEngine {
     if (body.length > REMOTE_SOFT_QUOTA_BYTES) {
       await this._setStatus(SyncStatus.SYNCED, '远端体积已超过软上限，建议尽快压缩');
     }
-    const compacted = await this._compactIfPossible(client, res.manifest, res.etag, payload);
+    const compacted = await this._compactIfPossible(client, res.manifest, res.etag);
+    await this._pruneRemoteSnapshots(client, compacted.manifest || res.manifest);
     return { manifest: compacted.manifest || res.manifest, etag: compacted.etag || res.etag };
   }
 
@@ -595,16 +642,49 @@ export class SyncEngine {
     return files.reduce((sum, file) => sum + Math.max(0, (Number(file.end) || 0) - (Number(file.start) || 0) + 1), 0);
   }
 
-  static async _compactIfPossible(client, manifest, etag, snapshotPayload = null) {
+  /**
+   * 当前快照 watermark 之后仍需补放的批次
+   * @param {object[]} files
+   * @param {Record<string, number> | undefined} watermarks
+   */
+  static _filesAfterWatermark(files, watermarks) {
+    const marks = watermarks && typeof watermarks === 'object' ? watermarks : {};
+    return (files || []).filter((file) => Number(file.end) > (Number(marks[file.deviceId]) || 0));
+  }
+
+  /**
+   * 删除远端不再被引用的旧快照，只保留清单中的当前与上一份。
+   * 仅删除代号比当前代至少小 2 的文件：其他设备若正基于稍旧清单上传新快照，其代号不会落在删除区间内。
+   * 列目录失败时退化为只删除刚被挤出的那一份。
+   * @param {WebdavClient} client
+   * @param {object} manifest
+   */
+  static async _pruneRemoteSnapshots(client, manifest) {
+    const keep = new Set([manifest?.snapshotId, manifest?.previousSnapshotId].filter(Boolean));
+    const generation = Number(manifest?.generation) || 0;
+    let names = null;
+    try {
+      names = await client.list('snapshots');
+    } catch {
+      names = null;
+    }
+    const candidates = Array.isArray(names)
+      ? names.filter((name) => /\.json$/.test(name)).map((name) => name.replace(/\.json$/, ''))
+      : [];
+    for (const id of candidates) {
+      if (keep.has(id)) continue;
+      const match = /^gen-(\d+)/.exec(id);
+      if (!match || Number(match[1]) > generation - 2) continue;
+      await client.delete(`snapshots/${id}.json`).catch(() => {});
+    }
+  }
+
+  /**
+   * 压缩：删除已被当前快照 watermark 覆盖的批次。
+   * 快照自带回收期内的墓碑，落后设备会先应用快照再补放剩余批次，因此不必等待墓碑过期或其他设备确认。
+   */
+  static async _compactIfPossible(client, manifest, etag) {
     const watermarks = manifest.snapshotWatermarks || {};
-    const active = (manifest.knownDevices || []).filter((d) => !d.retired);
-    if (active.length === 0) return { manifest, etag };
-    // 快照内仍有未过回收期的墓碑时不允许压缩，防止离线旧副本复活
-    const liveTombstones = (snapshotPayload?.tombstones || []).filter((t) => Number(t.expiresAt) > Date.now());
-    if (liveTombstones.length > 0) return { manifest, etag };
-    const acks = await this._loadDeviceAcks(client, active.map((d) => d.deviceId));
-    const allCaughtUp = active.every((d) => (Number(acks[d.deviceId]) || 0) >= (Number(watermarks[d.deviceId]) || 0));
-    if (!allCaughtUp) return { manifest, etag };
     const covered = (manifest.operationFiles || []).filter((file) => {
       const mark = Number(watermarks[file.deviceId]) || 0;
       return Number(file.end) <= mark;
@@ -634,24 +714,6 @@ export class SyncEngine {
       }
     }
     return { manifest: res.manifest, etag: res.etag };
-  }
-
-  static async _loadDeviceAcks(client, deviceIds) {
-    const acks = {};
-    for (const id of deviceIds) {
-      const res = await client.get(`devices/${id}.json`);
-      if (res.status >= 400) {
-        acks[id] = 0;
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(res.body || '{}');
-        acks[id] = Number(parsed.confirmedSequence) || 0;
-      } catch {
-        acks[id] = 0;
-      }
-    }
-    return acks;
   }
 
   static async _ackDevice(client, manifest) {
@@ -740,6 +802,7 @@ export class SyncEngine {
       await IndexedDBManager.withWriteLock(async () => {
         await SyncSnapshot.applyPayload(localSnap.payload, { merge: false });
       });
+      await this.resetAppliedFiles();
       await this._setStatus(SyncStatus.IDLE, '已从本地快照恢复', {
         appliedSnapshotId: localSnap.snapshotId
       });
@@ -756,6 +819,7 @@ export class SyncEngine {
         await IndexedDBManager.withWriteLock(async () => {
           await SyncSnapshot.applyPayload(payload, { merge: false });
         });
+        await this.resetAppliedFiles();
         await this._setStatus(SyncStatus.IDLE, '已从远端上一份快照恢复', {
           appliedSnapshotId: previousId
         });

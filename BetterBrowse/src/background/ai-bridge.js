@@ -31,6 +31,10 @@ const MAX_PAYLOAD_CHARS = 8 * 1024 * 1024;
 const AUDIT_LIMIT = 100;
 /** 重连退避序列（毫秒） */
 const RECONNECT_DELAYS_MS = [5000, 15000, 60000, 300000];
+/** API 版本不兼容后重试连接的间隔（宿主可能已被单独升级） */
+const INCOMPATIBLE_RETRY_MS = 10 * 60 * 1000;
+/** 未完成分块重组的过期时间（宿主中途断开时释放半截缓冲） */
+const REASSEMBLY_TTL_MS = 120000;
 /** 单请求处理超时（毫秒）：串行队列中任何 handler 挂起都不能阻塞后续请求 */
 const REQUEST_TIMEOUT_MS = 60000;
 /** 审计中允许记录的 payload 字段（白名单，绝不记录自由文本与凭据） */
@@ -56,6 +60,8 @@ export class AIBridgeManager {
     this._lastConnectedAt = 0;
     this._lastDisconnectedAt = 0;
     this._peerApiVersion = null;
+    /** 进入 API 版本不兼容状态的时间：宿主可能被单独升级，看门狗按间隔重试 */
+    this._incompatibleAt = 0;
     this._lastError = '';
     this._alarmBound = (alarm) => {
       if (alarm?.name === WATCHDOG_ALARM) this._onWatchdog();
@@ -206,7 +212,10 @@ export class AIBridgeManager {
         clearTimeout(this._reconnectTimer);
         this._reconnectTimer = null;
       }
-      if (!this._port && this._state !== 'incompatible') {
+      // 版本不兼容时不频繁重连，但宿主可能被单独重装升级：间隔一段时间后重试一次
+      const incompatibleRetryDue = this._state === 'incompatible'
+        && Date.now() - this._incompatibleAt >= INCOMPATIBLE_RETRY_MS;
+      if (!this._port && (this._state !== 'incompatible' || incompatibleRetryDue)) {
         this._connect();
       }
       if (this._state === 'connected') {
@@ -274,6 +283,7 @@ export class AIBridgeManager {
         this._peerApiVersion = peerApiVersion;
         if (peerApiVersion !== API_VERSION) {
           this._state = 'incompatible';
+          this._incompatibleAt = Date.now();
           this._lastError = apiVersionMismatchMessage(peerApiVersion);
           const port = this._port;
           this._port = null;
@@ -303,8 +313,12 @@ export class AIBridgeManager {
       if (!id) return;
       let entry = this._reassembly.get(id);
       if (!entry) {
-        entry = { parts: new Array(msg.chunk.n || 0).fill(''), received: 0, total: msg.chunk.n || 0 };
+        entry = { parts: new Array(msg.chunk.n || 0).fill(''), received: 0, total: msg.chunk.n || 0, createdAt: Date.now() };
         this._reassembly.set(id, entry);
+        const now = Date.now();
+        for (const [staleId, stale] of this._reassembly) {
+          if (now - stale.createdAt > REASSEMBLY_TTL_MS) this._reassembly.delete(staleId);
+        }
       }
       const index = msg.chunk.i || 0;
       if (index >= 0 && index < entry.total && !entry.parts[index]) {
@@ -530,6 +544,8 @@ export class AIBridgeManager {
    */
   _buildAuditSummary(action, payload) {
     if (action === 'SAVE_WEBDAV_CREDENTIALS') return '保存 WebDAV 凭据（内容不记录）';
+    if (action === 'GET_SEARCH_SUGGESTIONS') return '获取搜索联想（搜索词不记录审计）';
+    if (action === 'GET_BROWSER_HISTORY') return '搜索历史记录（搜索词不记录审计）';
     const parts = [];
     for (const field of AUDIT_SAFE_FIELDS) {
       if (payload && payload[field] !== undefined) {

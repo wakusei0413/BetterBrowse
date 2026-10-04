@@ -1,6 +1,6 @@
 # BetterBrowse - 智能浏览增强扩展
 
-BetterBrowse 是一款遵循 Chrome **Manifest V3** 规范的浏览器扩展。项目采用原生 ESM JavaScript 与 Deno 2.x 工具链，无需编译打包即可直接在 Chrome 中加载运行。
+BetterBrowse 是一款遵循 Chrome **Manifest V3** 规范的浏览器扩展。扩展源码采用原生 ESM JavaScript，开发与测试由 Deno 2.x 驱动，无需编译即可直接在 Chrome 中加载运行；AI Skill 命令行客户端使用 Python 3.9+ 标准库。
 
 核心功能包括：自定义链接跳转行为、多规则智能标签页收纳、本地 IndexedDB 存储、WebDAV 多设备同步以及面向 AI Agent 的本地桥接能力。
 
@@ -58,16 +58,16 @@ BetterBrowse 是一款遵循 Chrome **Manifest V3** 规范的浏览器扩展。�
 ---
 
 ### 5. AI Agent 本地桥接
-- 提供 Native Messaging 本地宿主程序与命令行客户端（`bb-bridge-client.js`），支持本机 AI Agent 读取收纳箱、操作条目、管理规则与配置。
-- 人机能力对等，所有 AI 调用复用核心处理链路，高危操作（如删除、清空）强制要求确认位校验。
+- 提供 Native Messaging 本地宿主程序与唯一 Python 命令行客户端（`betterbrowse_client.py`，Python 3.9+、仅标准库），支持本机 AI Agent 读取收纳箱、操作条目、管理规则与配置。
+- 客户端提供 `doctor` 诊断、`--file` / `--stdin` 大输入和 `batch --file` 串行批处理；人机能力对等，高危操作（如删除、清空）强制要求确认位校验。
 
 ---
 
 ## 技术架构与目录结构
 
 - **语言标准**：原生 JavaScript（ES2022+ / 原生 ESM）
-- **工具链与测试**：Deno 2.x 原生驱动
-- **测试框架**：`Deno.test`
+- **工具链与测试**：扩展开发与主测试套件由 Deno 2.x 原生驱动；AI Skill 客户端需要 Python 3.9+
+- **测试框架**：`Deno.test`，Python 客户端单元测试使用标准库 `unittest`
 
 ```
 BetterBrowse/
@@ -75,9 +75,9 @@ BetterBrowse/
 ├── deno.json                      # 根工作区 Deno 配置文件
 │
 ├── skills/                        # AI Agent 技能与桥接客户端
-│   └── better-browse/
+│   └── BetterBrowse/
 │       ├── SKILL.md               # Agent 技能入口与说明
-│       ├── scripts/               # 桥接客户端脚本 (bb-bridge-client.js)
+│       ├── scripts/               # Python 桥接客户端 (betterbrowse_client.py)
 │       └── references/            # 协议与排障文档
 │
 └── BetterBrowse/
@@ -120,6 +120,9 @@ deno task api-version-bump
 # 安装 / 卸载 AI 桥接本地宿主
 deno task ai-host-install --ext-id=<扩展ID>
 deno task ai-host-uninstall
+
+# 使用 Python 3.9+ 诊断 AI 桥接
+python skills/BetterBrowse/scripts/betterbrowse_client.py doctor
 ```
 
 ---

@@ -31,27 +31,50 @@ export class MigrationManager {
     try {
       // 打开（必要时升级建表）：磁盘残留修订低于 INDEXED_DB_SCHEMA_REVISION 时触发 upgradeneeded 重建全部仓储
       await IndexedDBManager.open();
-
-      const groupCount = await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
-        return await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_GROUPS).count());
-      });
-      if (groupCount > 0) return; // 主库已有数据：结构健康，无需修复
+      // 一次性消费"仓储经升级新建"标记：同一进程后续的迁移重入不得再次据此回填
+      const storeRecreated = IndexedDBManager.stashStoreRecreated;
+      IndexedDBManager.stashStoreRecreated = false;
 
       // 数据架构尚未进入 IndexedDB 时代：旧数据由正式迁移管线（本地数据修订 5、7、8）负责回填，此处不抢
-      const schemaVersion = Number(await StorageAdapter.get(StorageKeys.SCHEMA_VERSION, 0));
+      const schemaVersion = Number(await StorageAdapter.getChrome(StorageKeys.SCHEMA_VERSION, 0));
       if (schemaVersion < 5) return;
 
-      const legacyGroups = await StorageAdapter.get(StorageKeys.STASH_GROUPS, []);
-      if (Array.isArray(legacyGroups) && legacyGroups.length > 0) {
-        const imported = await IndexedStashRepository.importGroups(legacyGroups);
-        console.info(`[MigrationManager] 自愈修复完成：已重建 IndexedDB 结构并回填 ${imported.groupCount} 个收纳组（${imported.entryCount} 条记录）`);
-      } else {
-        console.info('[MigrationManager] 自愈修复完成：IndexedDB 结构已重建（旧存储无收纳数据）');
-      }
+      // 只有"主库确实被重建过"才回填：用户自己清空全部收纳组时仓储仍在，绝不能把已删除的组复活
+      // 并经 WebDAV 扩散到其它设备。重建标记持久化在 chrome.storage，运行中途重建也不会被遗忘。
+      const recreatedAt = Number(await StorageAdapter.getChrome(StorageKeys.IDB_RECREATED_AT, 0));
+      if (!recreatedAt && !storeRecreated) return;
+      await this.restoreFromRecoveryCopies();
+      await StorageAdapter.setChrome(StorageKeys.IDB_RECREATED_AT, 0);
     } catch (err) {
-      // 自愈失败不阻塞迁移主流程（旧存储兜底仍然可用）
+      // 自愈失败不阻塞迁移主流程；重建标记保留，下次启动重试，旧副本也不会被保留期清理删除
       console.warn('[MigrationManager] 自愈修复失败（不阻塞主流程）:', err?.message || err);
     }
+  }
+
+  /**
+   * 从主库之外的副本回填收纳组：旧版收纳数组（迁移后保留 30 天）与灾备副本 bb_recovery_snapshot。
+   * importGroups 以组 ID 幂等 upsert，主库重建后用户新建的组不受影响，重复执行不会产生重复。
+   * @returns {Promise<{ groupCount: number, entryCount: number }>}
+   */
+  static async restoreFromRecoveryCopies() {
+    const legacyGroups = await StorageAdapter.getChrome(StorageKeys.STASH_GROUPS, []);
+    const recovery = await StorageAdapter.getChrome(StorageKeys.RECOVERY_SNAPSHOT, null);
+    const byId = new Map();
+    for (const group of [...(Array.isArray(legacyGroups) ? legacyGroups : []), ...(Array.isArray(recovery?.groups) ? recovery.groups : [])]) {
+      if (!group?.id || !Array.isArray(group.tabs) || group.tabs.length === 0) continue;
+      const existing = byId.get(group.id);
+      // 同一组两份副本都在时取条目更多的一份，宁多勿少
+      if (!existing || group.tabs.length > existing.tabs.length) byId.set(group.id, group);
+    }
+    const groups = [...byId.values()];
+    if (groups.length === 0) {
+      console.warn('[MigrationManager] 收纳主库已重建，但没有可用的灾备副本可回填');
+      return { groupCount: 0, entryCount: 0 };
+    }
+    const imported = await IndexedDBManager.withWriteLock(() => IndexedStashRepository.importGroups(groups));
+    await StorageAdapter.bumpStashRevision();
+    console.warn(`[MigrationManager] 收纳主库曾被重建，已从灾备副本回填 ${imported.groupCount} 个收纳组（${imported.entryCount} 条记录）`);
+    return imported;
   }
 
   /**
@@ -64,7 +87,17 @@ export class MigrationManager {
    *   迁移期间并发写入旧存储不会被漏拷；
    * - 30 天保留：迁移成功后旧数组保留 30 天再清理，期间可一键回退。
    */
-  static async runMigrations() {
+  static runMigrations() {
+    // 单飞：onInstalled 与 SW 冷启动链会在同一进程并发调用，两次迁移交错会让较慢的一次把修订号写回旧值
+    if (!this._migrationPromise) {
+      this._migrationPromise = this._runMigrationsOnce().finally(() => {
+        this._migrationPromise = null;
+      });
+    }
+    return this._migrationPromise;
+  }
+
+  static async _runMigrationsOnce() {
     // 自愈修复：磁盘库存在但业务仓储缺失时重建结构并回填旧存储数据（幂等，见方法文档）
     await this.repairMissingObjectStores();
 
@@ -177,6 +210,18 @@ export class MigrationManager {
         targetVersion = 10;
       } else {
         targetVersion = 9;
+      }
+    }
+
+    // 本地数据修订 11：再次按实际条目重算全部组的 itemCount / starRank / nextPosition。
+    // 修订 9 之后的导入、同步合并与快照应用曾不维护这些派生字段（组显示 0 项、导出被截断）；
+    // 摘要分页改走 (starRank, createdAt, groupId) 索引后，缺 starRank 的组还会从列表中消失
+    if (targetVersion >= 10 && currentVersion < 11) {
+      const optedOut = (await StorageAdapter.getChrome(StorageKeys.IDB_OPTOUT, false)) === true;
+      if (optedOut || await this.backfillGroupDerivedFields()) {
+        targetVersion = 11;
+      } else {
+        targetVersion = 10;
       }
     }
 
@@ -516,6 +561,10 @@ export class MigrationManager {
    */
   static async cleanupLegacyStashData(currentVersion) {
     const retentionMs = LEGACY_STASH_RETENTION_DAYS * 86400000;
+    if (Number(await StorageAdapter.getChrome(StorageKeys.IDB_RECREATED_AT, 0)) > 0) {
+      console.warn('[MigrationManager] 收纳主库曾被重建且尚未完成回填，暂不清理旧版副本');
+      return;
+    }
     if (Number(currentVersion) >= 5) {
       const migratedAt = await StorageAdapter.getChrome(StorageKeys.IDB_MIGRATED_AT, 0);
       if (migratedAt && Date.now() - migratedAt >= retentionMs) {
@@ -534,11 +583,24 @@ export class MigrationManager {
     if (Number(currentVersion) >= 7) {
       const settingsMigratedAt = await StorageAdapter.getChrome(StorageKeys.IDB_SETTINGS_MIGRATED_AT, 0);
       if (settingsMigratedAt && Date.now() - settingsMigratedAt >= retentionMs) {
-        await StorageAdapter.setChrome(StorageKeys.USER_CONFIG, {});
-        await StorageAdapter.setChrome(StorageKeys.LINK_RULES, {});
-        await StorageAdapter.setChrome(StorageKeys.AUTO_BACKUPS, []);
-        await StorageAdapter.setChrome(StorageKeys.ACTIVITY_STATS, {});
-        console.info('[MigrationManager] 旧版 chrome.storage.local 配置/规则/备份/活跃度已超过保留期，完成清理');
+        const legacyKeys = [
+          [StorageKeys.USER_CONFIG, {}],
+          [StorageKeys.LINK_RULES, {}],
+          [StorageKeys.AUTO_BACKUPS, []],
+          [StorageKeys.ACTIVITY_STATS, {}]
+        ];
+        // 只清理仍有残留的键：已清空的不再重写，避免保留期过后每次启动都写四次存储
+        let cleaned = 0;
+        for (const [key, emptyValue] of legacyKeys) {
+          const current = await StorageAdapter.getChrome(key, emptyValue);
+          const isEmpty = !current || (Array.isArray(current) ? current.length === 0 : Object.keys(current).length === 0);
+          if (isEmpty) continue;
+          await StorageAdapter.setChrome(key, emptyValue);
+          cleaned += 1;
+        }
+        if (cleaned > 0) {
+          console.info('[MigrationManager] 旧版 chrome.storage.local 配置/规则/备份/活跃度已超过保留期，完成清理');
+        }
       }
     }
   }
@@ -603,20 +665,7 @@ export class MigrationManager {
           [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES],
           'readwrite',
           async (tx) => {
-            const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
-            const entryIndex = tx.objectStore(IDBStores.STASH_ENTRIES).index('groupId');
-            const groups = await IndexedDBManager.requestToPromise(groupsStore.getAll());
-            for (const group of groups) {
-              const entries = await IndexedDBManager.requestToPromise(entryIndex.getAll(group.groupId));
-              let maxPosition = -1;
-              for (const entry of entries) {
-                maxPosition = Math.max(maxPosition, Number(entry.position) || 0);
-              }
-              group.itemCount = entries.length;
-              group.starRank = group.starred ? 1 : 0;
-              group.nextPosition = maxPosition + 1;
-              groupsStore.put(group);
-            }
+            await IndexedStashRepository.recountGroupsInTx(tx);
           }
         );
       });
@@ -674,3 +723,7 @@ export class MigrationManager {
     }
   }
 }
+
+IndexedDBManager.onRecreated = () => {
+  MigrationManager.repairMissingObjectStores().catch(() => {});
+};

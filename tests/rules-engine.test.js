@@ -7,6 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RuleEngine } from '../BetterBrowse/src/core/rules/rule-engine.js';
+import { FormGuardRule } from '../BetterBrowse/src/core/rules/form-guard-rule.js';
 import { DefaultConfig } from '../BetterBrowse/src/constants/config.js';
 
 test('AudibleRule (P0): 正在播放媒体的标签页必须安全保留', async () => {
@@ -182,4 +183,262 @@ test('TieredStash: 终极兜底 hardCoreOnly 仅保留硬性保护，软性保�
   const stashedIds = res.tabsToStash.map((t) => t.tab.id);
   assert.deepEqual(keptIds.sort(), [1, 2, 3]);
   assert.deepEqual(stashedIds.sort(), [4, 5]);
+});
+
+function installFormProbeChrome(sendMessage, extra = {}) {
+  const originalChrome = globalThis.chrome;
+  globalThis.chrome = {
+    runtime: { lastError: null, getURL: (path) => `chrome-extension://test/${path}` },
+    webNavigation: {
+      getAllFrames: async () => ([
+        { frameId: 0, url: 'https://idle.example/' },
+        { frameId: 3, url: 'https://ads.example/pixel' }
+      ])
+    },
+    tabs: { sendMessage },
+    ...extra
+  };
+  return () => {
+    globalThis.chrome = originalChrome;
+  };
+}
+
+/**
+ * 构造"第一次探测无接收端、注入内容脚本后第二次成功"的发送桩
+ * @param {Array<object>} injections - 记录注入调用
+ * @param {{ hasActiveInput: boolean }} payload - 重探成功后的返回数据
+ */
+function createInjectionRecoverySender(injections, payload = { hasActiveInput: false }) {
+  return (tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    // 注入前：该标签尚无内容脚本；注入后：可正常应答
+    if (!injections.some((item) => item.target?.tabId === tabId)) {
+      chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+      cb?.();
+      chrome.runtime.lastError = null;
+      return;
+    }
+    chrome.runtime.lastError = null;
+    cb?.({ success: true, data: payload });
+  };
+}
+
+function createScriptingStub(injections) {
+  return {
+    scripting: {
+      executeScript: async (options) => {
+        injections.push(options);
+        return [];
+      }
+    }
+  };
+}
+
+test('FormGuardRule: 子框架探测失败不得把整页判为受保护', async () => {
+  const restore = installFormProbeChrome((tabId, message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    const frameId = typeof optionsOrCb === 'object' && optionsOrCb ? optionsOrCb.frameId : 0;
+    if (frameId === 0 || typeof optionsOrCb === 'function') {
+      chrome.runtime.lastError = null;
+      cb?.({ success: true, data: { hasActiveInput: false } });
+      return;
+    }
+    chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+    cb?.();
+    chrome.runtime.lastError = null;
+  });
+  try {
+    const res = await FormGuardRule.probeTabFrames(1);
+    assert.equal(res.success, true);
+    assert.equal(res.data.hasActiveInput, false);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: 顶层探测失败仍按 fail-closed 保护', async () => {
+  const restore = installFormProbeChrome((_tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+    cb?.();
+    chrome.runtime.lastError = null;
+  });
+  try {
+    const res = await FormGuardRule.probeTabFrames(1);
+    assert.equal(res.success, false);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: 子框架确认有输入时仍保护该标签', async () => {
+  const restore = installFormProbeChrome((_tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    const frameId = typeof optionsOrCb === 'object' && optionsOrCb ? optionsOrCb.frameId : 0;
+    chrome.runtime.lastError = null;
+    if (frameId === 3) {
+      cb?.({ success: true, data: { hasActiveInput: true, reason: '框架内存在未提交输入' } });
+      return;
+    }
+    cb?.({ success: true, data: { hasActiveInput: false } });
+  });
+  try {
+    const res = await FormGuardRule.probeTabFrames(1);
+    assert.equal(res.success, true);
+    assert.equal(res.data.hasActiveInput, true);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: 顶层无接收端时注入内容脚本后重探，不得再误判为受保护', async () => {
+  const injections = [];
+  const restore = installFormProbeChrome(
+    createInjectionRecoverySender(injections),
+    createScriptingStub(injections)
+  );
+  try {
+    const res = await FormGuardRule.probeTabFrames(1);
+
+    assert.equal(injections.length, 1);
+    assert.equal(injections[0].target.tabId, 1);
+    assert.deepEqual(injections[0].target.frameIds, [0]);
+    assert.equal(injections[0].files[0], 'src/content/content-bundle.js');
+    // 注入后确认页面无输入：不得再按 fail-closed 保留，否则批量标签会让整次收纳落空
+    assert.equal(res.success, true);
+    assert.equal(res.data.hasActiveInput, false);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: 顶层探测超时时不得重复注入内容脚本', async () => {
+  const injections = [];
+  const restore = installFormProbeChrome((_tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    // 超时说明接收端存在，只是响应慢；重复注入会重复注册监听器
+    chrome.runtime.lastError = { message: '内容脚本响应超时' };
+    cb?.();
+    chrome.runtime.lastError = null;
+  }, createScriptingStub(injections));
+  try {
+    const res = await FormGuardRule.probeTabFrames(1);
+    assert.equal(injections.length, 0);
+    assert.equal(res.success, false);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: 注入后仍探测不通时保持 fail-closed 保护', async () => {
+  const injections = [];
+  const restore = installFormProbeChrome((_tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+    cb?.();
+    chrome.runtime.lastError = null;
+  }, createScriptingStub(injections));
+  try {
+    const res = await FormGuardRule.probeTabFrames(1);
+    assert.equal(injections.length, 1);
+    // 注入也救不回来（页面已丢弃/仍在中途导航）：宁可误保，不可误关
+    assert.equal(res.success, false);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: preload 覆盖仅有 pendingUrl 的待提交标签', async () => {
+  const probed = [];
+  const restore = installFormProbeChrome((tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    probed.push(tabId);
+    chrome.runtime.lastError = null;
+    cb?.({ success: true, data: { hasActiveInput: false } });
+  });
+  try {
+    const results = new Map();
+    await new FormGuardRule().preload({
+      allTabs: [{ id: 7, url: '', pendingUrl: 'https://pending.example/' }],
+      config: DefaultConfig,
+      results
+    });
+
+    // URL 未提交的标签此前被整段跳过，导致在 evaluate 阶段才逐页探测并普遍 fail-closed
+    assert.deepEqual([...new Set(probed)], [7]);
+    assert.equal(results.get(7).success, true);
+  } finally {
+    restore();
+  }
+});
+
+test('RuleEngine: 关闭“最近访问”开关时前台标签仍受硬性保护', async () => {
+  const engine = new RuleEngine();
+  const config = { ...DefaultConfig, rulesEnabled: { ...DefaultConfig.rulesEnabled, recentActive: false, formGuard: false } };
+  const res = await engine.evaluateTabs({
+    allTabs: [
+      { id: 1, url: 'https://viewing.example', active: true },
+      { id: 2, url: 'https://idle.example', active: false }
+    ],
+    activityStats: {},
+    config,
+    tierContext: { hardCoreOnly: true }
+  });
+  const kept = res.tabsToKeep.find((item) => item.tab.id === 1);
+  assert.equal(kept?.matchedRuleId, 'activeTab');
+  assert.equal(res.tabsToStash.some((item) => item.tab.id === 2), true);
+});
+
+test('RuleEngine: 传入跨轮次缓存时仍并行预探测表单，且仅有 pendingUrl 的标签也受表单保护', async () => {
+  const probed = [];
+  const restore = installFormProbeChrome((tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    probed.push(tabId);
+    chrome.runtime.lastError = null;
+    cb?.({ success: true, data: { hasActiveInput: tabId === 8 } });
+  });
+  try {
+    const engine = new RuleEngine();
+    const cache = new Map();
+    const res = await engine.evaluateTabs({
+      allTabs: [
+        { id: 7, url: 'https://a.example/' },
+        { id: 8, url: '', pendingUrl: 'https://typing.example/' }
+      ],
+      activityStats: {},
+      config: DefaultConfig,
+      formResultsCache: cache
+    });
+    assert.equal(cache.has(7) && cache.has(8), true);
+    assert.equal(res.tabsToKeep.some((item) => item.tab.id === 8 && item.matchedRuleId === 'formGuard'), true);
+    assert.equal(res.tabsToStash.some((item) => item.tab.id === 7), true);
+  } finally {
+    restore();
+  }
+});
+
+test('FormGuardRule: 已丢弃 / 未加载的标签不探测、不 fail-closed', async () => {
+  const probed = [];
+  const restore = installFormProbeChrome((tabId, _message, optionsOrCb, maybeCb) => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    probed.push(tabId);
+    chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+    cb?.();
+    chrome.runtime.lastError = null;
+  });
+  try {
+    const engine = new RuleEngine();
+    const res = await engine.evaluateTabs({
+      allTabs: [
+        { id: 21, url: 'https://discarded.example/', discarded: true },
+        { id: 22, url: 'https://unloaded.example/', status: 'unloaded' }
+      ],
+      activityStats: {},
+      config: DefaultConfig
+    });
+    assert.deepEqual(probed, []);
+    assert.equal(res.tabsToStash.length, 2);
+  } finally {
+    restore();
+  }
 });

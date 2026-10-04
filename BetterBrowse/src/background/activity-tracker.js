@@ -158,6 +158,9 @@ export class TabActivityTracker {
             entityType: SyncEntityTypes.ACTIVITY,
             entityId: pageId,
             op: SyncOps.UPSERT,
+            // 每次切换标签都会写一次：只保留最新一条待上传，且不单独触发同步
+            coalesce: true,
+            quiet: true,
             fields: {
               url: record.url || '',
               lastActivated: Number(record.lastActivated) || 0,
@@ -208,20 +211,24 @@ export class TabActivityTracker {
   }
 
   /**
-   * 建立当前标签页元数据与零值投影。冷启动不等同于用户激活，不写入持久层。
+   * 建立当前标签页元数据，并把持久化的 pageId 活跃度投影回 tabId。
+   * 冷启动不等同于用户激活，不写入持久层；但 SW 休眠重启后若投影为零值，
+   * 最近访问 / 高频访问保护会全部失效，冷启动阈值检查就会收掉刚用过的标签。
    */
   async syncCurrentTabs() {
     try {
       const tabs = await chrome.tabs.query({});
       for (const tab of tabs) {
         if (!tab.id) continue;
+        const pageId = tab.url ? this.computePageId(tab.url) : '';
         if (tab.url) {
-          this.tabMeta.set(tab.id, { url: tab.url, pageId: this.computePageId(tab.url) });
+          this.tabMeta.set(tab.id, { url: tab.url, pageId });
         }
         if (!this.stats[tab.id]) {
+          const persisted = pageId ? this.pageStats[pageId] : null;
           this.stats[tab.id] = {
-            lastActivated: 0,
-            activationTimestamps: []
+            lastActivated: Number(persisted?.lastActivated) || 0,
+            activationTimestamps: [...(persisted?.activationTimestamps || [])]
           };
         }
       }
@@ -305,6 +312,17 @@ export class TabActivityTracker {
    * @returns {Record<number, { lastActivated: number, activationTimestamps: number[] }>}
    */
   getStats() {
+    return this.stats;
+  }
+
+  /**
+   * 等待持久化数据恢复后再取统计（收纳评估入口使用，避免冷启动读到空投影）
+   * @returns {Promise<Record<number, { lastActivated: number, activationTimestamps: number[] }>>}
+   */
+  async getReadyStats() {
+    try {
+      await this.readyPromise;
+    } catch {}
     return this.stats;
   }
 }

@@ -250,3 +250,31 @@ Deno.test("StorageAdapter.mergeUserConfig: 补齐 accountConfigSync 默认值", 
   assertEquals(merged.accountConfigSync.enabled, true);
   assertEquals(merged.tabThreshold, 18);
 });
+
+Deno.test("AccountConfigSync.bindListener: 顶层先注册监听，远端变更等 init 完成后再应用", async () => {
+  const { listeners } = await setupIdb();
+  try {
+    const before = listeners.length;
+    AccountConfigSync.bindListener();
+    AccountConfigSync.bindListener();
+    assertEquals(listeners.length, before + 1);
+    const listener = listeners[listeners.length - 1];
+
+    let applied = 0;
+    const originalApply = AccountConfigSync.applyRemote;
+    AccountConfigSync.applyRemote = async () => { applied += 1; return true; };
+    try {
+      listener({ [StorageKeys.ACCOUNT_CONFIG]: { newValue: { v: 1 } } }, 'sync');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assertEquals(applied, 0);
+      await AccountConfigSync.init();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      // init 期间 hydrate 可能把本机偏好推到 sync 而再触发一次监听，这里只断言门控已放行
+      assertEquals(applied >= 1, true);
+    } finally {
+      AccountConfigSync.applyRemote = originalApply;
+    }
+  } finally {
+    AccountConfigSync.resetForTests();
+  }
+});

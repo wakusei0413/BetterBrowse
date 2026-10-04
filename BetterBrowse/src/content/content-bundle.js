@@ -2,6 +2,7 @@
  * @file content-bundle.js
  * @description BetterBrowse 顶层页面完整内容脚本打包产物
  * @encoding UTF-8
+ * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=8c03a32d;src/core/logging/runtime-logger.js=4392ab33;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/countdown-banner.js=1f8d21c4;src/content/link-interceptor.js=5130ff18;src/content/index.js=b1d72c5b
  */
 (function() {
   'use strict';
@@ -60,6 +61,7 @@ const ActionTypes = {
   RESTORE_FULL_BACKUP: 'RESTORE_FULL_BACKUP', // 恢复全量备份 (还原标签页 + 插件全局配置 + 域名规则)
   IMPORT_THIRD_PARTY_DATA: 'IMPORT_THIRD_PARTY_DATA', // 从第三方工具导入标签页 (如 OneTab 文本/JSON)
   EXPORT_ONETAB_TEXT: 'EXPORT_ONETAB_TEXT',   // 导出为 OneTab 兼容纯文本 (URL | Title)
+  RESOLVE_FAVICON_DATA_URL: 'RESOLVE_FAVICON_DATA_URL', // 后台代取站点图标并转为 data URL，避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露
 
   // === 配置与状态同步相关 ===
   GET_CONFIG: 'GET_CONFIG',                   // 获取插件配置
@@ -73,7 +75,7 @@ const ActionTypes = {
   // === 即时同步广播事件 ===
   NOTIFY_RULE_UPDATED: 'NOTIFY_RULE_UPDATED', // 广播通知各页面规则已变更，即时刷新内存
   NOTIFY_CONFIG_UPDATED: 'NOTIFY_CONFIG_UPDATED', // 广播通知各页面配置已变更
-  NOTIFY_STASH_UPDATED: 'NOTIFY_STASH_UPDATED',   // 广播通知收纳数据已变更
+  SWITCH_OPTIONS_TAB: 'SWITCH_OPTIONS_TAB',       // 后台定向通知某个选项页切换到指定视图
   NOTIFY_SYNC_UPDATED: 'NOTIFY_SYNC_UPDATED',     // 广播云端同步状态变更
 
   // === WebDAV 云端同步 ===
@@ -105,7 +107,14 @@ const ActionTypes = {
   // === 云端同步损坏恢复 ===
   GET_SYNC_RECOVERY_INFO: 'GET_SYNC_RECOVERY_INFO',         // 读取损坏状态与本机快照可用性
   FALLBACK_PREVIOUS_SNAPSHOT: 'FALLBACK_PREVIOUS_SNAPSHOT', // 回退上一份远端/本地快照
-  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH'    // 从本机快照重建同步 { confirm: true }
+  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH',   // 从本机快照重建同步 { confirm: true }
+
+  // === 主页与新标签页 ===
+  GET_SEARCH_SUGGESTIONS: 'GET_SEARCH_SUGGESTIONS',         // 获取搜索引擎联想建议（Google/Bing，需主动同意）
+  GET_BROWSER_HISTORY: 'GET_BROWSER_HISTORY',               // 搜索本地浏览历史（需 optional history 权限）
+  GET_HISTORY_RECOMMENDATIONS: 'GET_HISTORY_RECOMMENDATIONS', // 获取历史推荐（最近/常访，标注候选范围和visitCount）
+  GET_HOME_STATS: 'GET_HOME_STATS',                         // 获取主页统计（当前窗口标签/阈值/收纳总计）
+  CHECK_HISTORY_PERMISSION: 'CHECK_HISTORY_PERMISSION'       // 检查 optional history 权限真实状态
 };
 
 
@@ -207,6 +216,18 @@ const DefaultConfig = {
     tierStepSeconds: 60,      // 每级将"最近访问"保护窗口缩短的秒数（默认 60 秒/级）
     ultimateFallback: true,   // 终极兜底：软性保护全部放宽后仍超标时，按重要度从低到高强制回收
     targetSafetyMargin: 0     // 达标安全余量：降到阈值以下后再额外多收纳的标签页数量
+  },
+
+  // === 主页与新标签页偏好配置（保持本地，不进入跨设备同步）===
+  home: {
+    searchEngine: 'google',           // 默认主搜索引擎: 'google' | 'bing' | 'baidu' | 'duckduckgo'
+    enableExternalSuggest: false,     // 外部联想建议总开关（默认关闭，需要主动同意）
+    suggestEngine: 'google',          // 联想建议服务源: 'google' | 'bing'
+    externalSuggestAgreed: false,     // 是否已明确主动同意向第三方外部引擎发送输入内容（本地敏感项，不导出、不同步）
+    showRecentStash: true,            // 是否在主页展示近期收纳
+    showHistoryRecommendations: true, // 是否在主页展示历史记录推荐（需 optional 权限）
+    showWindowTabStats: true,         // 是否在主页展示当前窗口标签/阈值/收纳统计
+    pinnedSites: []                   // 主页钉选网站（[{title,url}]，最多 12 个；仅 http/https，设备本地偏好）
   }
 };
 
@@ -216,7 +237,17 @@ const DefaultConfig = {
 // 本地数据修订 8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
 // 本地数据修订 9：回填收纳组派生字段 itemCount / starRank / nextPosition，供真分页摘要使用
 // 本地数据修订 10：活跃度按 pageId 分记录持久化，避免每次激活整对象重写
-const LOCAL_DATA_SCHEMA_REVISION = 10;
+const LOCAL_DATA_SCHEMA_REVISION = 11;
+
+/**
+ * 统一解析标签页数量阈值：阈值监控、智能收纳达标判定与各界面统计必须同一口径
+ * @param {{ tabThreshold?: unknown }} config
+ * @returns {number}
+ */
+function resolveTabThreshold(config) {
+  const value = Number(config?.tabThreshold);
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 15;
+}
 
 
 // ===== [模块: src/core/logging/runtime-logger.js] =====
@@ -397,6 +428,46 @@ class LinkMatcher {
 }
 
 
+// ===== [模块: src/content/runtime-message.js] =====
+/**
+ * @file runtime-message.js
+ * @description 内容脚本向后台发消息的统一安全封装
+ * @encoding UTF-8
+ */
+
+/**
+ * 向后台发送消息，永不抛错：扩展重载后上下文失效、Service Worker 无接收端或超时都按 null 返回。
+ * 回调中显式消费 runtime.lastError，并吞掉 MV3 在回调模式下仍可能返回的拒绝 Promise，避免控制台错误噪音。
+ * @param {{ action: string, payload?: any }} message
+ * @param {number} [timeoutMs=0] - 大于 0 时超时按 null 返回（后台无响应时不让调用方永久等待）
+ * @returns {Promise<any>}
+ */
+function sendRuntimeMessage(message, timeoutMs = 0) {
+  return new Promise((resolve) => {
+    if (!chrome.runtime?.id) {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = timeoutMs > 0 ? setTimeout(() => finish(null), timeoutMs) : null;
+    try {
+      const result = chrome.runtime.sendMessage(message, (response) => {
+        finish(chrome.runtime.lastError ? null : response);
+      });
+      if (result != null && typeof result.then === 'function') result.then(() => {}, () => {});
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+
 // ===== [模块: src/content/form-detector.js] =====
 /**
  * @file form-detector.js
@@ -519,6 +590,7 @@ class FormDetector {
 
 
 
+
 class CountdownBanner {
   static currentInstance = null;
 
@@ -597,8 +669,8 @@ class CountdownBanner {
         }
 
         .banner-card {
-          width: 330px;
-          background: rgba(255, 255, 255, 0.96);
+          width: 340px;
+          background: rgba(255, 255, 255, 0.98);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
           border: 1px solid rgba(0, 0, 0, 0.08);
@@ -644,8 +716,16 @@ class CountdownBanner {
         }
 
         .card-icon {
-          font-size: 16px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          color: #2563eb;
           line-height: 1;
+        }
+
+        .card-icon-svg {
+          width: 16px;
+          height: 16px;
         }
 
         .card-title {
@@ -657,36 +737,46 @@ class CountdownBanner {
         .threshold-tag {
           font-size: 11px;
           font-weight: 500;
-          color: #d97706;
+          color: #b45309;
           background: #fef3c7;
-          padding: 2px 6px;
+          border: 1px solid #fde68a;
+          padding: 1px 6px;
           border-radius: 6px;
         }
 
         .btn-close {
           background: transparent;
           border: none;
-          color: #9ca3af;
+          color: #6b7280;
           cursor: pointer;
-          font-size: 14px;
-          line-height: 1;
-          padding: 4px;
-          border-radius: 4px;
-          transition: all 0.15s ease;
-          display: flex;
+          width: 32px;
+          height: 32px;
+          min-width: 32px;
+          min-height: 32px;
+          border-radius: 6px;
+          transition: color 0.15s ease, background 0.15s ease;
+          display: inline-flex;
           align-items: center;
           justify-content: center;
+          padding: 0;
         }
 
         .btn-close:hover {
-          color: #4b5563;
-          background: rgba(0, 0, 0, 0.05);
+          color: #111827;
+          background: rgba(0, 0, 0, 0.06);
+        }
+
+        .btn-close:focus-visible {
+          outline: 2px solid #2563eb;
+          outline-offset: 1px;
         }
 
         /* 主体说明与倒计时数字 */
         .card-body {
-          margin-bottom: 12px;
-          color: #4b5563;
+          margin-bottom: 10px;
+          color: #374151;
+          font-size: 13px;
+          line-height: 1.5;
         }
 
         .highlight-text {
@@ -698,11 +788,19 @@ class CountdownBanner {
           display: inline-flex;
           align-items: center;
           font-weight: 700;
-          color: #2563eb;
+          color: #1d4ed8;
           background: #eff6ff;
+          border: 1px solid #dbeafe;
           padding: 1px 6px;
           border-radius: 4px;
           margin: 0 2px;
+        }
+
+        .card-retention-note {
+          margin-top: 6px;
+          font-size: 11px;
+          line-height: 1.4;
+          color: #6b7280;
         }
 
         /* 进度条 */
@@ -735,35 +833,45 @@ class CountdownBanner {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          padding: 6px 12px;
+          min-height: 32px;
+          padding: 0 12px;
           border-radius: 8px;
           font-size: 12px;
           font-weight: 500;
           cursor: pointer;
           border: 1px solid transparent;
-          transition: all 0.15s ease;
+          transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
           line-height: 1.2;
           user-select: none;
+          text-decoration: none;
         }
 
         .btn-secondary {
           background: #f3f4f6;
-          color: #4b5563;
+          color: #374151;
           border-color: #e5e7eb;
         }
 
         .btn-secondary:hover {
           background: #e5e7eb;
-          color: #1f2937;
+          color: #111827;
+          border-color: #d1d5db;
         }
 
         .btn-primary {
           background: #2563eb;
           color: #ffffff;
+          border-color: #2563eb;
         }
 
         .btn-primary:hover {
           background: #1d4ed8;
+          border-color: #1d4ed8;
+        }
+
+        .btn:focus-visible {
+          outline: 2px solid #2563eb;
+          outline-offset: 1px;
         }
 
         .btn:disabled {
@@ -771,13 +879,38 @@ class CountdownBanner {
           cursor: not-allowed;
         }
 
-        /* 深色模式自适应 */
+        /* 减弱动画模式适配 */
+        @media (prefers-reduced-motion: reduce) {
+          .banner-card {
+            animation: none !important;
+            transition: none !important;
+            transform: none !important;
+            opacity: 1 !important;
+          }
+          .banner-card.fade-out {
+            animation: none !important;
+            transition: none !important;
+            opacity: 0 !important;
+          }
+          .progress-bar {
+            transition: none !important;
+          }
+          .btn,
+          .btn-close {
+            transition: none !important;
+          }
+        }
+
+        /* 深色模式自适应与高对比度补全 */
         @media (prefers-color-scheme: dark) {
           .banner-card {
-            background: rgba(30, 41, 59, 0.94);
-            border-color: rgba(255, 255, 255, 0.1);
+            background: rgba(30, 41, 59, 0.96);
+            border-color: rgba(255, 255, 255, 0.12);
             color: #e2e8f0;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+          }
+          .card-icon {
+            color: #60a5fa;
           }
           .card-title {
             color: #f8fafc;
@@ -788,57 +921,87 @@ class CountdownBanner {
           .highlight-text {
             color: #ffffff;
           }
+          .card-retention-note {
+            color: #94a3b8;
+          }
           .threshold-tag {
             background: rgba(217, 119, 6, 0.2);
             color: #fbbf24;
+            border-color: rgba(245, 158, 11, 0.35);
           }
           .btn-close {
             color: #94a3b8;
           }
           .btn-close:hover {
-            color: #f1f5f9;
-            background: rgba(255, 255, 255, 0.08);
+            color: #f8fafc;
+            background: rgba(255, 255, 255, 0.1);
           }
           .countdown-indicator {
             background: rgba(37, 99, 235, 0.25);
             color: #93c5fd;
+            border-color: rgba(96, 165, 250, 0.3);
           }
           .progress-track {
             background: #334155;
           }
+          .progress-bar {
+            background: linear-gradient(90deg, #60a5fa, #818cf8);
+          }
           .btn-secondary {
             background: #334155;
-            color: #e2e8f0;
+            color: #f1f5f9;
             border-color: #475569;
           }
           .btn-secondary:hover {
             background: #475569;
             color: #ffffff;
+            border-color: #64748b;
+          }
+          .btn-primary {
+            background: #3b82f6;
+            color: #ffffff;
+            border-color: #3b82f6;
+          }
+          .btn-primary:hover {
+            background: #2563eb;
+            border-color: #2563eb;
           }
         }
       </style>
 
-      <div class="banner-card" id="bannerCard">
+      <div class="banner-card" id="bannerCard" role="dialog" aria-modal="false" aria-labelledby="bannerTitle" aria-describedby="cardBody" aria-live="polite">
         <div class="card-header">
           <div class="header-title-wrap">
-            <span class="card-icon">📦</span>
-            <span class="card-title">BetterBrowse</span>
-            <span class="threshold-tag">标签已满 ${this.currentCount}</span>
+            <span class="card-icon" aria-hidden="true">
+              <svg class="card-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="20" height="5" x="2" y="3" rx="1"/>
+                <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/>
+                <path d="M10 12h4"/>
+              </svg>
+            </span>
+            <span class="card-title" id="bannerTitle">BetterBrowse</span>
+            <span class="threshold-tag">标签已达 ${this.currentCount}</span>
           </div>
-          <button class="btn-close" id="btnClose" title="关闭并取消本次收纳" aria-label="关闭">✕</button>
+          <button class="btn-close" id="btnClose" type="button" title="取消本次收纳" aria-label="取消本次收纳">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 6 6 18"/>
+              <path d="m6 6 12 12"/>
+            </svg>
+          </button>
         </div>
 
         <div class="card-body" id="cardBody">
-          当前标签数已达 <span class="highlight-text">${this.currentCount}</span> 个（阈值 ${this.threshold}），将在 <span class="countdown-indicator" id="countdownNum">${this.remainingSeconds}s</span> 后自动智能收纳闲置标签...
+          <div>当前有 <span class="highlight-text">${this.currentCount}</span> 个标签（上限 ${this.threshold}），将在 <span class="countdown-indicator" id="countdownNum">${this.remainingSeconds} 秒</span> 后收走闲置标签。</div>
+          <div class="card-retention-note">正在播放、正在输入、固定及当前标签页将自动保留。</div>
         </div>
 
-        <div class="progress-track">
+        <div class="progress-track" aria-hidden="true">
           <div class="progress-bar" id="progressBar"></div>
         </div>
 
         <div class="card-actions" id="cardActions">
-          <button class="btn btn-secondary" id="btnCancel">取消收纳</button>
-          <button class="btn btn-primary" id="btnStashNow">立即收纳</button>
+          <button class="btn btn-secondary" id="btnCancel" type="button">先别收</button>
+          <button class="btn btn-primary" id="btnStashNow" type="button">现在收闲置标签</button>
         </div>
       </div>
     `;
@@ -892,7 +1055,7 @@ class CountdownBanner {
       this.remainingSeconds -= 1;
 
       if (countdownNum) {
-        countdownNum.textContent = `${this.remainingSeconds}s`;
+        countdownNum.textContent = `${this.remainingSeconds} 秒`;
       }
 
       if (progressBar) {
@@ -900,10 +1063,12 @@ class CountdownBanner {
         progressBar.style.width = `${percent}%`;
       }
 
-      // 倒计时仅负责展示，自动收纳由后台唯一计时器触发，避免重复执行
+      // 归零时由前台补发确认：Chrome 对短于约 30 秒的一次性闹钟可能立即触发或延迟，
+      // 后台会用 nonce / 单飞承诺去重，避免与闹钟路径重复收纳。
       if (this.remainingSeconds <= 0) {
         clearInterval(this.timer);
         this.timer = null;
+        this.confirmAutoStash();
       }
     }, 1000);
   }
@@ -913,20 +1078,7 @@ class CountdownBanner {
    */
   cancelAutoStash() {
     this.stopTimer();
-    try {
-      const chromeResult = chrome.runtime.sendMessage({
-        action: ActionTypes.CANCEL_AUTO_STASH,
-        payload: { nonce: this.nonce }
-      }, () => {
-        // 显式消费 lastError，避免扩展重载后产生未处理的错误噪音
-        void chrome.runtime.lastError;
-      });
-      if (chromeResult != null && typeof chromeResult.then === 'function') {
-        chromeResult.then(() => {}, () => {});
-      }
-    } catch {
-      // 忽略通信断开
-    }
+    sendRuntimeMessage({ action: ActionTypes.CANCEL_AUTO_STASH, payload: { nonce: this.nonce } });
     this.fadeOutAndRemove();
   }
 
@@ -942,7 +1094,7 @@ class CountdownBanner {
     const progressBar = this.shadowRoot.getElementById('progressBar');
 
     if (cardBody) {
-      cardBody.innerHTML = '⏳ 正在评估规则并智能收纳闲置标签...';
+      cardBody.innerHTML = '正在按规则收纳闲置标签…';
     }
     if (cardActions) {
       cardActions.style.display = 'none';
@@ -952,51 +1104,38 @@ class CountdownBanner {
     }
 
     try {
-      const response = await new Promise((resolve) => {
-        const timeoutId = setTimeout(() => {
-          // 后台无响应（扩展重载/SW 休眠）时的超时兜底，避免卡片永久停留在"正在评估"
-          resolve(null);
-        }, 10000);
-        try {
-          const chromeResult = chrome.runtime.sendMessage({
-            action: ActionTypes.CONFIRM_AUTO_STASH,
-            payload: { nonce: this.nonce }
-          }, (res) => {
-            clearTimeout(timeoutId);
-            if (chrome.runtime.lastError) {
-              resolve(null);
-              return;
-            }
-            resolve(res);
-          });
-          if (chromeResult != null && typeof chromeResult.then === 'function') {
-            chromeResult.then(() => {}, () => {});
-          }
-        } catch {
-          clearTimeout(timeoutId);
-          resolve(null);
-        }
-      });
+      // 后台无响应（扩展重载/SW 休眠）时 10 秒超时兜底，避免卡片永久停留在"正在评估"
+      const response = await sendRuntimeMessage({
+        action: ActionTypes.CONFIRM_AUTO_STASH,
+        payload: { nonce: this.nonce }
+      }, 10000);
 
-      if (response && response.success && response.data) {
-        const { stashedCount, keptCount } = response.data;
+      // 统一消息响应为 { success, data } 双层结构：真正业务结果在 data.success
+      const data = response && response.data ? response.data : null;
+      if (data && data.success) {
+        const { stashedCount, keptCount } = data;
         if (cardBody) {
           if (stashedCount > 0) {
-            cardBody.innerHTML = `✅ 已智能收纳 <strong>${stashedCount}</strong> 个闲置标签（保留 <strong>${keptCount || 0}</strong> 个活跃标签）`;
+            cardBody.innerHTML = `已按规则收纳 <strong>${stashedCount}</strong> 个闲置标签（已保留 <strong>${keptCount || 0}</strong> 个活跃或保护标签）`;
           } else {
-            cardBody.innerHTML = 'ℹ️ 当前所有标签均处于活跃/保护状态，未收纳标签';
+            cardBody.innerHTML = '当前所有标签均处于活跃或保护状态，未收纳标签';
           }
         }
-      } else if (response && !response.success) {
+      } else if (data && data.success === false) {
+        // 明确区分"未执行"与"执行成功但无闲置标签"，避免误报为全部受保护（动态文本用 textContent 防注入）
         if (cardBody) {
-          cardBody.innerHTML = 'ℹ️ 当前无可收纳的标签页';
+          cardBody.textContent = data.note || data.error || '本次收纳未执行';
+        }
+      } else if (response && response.success === false) {
+        if (cardBody) {
+          cardBody.textContent = `收纳未执行：${response.error || '后台服务连接失败'}`;
         }
       } else {
         if (cardBody) {
           cardBody.innerHTML = '收纳指令已发送';
         }
       }
-    } catch (err) {
+    } catch {
       if (cardBody) {
         cardBody.innerHTML = '收纳指令已发送';
       }
@@ -1044,12 +1183,14 @@ class CountdownBanner {
 }
 
 
+
 // ===== [模块: src/content/link-interceptor.js] =====
 /**
  * @file link-interceptor.js
  * @description 智能链接跳转捕获与拦截器；自动模式不扫描 DOM、不监听悬浮、不启动 MutationObserver
  * @encoding UTF-8
  */
+
 
 
 
@@ -1092,7 +1233,10 @@ class LinkInterceptor {
       this._waitingForBody = false;
       if (this.effectiveMode !== LinkModes.AUTO) this.startDOMObserver();
     };
-    this._destroyOnPageHide = () => this.destroy();
+    // 进入往返缓存（bfcache）的页面会原样恢复且不会重新注入：只有真正卸载时才拆除，否则后退返回后拦截失效
+    this._destroyOnPageHide = (event) => {
+      if (!event?.persisted) this.destroy();
+    };
   }
 
   async init(options = {}) {
@@ -1103,7 +1247,7 @@ class LinkInterceptor {
     this.initGestureGate();
     window.addEventListener('__BETTER_BROWSE_OPEN_NEW_TAB__', this._handleMainWorldOpen);
     document.addEventListener('click', this._handleClick, true);
-    window.addEventListener('pagehide', this._destroyOnPageHide, { once: true });
+    window.addEventListener('pagehide', this._destroyOnPageHide);
     this.isInitialized = true;
 
     this.syncModeToMainWorld();
@@ -1123,17 +1267,7 @@ class LinkInterceptor {
   }
 
   safeSendMessage(message) {
-    if (!chrome.runtime?.id) return;
-    try {
-      const chromeResult = chrome.runtime.sendMessage(message, () => {
-        void chrome.runtime.lastError;
-      });
-      if (chromeResult != null && typeof chromeResult.then === 'function') {
-        chromeResult.then(() => {}, () => {});
-      }
-    } catch {
-      // 扩展重载后静默释放失效上下文
-    }
+    sendRuntimeMessage(message);
   }
 
   handleMainWorldOpen(event) {
@@ -1171,20 +1305,8 @@ class LinkInterceptor {
   }
 
   async refreshRulesCache() {
-    if (!chrome.runtime?.id) return;
     try {
-      const response = await new Promise((resolve) => {
-        const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT }, (result) => {
-          if (chrome.runtime.lastError) {
-            resolve(null);
-            return;
-          }
-          resolve(result);
-        });
-        if (chromeResult != null && typeof chromeResult.then === 'function') {
-          chromeResult.then(() => {}, () => {});
-        }
-      });
+      const response = await sendRuntimeMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT });
       const data = response?.data || response;
       this.applyEffectiveMode(data?.effectiveMode || data);
       if (this.normalizeMode(this.effectiveMode)) return;
@@ -1436,19 +1558,10 @@ class LinkInterceptor {
 
 
 
+
 installRuntimeLogger({
   context: 'content',
-  write: (entry) => new Promise((resolve) => {
-    try {
-      const result = chrome.runtime.sendMessage({ action: ActionTypes.APPEND_RUNTIME_LOG, payload: entry }, () => {
-        void chrome.runtime.lastError;
-        resolve();
-      });
-      if (result != null && typeof result.then === 'function') result.catch(() => {});
-    } catch {
-      resolve();
-    }
-  })
+  write: (entry) => sendRuntimeMessage({ action: ActionTypes.APPEND_RUNTIME_LOG, payload: entry }).then(() => {})
 });
 
 // 顶层页面使用完整能力；iframe 由 frame-content-bundle.js 独立承载轻量能力。

@@ -153,3 +153,36 @@ Deno.test("导出：READ_EXPORT_CHUNK 游标分块拼接后可 JSON.parse，且�
     await idb.restore();
   }
 });
+
+Deno.test("活跃度：SW 重启后按 pageId 把持久化活跃度投影回当前标签", async () => {
+  const idb = installFakeIndexedDB();
+  const { TabActivityTracker } = await import("../BetterBrowse/src/background/activity-tracker.js");
+  const { IndexedStashRepository } = await import("../BetterBrowse/src/core/stash/indexed-stash-repo.js");
+  const now = Date.now();
+  const pageId = IndexedStashRepository.computePageId("https://recent.example/doc");
+  installMockStorage({
+    [StorageKeys.SCHEMA_VERSION]: 4,
+    [StorageKeys.ACTIVITY_STATS]: {
+      [pageId]: { url: "https://recent.example/doc", lastActivated: now - 60_000, activationTimestamps: [now - 60_000] }
+    }
+  });
+  const noopEvent = { addListener() {} };
+  globalThis.chrome.tabs = {
+    onActivated: noopEvent,
+    onUpdated: noopEvent,
+    onRemoved: noopEvent,
+    query: async () => [
+      { id: 11, url: "https://recent.example/doc" },
+      { id: 12, url: "https://never.example/" }
+    ]
+  };
+  try {
+    const tracker = new TabActivityTracker();
+    const stats = await tracker.getReadyStats();
+    assertEquals(stats[11].lastActivated, now - 60_000);
+    assertEquals(stats[11].activationTimestamps, [now - 60_000]);
+    assertEquals(stats[12].lastActivated, 0);
+  } finally {
+    await idb.restore();
+  }
+});

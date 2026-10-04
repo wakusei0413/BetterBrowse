@@ -246,6 +246,8 @@ export class StorageAdapter {
               entityType: SyncEntityTypes.ACTIVITY,
               entityId: pageId,
               op: SyncOps.UPSERT,
+              coalesce: true,
+              quiet: true,
               fields: {
                 url: typeof pageValue.url === 'string' ? pageValue.url : '',
                 lastActivated: Number(pageValue.lastActivated) || 0,
@@ -263,8 +265,12 @@ export class StorageAdapter {
       if (shouldEnqueue) {
         enqueueSpec = await this._buildEnqueueSpec(tx, storeName, key, value);
       }
-      tx.objectStore(storeName).put({ key, value, updatedAt: Date.now() });
-      if (enqueueSpec) await SyncOutbox.enqueueInTx(tx, enqueueSpec);
+      const op = enqueueSpec ? await SyncOutbox.enqueueInTx(tx, enqueueSpec) : null;
+      // 本机修改的字段版本必须落到记录上，否则远端更旧的补丁或快照会因本地"无版本"而覆盖本机新值
+      const stamped = op?.fieldRevs && value && typeof value === 'object' && !Array.isArray(value)
+        ? { ...value, fieldRevs: { ...(value.fieldRevs && typeof value.fieldRevs === 'object' ? value.fieldRevs : {}), ...op.fieldRevs } }
+        : value;
+      tx.objectStore(storeName).put({ key, value: stamped, updatedAt: Date.now() });
     });
     if (shouldEnqueue) SyncOutbox.flushDirty();
     return true;
@@ -351,6 +357,18 @@ export class StorageAdapter {
       }
     }
     return fields;
+  }
+
+  /**
+   * 更新收纳数据修订号：扩展页面监听该键实现 0 刷新呈现（IndexedDB 写入不经过 chrome.storage）。
+   * 门面写入、同步合并与快照应用后都必须调用，否则其它设备同步来的收纳组要手动刷新才可见。
+   */
+  static async bumpStashRevision() {
+    try {
+      await this.set(StorageKeys.STASH_REV, `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+    } catch {
+      // 通知失败不影响主流程
+    }
   }
 
   /**
@@ -445,6 +463,10 @@ export class StorageAdapter {
       aiBridge: {
         ...DefaultConfig.aiBridge,
         ...(storedConfig.aiBridge || {})
+      },
+      home: {
+        ...DefaultConfig.home,
+        ...(storedConfig.home || {})
       }
     };
   }
@@ -519,6 +541,10 @@ export class StorageAdapter {
       aiBridge: {
         ...current.aiBridge,
         ...(partialConfig.aiBridge || {})
+      },
+      home: {
+        ...current.home,
+        ...(partialConfig.home || {})
       }
     };
     return await this.set(StorageKeys.USER_CONFIG, updated);

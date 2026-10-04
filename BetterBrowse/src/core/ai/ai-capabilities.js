@@ -33,6 +33,8 @@ export const AI_CONFIRM_REQUIRED_ACTIONS = new Set([
   ActionTypes.DELETE_AUTO_BACKUP,     // 删除自动备份
   ActionTypes.CLEAR_RUNTIME_LOGS,      // 清空本地运行日志
   ActionTypes.REBUILD_SYNC_FROM_SCRATCH, // 从本机快照重建同步
+  ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT, // 回退上一份快照（非合并应用，覆盖本地收纳数据）
+  ActionTypes.RETIRE_SYNC_DEVICE,     // 退役同步设备（从远端清单移除）
   ActionTypes.RESTORE_STASH_GROUP_DATA // 恢复组快照（写入任意 URL 载荷）
 ]);
 
@@ -167,6 +169,13 @@ export const AI_ACTION_DOCS = {
     params: { textString: 'string，OneTab 文本或 JSON' }
   },
   [ActionTypes.EXPORT_ONETAB_TEXT]: { summary: '导出 OneTab 兼容纯文本（URL | Title）' },
+  [ActionTypes.RESOLVE_FAVICON_DATA_URL]: {
+    summary: '后台代取站点图标并转为 data URL，避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露',
+    params: {
+      url: 'string，网页 URL 或已知 favicon URL',
+      pageUrl: 'string，可选；对应页面地址，CDN 图标失败时按此域名回退 /favicon.ico'
+    }
+  },
 
   // === 配置管理 ===
   [ActionTypes.GET_CONFIG]: { summary: '获取用户配置（与默认值深合并后的全量）' },
@@ -270,7 +279,28 @@ export const AI_ACTION_DOCS = {
     summary: '查询本机运行日志',
     params: { level: 'debug | info | warn | error（可选）', source: 'string（可选）', keyword: 'string（可选）', limit: 'number，最大 1000' }
   },
-  [ActionTypes.CLEAR_RUNTIME_LOGS]: { summary: '清空本机运行日志', note: '需 confirm' }
+  [ActionTypes.CLEAR_RUNTIME_LOGS]: { summary: '清空本机运行日志', note: '需 confirm' },
+
+  // === 主页与新标签页 ===
+  [ActionTypes.GET_SEARCH_SUGGESTIONS]: {
+    summary: '获取搜索引擎联想建议（Google/Bing，需主动同意；搜索词不记录审计）',
+    params: { query: 'string，搜索词', engine: "'google' | 'bing'（可选）" }
+  },
+  [ActionTypes.GET_BROWSER_HISTORY]: {
+    summary: '搜索本地浏览历史（需 optional history 权限；搜索词不记录审计）',
+    params: { query: 'string（可选）', limit: 'number，最大 100', startTime: 'number，可选时间戳' }
+  },
+  [ActionTypes.GET_HISTORY_RECOMMENDATIONS]: {
+    summary: '获取历史推荐（最近近7天/常访近30天，标注候选范围和visitCount访问次数非时长）',
+    params: { limit: 'number，最大 20' }
+  },
+  [ActionTypes.GET_HOME_STATS]: {
+    summary: '获取主页统计（当前窗口可计数标签、阈值、收纳总组数与总条目数）',
+    params: { windowId: 'number（可选）' }
+  },
+  [ActionTypes.CHECK_HISTORY_PERMISSION]: {
+    summary: '检查 optional history 权限真实状态'
+  }
 };
 
 /**

@@ -3,6 +3,7 @@
     "test": "deno test -A ../tests/",
     "verify": "deno run -A scripts/verify-code.js && deno test -A ../tests/",
     "bundle": "deno run -A scripts/build-content.js",
+    "bundle:check": "deno run -A scripts/check-content-bundles.js",
     "api-version-bump": "deno run -A scripts/bump-api-version.js",
     "icons": "deno run -A scripts/generate-icons.js",
     "ai-host-install": "deno run -A native-host/install.js",

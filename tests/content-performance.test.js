@@ -177,7 +177,7 @@ Deno.test("GET_PAGE_LINK_CONTEXT 优先使用 sender.url 并只返回 effectiveM
   try {
     const handlers = createActionHandlers({
       stashService: {},
-      activityTracker: { getStats: () => ({}) },
+      activityTracker: { getStats: () => ({}), getReadyStats: async () => ({}) },
       thresholdMonitor: {},
       broadcastToTabs: async () => {},
       aiBridge: { getStatusSummary: () => ({}), onConfigUpdated: () => {} }

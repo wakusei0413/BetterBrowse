@@ -3,6 +3,7 @@
     "test": "deno test -A tests/",
     "verify": "deno run -A BetterBrowse/scripts/verify-code.js && deno task test",
     "bundle": "deno task --cwd BetterBrowse bundle",
+    "bundle:check": "deno task --cwd BetterBrowse bundle:check",
     "api-version-bump": "deno task --cwd BetterBrowse api-version-bump",
     "icons": "deno task --cwd BetterBrowse icons",
     "ai-host-install": "deno task --cwd BetterBrowse ai-host-install",

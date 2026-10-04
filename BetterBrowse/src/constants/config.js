@@ -95,6 +95,18 @@ export const DefaultConfig = {
     tierStepSeconds: 60,      // 每级将"最近访问"保护窗口缩短的秒数（默认 60 秒/级）
     ultimateFallback: true,   // 终极兜底：软性保护全部放宽后仍超标时，按重要度从低到高强制回收
     targetSafetyMargin: 0     // 达标安全余量：降到阈值以下后再额外多收纳的标签页数量
+  },
+
+  // === 主页与新标签页偏好配置（保持本地，不进入跨设备同步）===
+  home: {
+    searchEngine: 'google',           // 默认主搜索引擎: 'google' | 'bing' | 'baidu' | 'duckduckgo'
+    enableExternalSuggest: false,     // 外部联想建议总开关（默认关闭，需要主动同意）
+    suggestEngine: 'google',          // 联想建议服务源: 'google' | 'bing'
+    externalSuggestAgreed: false,     // 是否已明确主动同意向第三方外部引擎发送输入内容（本地敏感项，不导出、不同步）
+    showRecentStash: true,            // 是否在主页展示近期收纳
+    showHistoryRecommendations: true, // 是否在主页展示历史记录推荐（需 optional 权限）
+    showWindowTabStats: true,         // 是否在主页展示当前窗口标签/阈值/收纳统计
+    pinnedSites: []                   // 主页钉选网站（[{title,url}]，最多 12 个；仅 http/https，设备本地偏好）
   }
 };
 
@@ -104,4 +116,14 @@ export const DefaultConfig = {
 // 本地数据修订 8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
 // 本地数据修订 9：回填收纳组派生字段 itemCount / starRank / nextPosition，供真分页摘要使用
 // 本地数据修订 10：活跃度按 pageId 分记录持久化，避免每次激活整对象重写
-export const LOCAL_DATA_SCHEMA_REVISION = 10;
+export const LOCAL_DATA_SCHEMA_REVISION = 11;
+
+/**
+ * 统一解析标签页数量阈值：阈值监控、智能收纳达标判定与各界面统计必须同一口径
+ * @param {{ tabThreshold?: unknown }} config
+ * @returns {number}
+ */
+export function resolveTabThreshold(config) {
+  const value = Number(config?.tabThreshold);
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 15;
+}

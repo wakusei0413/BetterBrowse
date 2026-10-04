@@ -263,17 +263,19 @@ Deno.test("SyncEngine: 首次同步上传批次并生成快照基线，凭据与
 
     const manifest = server.getManifest();
     assertEquals(manifest.generation, 1);
-    assertEquals(manifest.operationFiles.length, 1);
-    assertEquals(manifest.snapshotId, 'gen-0001');
+    // 首个快照已覆盖本机全部操作：被 watermark 覆盖的批次随即压缩删除
+    assertEquals(manifest.operationFiles.length, 0, "被快照覆盖的批次应已压缩");
+    assertEquals(Object.values(manifest.snapshotWatermarks || {}).some((seq) => seq > 0), true, "快照 watermark 应覆盖已上传的操作");
+    assertEquals(manifest.snapshotId.startsWith('gen-0001'), true, "快照代号以代数开头");
     assertEquals(manifest.knownDevices.length, 1);
-    assertEquals(server.files.has('snapshots/gen-0001.json'), true);
+    assertEquals(server.files.has(`snapshots/${manifest.snapshotId}.json`), true);
     assertEquals(server.files.has(`devices/${manifest.knownDevices[0].deviceId}.json`), true);
 
     // 上传完成后 outbox 清空
     assertEquals((await SyncOutbox.listPending()).length, 0);
 
     // 快照包含页面与设置，但绝不包含凭据与本地自动备份
-    const snapshot = JSON.parse(server.files.get('snapshots/gen-0001.json').body);
+    const snapshot = JSON.parse(server.files.get(`snapshots/${manifest.snapshotId}.json`).body);
     assertEquals(snapshot.pages.length, 2);
     assertEquals(snapshot.stashGroups.length, 1);
     assertEquals(snapshot.settings[StorageKeys.WEBDAV_CREDENTIALS], undefined);
@@ -333,10 +335,11 @@ Deno.test("SyncEngine: 拉取其他设备操作，同字段并发修改写入冲
     assertEquals(conflicts[0].incomingValue, 'B 端改名');
     assertEquals(conflicts[0].resolved, false);
 
-    // 暂定值采纳了 (lamport, deviceId) 字典序较大的一方（devB-offline > 本机 dev）
+    // 暂定值采纳 deviceId 字典序较大的一方：所有设备按同一规则取值才能收敛
     const merged = await readRecord(IDBStores.STASH_GROUPS, groupId);
-    assertEquals(merged.fieldRevs.title.deviceId !== localDevice || merged.title === 'B 端改名', true);
-    assertEquals(merged.title, 'B 端改名');
+    const expected = 'devB-offline' > localDevice ? 'B 端改名' : groupRecord.title;
+    assertEquals(merged.title, expected);
+    assertEquals(merged.fieldRevs.title.deviceId, 'devB-offline' > localDevice ? 'devB-offline' : localDevice);
 
     // 本机再次同步不会重复应用 B 的操作（operationLogs 去重）
     const again = await SyncEngine.run({ manual: true });
@@ -425,7 +428,9 @@ Deno.test("SyncEngine: 无 ETag 服务器以兼容模式完成完整同步", asy
     assertEquals(result.status, SyncStatus.SYNCED);
     // 批次与清单均已写入远端，outbox 清空
     const manifest = server.getManifest();
-    assertEquals(manifest.operationFiles.length, 1);
+    // 首个快照已覆盖本机全部操作：被 watermark 覆盖的批次随即压缩删除
+    assertEquals(manifest.operationFiles.length, 0, "被快照覆盖的批次应已压缩");
+    assertEquals(Object.values(manifest.snapshotWatermarks || {}).some((seq) => seq > 0), true, "快照 watermark 应覆盖已上传的操作");
     assertEquals(server.files.has(`snapshots/${manifest.snapshotId}.json`), true);
     assertEquals((await SyncOutbox.listPending()).length, 0);
   } finally {
@@ -450,7 +455,9 @@ Deno.test("SyncEngine: 忽略 If-Match 的网盘服务器（如 123 云盘）兼
     assertEquals(result.success, true);
     assertEquals(result.status, SyncStatus.SYNCED);
     const manifest = server.getManifest();
-    assertEquals(manifest.operationFiles.length, 1);
+    // 首个快照已覆盖本机全部操作：被 watermark 覆盖的批次随即压缩删除
+    assertEquals(manifest.operationFiles.length, 0, "被快照覆盖的批次应已压缩");
+    assertEquals(Object.values(manifest.snapshotWatermarks || {}).some((seq) => seq > 0), true, "快照 watermark 应覆盖已上传的操作");
     assertEquals(manifest.snapshotId.startsWith('gen-0001'), true);
     assertEquals((await SyncOutbox.listPending()).length, 0);
   } finally {
@@ -743,4 +750,128 @@ Deno.test("SyncEngine: 当前快照损坏时回退上一份本地缓存", async 
     SyncEngine.fetchImpl = null;
     await idb.restore();
   }
+});
+
+Deno.test("数据完整性：导入组写入真实条目计数，分页导出不被截断", async () => {
+  const idb = installFakeIndexedDB();
+  installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 7 });
+  try {
+    await MigrationManager.runMigrations();
+    const tabs = Array.from({ length: 45 }, (_, i) => ({ id: `t${i}`, url: `https://count.example/${i}`, title: `第 ${i} 项` }));
+    const imported = await LocalStashRepository.importDataJSON(JSON.stringify([{ id: 'grp_count', createdAt: 1000, title: '计数组', tabs }]));
+    assertEquals(imported.success, true);
+
+    const summaries = await LocalStashRepository.listGroupSummaries();
+    const summary = summaries.find((group) => group.id === 'grp_count');
+    assertEquals(summary.itemCount, 45);
+
+    let cursor = null;
+    let text = '';
+    for (let i = 0; i < 50; i++) {
+      const chunk = await LocalStashRepository.readExportChunk({ type: 'stash_json', cursor, maxChars: 8000 });
+      text += chunk.chunk;
+      if (chunk.done) break;
+      cursor = chunk.nextCursor;
+    }
+    const exported = JSON.parse(text);
+    const groups = Array.isArray(exported) ? exported : exported.groups || exported.stashGroups || [];
+    const group = groups.find((item) => item.id === 'grp_count');
+    assertEquals(group.tabs.length, 45);
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("数据完整性：同步合并新增条目后重算组计数", async () => {
+  const idb = installFakeIndexedDB();
+  installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 7 });
+  try {
+    await MigrationManager.runMigrations();
+    const base = { deviceId: 'devRemote', sequence: 1, fieldRevs: {}, createdAt: Date.now() };
+    await SyncMerge.applyOperations([
+      { ...base, operationId: 'op_g', lamport: 1, entityType: SyncEntityTypes.STASH_GROUP, entityId: 'grp_remote', op: 'upsert', fields: { title: '远端组', createdAt: 5 } },
+      { ...base, operationId: 'op_p', lamport: 2, entityType: SyncEntityTypes.PAGE, entityId: 'page_remote_1', op: 'upsert', fields: { url: 'https://remote.example/', title: '远端页' } },
+      { ...base, operationId: 'op_e1', lamport: 3, entityType: SyncEntityTypes.STASH_ENTRY, entityId: 'grp_remote::a', op: 'upsert', fields: { groupId: 'grp_remote', pageId: 'page_remote_1', position: 0 } },
+      { ...base, operationId: 'op_e2', lamport: 4, entityType: SyncEntityTypes.STASH_ENTRY, entityId: 'grp_remote::b', op: 'upsert', fields: { groupId: 'grp_remote', pageId: 'page_remote_1', position: 1 } }
+    ]);
+    const summary = (await LocalStashRepository.listGroupSummaries()).find((group) => group.id === 'grp_remote');
+    assertEquals(summary.itemCount, 2);
+
+    await SyncMerge.applyOperations([
+      { ...base, operationId: 'op_del', lamport: 5, entityType: SyncEntityTypes.STASH_ENTRY, entityId: 'grp_remote::a', op: 'delete', fields: {} }
+    ]);
+    const after = (await LocalStashRepository.listGroupSummaries()).find((group) => group.id === 'grp_remote');
+    assertEquals(after.itemCount, 1);
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("同步安全：远端设置补丁只接受白名单路径，拒绝设备本地开关与原型链污染", async () => {
+  const idb = installFakeIndexedDB();
+  installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 7 });
+  try {
+    await MigrationManager.runMigrations();
+    await SyncMerge.applyOperations([{
+      operationId: 'op_evil',
+      deviceId: 'devEvil',
+      sequence: 1,
+      lamport: 99,
+      entityType: SyncEntityTypes.SETTINGS,
+      entityId: 'userConfig',
+      op: 'patch',
+      fields: { 'aiBridge.enabled': true, '__proto__.polluted': true, 'tabThreshold': 33 },
+      fieldRevs: {},
+      createdAt: Date.now()
+    }]);
+    const config = await StorageAdapter.getUserConfig();
+    assertEquals(config.aiBridge?.enabled === true, false);
+    assertEquals(config.tabThreshold, 33);
+    assertEquals(({}).polluted, undefined);
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("同步安全：快照不携带设备本地偏好，应用时只合并可同步部分", async () => {
+  const idb = installFakeIndexedDB();
+  installMockStorage({ [StorageKeys.SCHEMA_VERSION]: 7 });
+  try {
+    await MigrationManager.runMigrations();
+    await StorageAdapter.updateUserConfig({ aiBridge: { enabled: true }, tabThreshold: 21 });
+    const payload = await SyncSnapshot.buildPayload();
+    assertEquals(payload.settings[StorageKeys.USER_CONFIG].aiBridge, undefined);
+    assertEquals(payload.settings[StorageKeys.USER_CONFIG].tabThreshold, 21);
+
+    // 伪造快照试图关闭本机桥接并写入凭据
+    payload.settings[StorageKeys.USER_CONFIG] = {
+      aiBridge: { enabled: false },
+      tabThreshold: 44,
+      fieldRevs: { tabThreshold: { lamport: 9999, deviceId: 'dev_remote' } }
+    };
+    payload.settings[StorageKeys.WEBDAV_CREDENTIALS] = { password: 'x' };
+    await IndexedDBManager.withWriteLock(() => SyncSnapshot.applyPayload(payload, { merge: true }));
+    const config = await StorageAdapter.getUserConfig();
+    assertEquals(config.aiBridge.enabled, true);
+    assertEquals(config.tabThreshold, 44);
+  } finally {
+    await idb.restore();
+  }
+});
+
+Deno.test("WebdavClient：中文用户名与密码按 UTF-8 编码 Basic 认证，不抛错", async () => {
+  const { WebdavClient } = await import("../BetterBrowse/src/core/sync/webdav-client.js");
+  let authHeader = '';
+  const client = new WebdavClient({
+    serverUrl: 'https://dav.example/remote.php',
+    username: '用户',
+    password: '密码',
+    fetchImpl: async (_url, options) => {
+      authHeader = options.headers.Authorization;
+      return new Response('', { status: 200 });
+    }
+  });
+  await client.request('GET', 'manifest.json');
+  const decoded = new TextDecoder().decode(Uint8Array.from(atob(authHeader.replace('Basic ', '')), (c) => c.charCodeAt(0)));
+  assertEquals(decoded, '用户:密码');
 });

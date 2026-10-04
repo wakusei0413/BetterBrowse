@@ -9,7 +9,7 @@ import { FormGuardRule } from './form-guard-rule.js';
 import { RecentActiveRule } from './recent-active-rule.js';
 import { FrequencyRule } from './frequency-rule.js';
 import { PinnedRule } from './pinned-rule.js';
-import { isOwnOptionsUrl } from '../extension-url.js';
+import { isProtectedSystemTab } from '../extension-url.js';
 
 export class RuleEngine {
   /**
@@ -96,15 +96,26 @@ export class RuleEngine {
     const frequencyContext = this.rules.find((rule) => rule.id === 'highFrequency')?.createContext?.({ allTabs, activityStats, config, tierContext });
     const formResults = formResultsCache || new Map();
     const formRule = this.rules.find((rule) => rule.id === 'formGuard');
-    if (!formResultsCache && formRule?.preload) await formRule.preload({ allTabs, config, results: formResults });
+    // 始终并行预探测（preload 自身跳过已缓存的标签）：否则带缓存调用时会退化为逐个标签串行探测，
+    // 每个框架最长等待 2 秒，几十个标签就是数分钟
+    if (formRule?.preload) await formRule.preload({ allTabs, config, results: formResults });
 
     for (const tab of allTabs) {
       // 插件自身 options 收纳页及系统特殊页面绝对保护保留（绝不收纳自身）
-      if (tab.url && (isOwnOptionsUrl(tab.url) || tab.url.startsWith('chrome://') || tab.url.startsWith('edge://') || tab.url.startsWith('about:') || tab.url.startsWith('chrome-extension://'))) {
+      if (isProtectedSystemTab(tab)) {
         tabsToKeep.push({
           tab,
           reason: '插件自身常驻小标签与系统页面保护',
           matchedRuleId: 'system_self'
+        });
+        continue;
+      }
+      // 用户正在浏览的前台标签属于硬性保护：不受"最近访问"规则开关与阶梯降级影响
+      if (tab.active === true) {
+        tabsToKeep.push({
+          tab,
+          reason: '当前正在浏览的前台标签页',
+          matchedRuleId: 'activeTab'
         });
         continue;
       }

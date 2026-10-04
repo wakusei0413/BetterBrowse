@@ -9,14 +9,10 @@
  * @encoding UTF-8
  */
 
-import {
-  IndexedDBManager,
-  IDBStores,
-  STASH_GROUP_SORT_INDEX,
-  STASH_ENTRY_POSITION_INDEX
-} from '../storage/indexed-db.js';
+import { IndexedDBManager, IDBStores, STASH_ENTRY_POSITION_INDEX, STASH_GROUP_SORT_INDEX } from '../storage/indexed-db.js';
 import { SyncOutbox } from '../sync/outbox.js';
 import { SyncEntityTypes, SyncOps, TOMBSTONE_TTL_MS } from '../sync/sync-constants.js';
+import { defaultGroupTitle } from './group-title.js';
 
 /** 单批次写入的最大记录数（避免单次大事务被 Service Worker 休眠打断） */
 const WRITE_BATCH_SIZE = 500;
@@ -112,15 +108,7 @@ export class IndexedStashRepository {
    * @returns {string}
    */
   static _formatDefaultTitle(timestamp, count) {
-    const dateStr = new Intl.DateTimeFormat('zh-CN', {
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    }).format(new Date(timestamp));
-    return `${dateStr} 收纳 (${count} 个标签页)`;
+    return defaultGroupTitle(timestamp, count);
   }
 
   /**
@@ -219,34 +207,41 @@ export class IndexedStashRepository {
     const minBound = Number.isFinite(minCreated) ? minCreated : null;
     const maxBound = Number.isFinite(maxCreated) ? maxCreated : null;
     const decodedCursor = this._decodeCursor(cursor);
+    // 游标为排序索引键 [starRank, createdAt, groupId]；旧格式游标（仅 groupId）按从头读取处理
+    const resumeKey = Array.isArray(decodedCursor) && decodedCursor.length === 3 ? decodedCursor : null;
 
-    const allGroups = await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
-      return await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.STASH_GROUPS).getAll());
-    }) || [];
-    if (!Array.isArray(allGroups)) {
-      throw new Error(`收纳组摘要读取结果异常: ${typeof allGroups}`);
-    }
-    const sorted = [...allGroups].sort((a, b) => {
-      const starDiff = (b.starred ? 1 : 0) - (a.starred ? 1 : 0);
-      if (starDiff) return starDiff;
-      const timeDiff = (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0);
-      if (timeDiff) return timeDiff;
-      return String(a.groupId || '').localeCompare(String(b.groupId || ''));
-    }).filter((group) => {
-      const createdAt = Number(group.createdAt) || 0;
-        if (minBound != null && createdAt < minBound) return false;
-        if (maxBound != null && createdAt > maxBound) return false;
-
-      return true;
+    // 沿 (starRank, createdAt, groupId) 复合索引倒序游标读取：星标组在前、新组在前，
+    // 每页只读 limit+1 条，不再每页全表 getAll + 排序（逐组分页导出时是 O(N²)）
+    const records = [];
+    let hasMore = false;
+    await IndexedDBManager.runTransaction([IDBStores.STASH_GROUPS], 'readonly', async (tx) => {
+      const index = tx.objectStore(IDBStores.STASH_GROUPS).index(STASH_GROUP_SORT_INDEX);
+      for (const rank of [1, 0]) {
+        if (hasMore) break;
+        if (resumeKey && Number(resumeKey[0]) < rank) continue;
+        const lower = [rank, minBound ?? -Number.MAX_SAFE_INTEGER, ''];
+        let upper = [rank, maxBound ?? Number.MAX_SAFE_INTEGER, MAX_KEY_TEXT];
+        let upperOpen = false;
+        if (resumeKey && Number(resumeKey[0]) === rank) {
+          upper = resumeKey;
+          upperOpen = true;
+        }
+        await new Promise((resolve, reject) => {
+          const request = index.openCursor(IDBKeyRange.bound(lower, upper, false, upperOpen), 'prev');
+          request.onerror = () => reject(request.error || new Error('收纳组摘要游标读取失败'));
+          request.onsuccess = () => {
+            const current = request.result;
+            if (!current) return resolve();
+            if (records.length >= safeLimit) {
+              hasMore = true;
+              return resolve();
+            }
+            records.push({ record: current.value, key: current.key });
+            current.continue();
+          };
+        });
+      }
     });
-    let start = 0;
-    if (Array.isArray(decodedCursor) && decodedCursor[0]) {
-      const index = sorted.findIndex((group) => group.groupId === decodedCursor[0]);
-      start = index >= 0 ? index + 1 : 0;
-    }
-    const sliced = sorted.slice(start, start + safeLimit);
-    const hasMore = start + sliced.length < sorted.length;
-    const records = sliced.map((record) => ({ record, key: [record.groupId] }));
     const items = [];
     for (const { record } of records) {
       items.push(this._toGroupSummary(record));
@@ -415,13 +410,24 @@ export class IndexedStashRepository {
    */
   static async _applyTitleUpdates(titleUpdates) {
     if (!titleUpdates || titleUpdates.size === 0) return;
-    await IndexedDBManager.runTransaction([IDBStores.PAGES], 'readwrite', async (tx) => {
+    // 标题刷新与 outbox 同事务入队：否则本机标题更新永远不会同步到其它设备
+    const enqueue = await SyncOutbox.isActive();
+    const stores = [IDBStores.PAGES];
+    if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
+    await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
       const store = tx.objectStore(IDBStores.PAGES);
       for (const [pageId, title] of titleUpdates) {
         const page = await IndexedDBManager.requestToPromise(store.get(pageId));
-        if (page) {
-          page.title = String(title).slice(0, 4096);
-          store.put(page);
+        if (!page) continue;
+        page.title = String(title).slice(0, 4096);
+        store.put(page);
+        if (enqueue) {
+          await SyncOutbox.enqueueInTx(tx, {
+            entityType: SyncEntityTypes.PAGE,
+            entityId: pageId,
+            op: SyncOps.PATCH,
+            fields: { title: page.title }
+          });
         }
       }
     });
@@ -1432,7 +1438,8 @@ export class IndexedStashRepository {
               groupId: entry.groupId,
               itemId: entry.entryId,
               url: page.url,
-              title: page.title
+              title: page.title,
+              favIconUrl: page.favIconUrl || ''
             });
             if (items.length >= safeLimit) {
               return {
@@ -1453,6 +1460,34 @@ export class IndexedStashRepository {
       }
     );
     return paginated ? result : result.items;
+  }
+
+  /**
+   * 在事务内按实际条目重算收纳组派生字段（itemCount / nextPosition / starRank）。
+   * 导入、同步合并等直接写条目的路径不会逐条维护计数，写完后必须调用本方法，
+   * 否则组摘要显示 0 项、分页导出按 total 提前截断。
+   * 事务须包含 STASH_GROUPS 与 STASH_ENTRIES 仓储。
+   * @param {IDBTransaction} tx
+   * @param {Iterable<string>|null} [groupIds=null] - 为空则重算全部组
+   */
+  static async recountGroupsInTx(tx, groupIds = null) {
+    const groupsStore = tx.objectStore(IDBStores.STASH_GROUPS);
+    const entryIndex = tx.objectStore(IDBStores.STASH_ENTRIES).index('groupId');
+    const groups = groupIds
+      ? await Promise.all([...new Set(groupIds)].map((id) => IndexedDBManager.requestToPromise(groupsStore.get(id))))
+      : await IndexedDBManager.requestToPromise(groupsStore.getAll());
+    for (const group of groups) {
+      if (!group?.groupId) continue;
+      const entries = await IndexedDBManager.requestToPromise(entryIndex.getAll(group.groupId));
+      let maxPosition = -1;
+      for (const entry of entries) {
+        maxPosition = Math.max(maxPosition, Number(entry.position) || 0);
+      }
+      group.itemCount = entries.length;
+      group.starRank = group.starred ? 1 : 0;
+      group.nextPosition = maxPosition + 1;
+      groupsStore.put(group);
+    }
   }
 
   /**
@@ -1597,12 +1632,15 @@ export class IndexedStashRepository {
     }
 
     for (const batch of IndexedDBManager.chunk(groupRecords, WRITE_BATCH_SIZE)) {
-      const stores = [IDBStores.STASH_GROUPS];
+      const stores = [IDBStores.STASH_GROUPS, IDBStores.STASH_ENTRIES];
       if (enqueue) stores.push(IDBStores.OUTBOX, IDBStores.SYNC_META, IDBStores.OPERATION_LOGS);
       await IndexedDBManager.runTransaction(stores, 'readwrite', async (tx) => {
         const store = tx.objectStore(IDBStores.STASH_GROUPS);
         for (const record of batch) {
-          store.put(record);
+          // 合并进已有组：保留同步元数据（fieldRevs / revision / originDeviceId）与派生字段，
+          // 重复导入不得抹掉字段版本，否则下一次同步合并会被旧值覆盖
+          const existing = await IndexedDBManager.requestToPromise(store.get(record.groupId));
+          store.put(existing ? { ...existing, ...record } : record);
           if (enqueue) {
             await SyncOutbox.enqueueInTx(tx, {
               entityType: SyncEntityTypes.STASH_GROUP,
@@ -1610,6 +1648,7 @@ export class IndexedStashRepository {
               op: SyncOps.UPSERT,
               fields: {
                 title: record.title,
+                color: record.color,
                 locked: record.locked,
                 starred: record.starred,
                 archived: record.archived,
@@ -1618,6 +1657,7 @@ export class IndexedStashRepository {
             });
           }
         }
+        await this.recountGroupsInTx(tx, batch.map((record) => record.groupId));
       });
     }
     if (enqueue) SyncOutbox.flushDirty();

@@ -2,6 +2,7 @@
  * @file frame-content-bundle.js
  * @description BetterBrowse iframe 轻量内容脚本打包产物
  * @encoding UTF-8
+ * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=8c03a32d;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=5130ff18;src/content/frame-index.js=ecaaf4df
  */
 (function() {
   'use strict';
@@ -60,6 +61,7 @@ const ActionTypes = {
   RESTORE_FULL_BACKUP: 'RESTORE_FULL_BACKUP', // 恢复全量备份 (还原标签页 + 插件全局配置 + 域名规则)
   IMPORT_THIRD_PARTY_DATA: 'IMPORT_THIRD_PARTY_DATA', // 从第三方工具导入标签页 (如 OneTab 文本/JSON)
   EXPORT_ONETAB_TEXT: 'EXPORT_ONETAB_TEXT',   // 导出为 OneTab 兼容纯文本 (URL | Title)
+  RESOLVE_FAVICON_DATA_URL: 'RESOLVE_FAVICON_DATA_URL', // 后台代取站点图标并转为 data URL，避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露
 
   // === 配置与状态同步相关 ===
   GET_CONFIG: 'GET_CONFIG',                   // 获取插件配置
@@ -73,7 +75,7 @@ const ActionTypes = {
   // === 即时同步广播事件 ===
   NOTIFY_RULE_UPDATED: 'NOTIFY_RULE_UPDATED', // 广播通知各页面规则已变更，即时刷新内存
   NOTIFY_CONFIG_UPDATED: 'NOTIFY_CONFIG_UPDATED', // 广播通知各页面配置已变更
-  NOTIFY_STASH_UPDATED: 'NOTIFY_STASH_UPDATED',   // 广播通知收纳数据已变更
+  SWITCH_OPTIONS_TAB: 'SWITCH_OPTIONS_TAB',       // 后台定向通知某个选项页切换到指定视图
   NOTIFY_SYNC_UPDATED: 'NOTIFY_SYNC_UPDATED',     // 广播云端同步状态变更
 
   // === WebDAV 云端同步 ===
@@ -105,7 +107,14 @@ const ActionTypes = {
   // === 云端同步损坏恢复 ===
   GET_SYNC_RECOVERY_INFO: 'GET_SYNC_RECOVERY_INFO',         // 读取损坏状态与本机快照可用性
   FALLBACK_PREVIOUS_SNAPSHOT: 'FALLBACK_PREVIOUS_SNAPSHOT', // 回退上一份远端/本地快照
-  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH'    // 从本机快照重建同步 { confirm: true }
+  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH',   // 从本机快照重建同步 { confirm: true }
+
+  // === 主页与新标签页 ===
+  GET_SEARCH_SUGGESTIONS: 'GET_SEARCH_SUGGESTIONS',         // 获取搜索引擎联想建议（Google/Bing，需主动同意）
+  GET_BROWSER_HISTORY: 'GET_BROWSER_HISTORY',               // 搜索本地浏览历史（需 optional history 权限）
+  GET_HISTORY_RECOMMENDATIONS: 'GET_HISTORY_RECOMMENDATIONS', // 获取历史推荐（最近/常访，标注候选范围和visitCount）
+  GET_HOME_STATS: 'GET_HOME_STATS',                         // 获取主页统计（当前窗口标签/阈值/收纳总计）
+  CHECK_HISTORY_PERMISSION: 'CHECK_HISTORY_PERMISSION'       // 检查 optional history 权限真实状态
 };
 
 
@@ -207,6 +216,18 @@ const DefaultConfig = {
     tierStepSeconds: 60,      // 每级将"最近访问"保护窗口缩短的秒数（默认 60 秒/级）
     ultimateFallback: true,   // 终极兜底：软性保护全部放宽后仍超标时，按重要度从低到高强制回收
     targetSafetyMargin: 0     // 达标安全余量：降到阈值以下后再额外多收纳的标签页数量
+  },
+
+  // === 主页与新标签页偏好配置（保持本地，不进入跨设备同步）===
+  home: {
+    searchEngine: 'google',           // 默认主搜索引擎: 'google' | 'bing' | 'baidu' | 'duckduckgo'
+    enableExternalSuggest: false,     // 外部联想建议总开关（默认关闭，需要主动同意）
+    suggestEngine: 'google',          // 联想建议服务源: 'google' | 'bing'
+    externalSuggestAgreed: false,     // 是否已明确主动同意向第三方外部引擎发送输入内容（本地敏感项，不导出、不同步）
+    showRecentStash: true,            // 是否在主页展示近期收纳
+    showHistoryRecommendations: true, // 是否在主页展示历史记录推荐（需 optional 权限）
+    showWindowTabStats: true,         // 是否在主页展示当前窗口标签/阈值/收纳统计
+    pinnedSites: []                   // 主页钉选网站（[{title,url}]，最多 12 个；仅 http/https，设备本地偏好）
   }
 };
 
@@ -216,7 +237,17 @@ const DefaultConfig = {
 // 本地数据修订 8：WebDAV 同步仓储、按 pageId 的活跃度、实体同步元数据（阶段二 M3）
 // 本地数据修订 9：回填收纳组派生字段 itemCount / starRank / nextPosition，供真分页摘要使用
 // 本地数据修订 10：活跃度按 pageId 分记录持久化，避免每次激活整对象重写
-const LOCAL_DATA_SCHEMA_REVISION = 10;
+const LOCAL_DATA_SCHEMA_REVISION = 11;
+
+/**
+ * 统一解析标签页数量阈值：阈值监控、智能收纳达标判定与各界面统计必须同一口径
+ * @param {{ tabThreshold?: unknown }} config
+ * @returns {number}
+ */
+function resolveTabThreshold(config) {
+  const value = Number(config?.tabThreshold);
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 15;
+}
 
 
 // ===== [模块: src/core/link/link-matcher.js] =====
@@ -317,6 +348,46 @@ class LinkMatcher {
     // 6. 默认回退至自动模式
     return LinkModes.AUTO;
   }
+}
+
+
+// ===== [模块: src/content/runtime-message.js] =====
+/**
+ * @file runtime-message.js
+ * @description 内容脚本向后台发消息的统一安全封装
+ * @encoding UTF-8
+ */
+
+/**
+ * 向后台发送消息，永不抛错：扩展重载后上下文失效、Service Worker 无接收端或超时都按 null 返回。
+ * 回调中显式消费 runtime.lastError，并吞掉 MV3 在回调模式下仍可能返回的拒绝 Promise，避免控制台错误噪音。
+ * @param {{ action: string, payload?: any }} message
+ * @param {number} [timeoutMs=0] - 大于 0 时超时按 null 返回（后台无响应时不让调用方永久等待）
+ * @returns {Promise<any>}
+ */
+function sendRuntimeMessage(message, timeoutMs = 0) {
+  return new Promise((resolve) => {
+    if (!chrome.runtime?.id) {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = timeoutMs > 0 ? setTimeout(() => finish(null), timeoutMs) : null;
+    try {
+      const result = chrome.runtime.sendMessage(message, (response) => {
+        finish(chrome.runtime.lastError ? null : response);
+      });
+      if (result != null && typeof result.then === 'function') result.then(() => {}, () => {});
+    } catch {
+      finish(null);
+    }
+  });
 }
 
 
@@ -444,6 +515,7 @@ class FormDetector {
 
 
 
+
 class LinkInterceptor {
   constructor() {
     this.currentDomain = window.location.hostname.toLowerCase();
@@ -481,7 +553,10 @@ class LinkInterceptor {
       this._waitingForBody = false;
       if (this.effectiveMode !== LinkModes.AUTO) this.startDOMObserver();
     };
-    this._destroyOnPageHide = () => this.destroy();
+    // 进入往返缓存（bfcache）的页面会原样恢复且不会重新注入：只有真正卸载时才拆除，否则后退返回后拦截失效
+    this._destroyOnPageHide = (event) => {
+      if (!event?.persisted) this.destroy();
+    };
   }
 
   async init(options = {}) {
@@ -492,7 +567,7 @@ class LinkInterceptor {
     this.initGestureGate();
     window.addEventListener('__BETTER_BROWSE_OPEN_NEW_TAB__', this._handleMainWorldOpen);
     document.addEventListener('click', this._handleClick, true);
-    window.addEventListener('pagehide', this._destroyOnPageHide, { once: true });
+    window.addEventListener('pagehide', this._destroyOnPageHide);
     this.isInitialized = true;
 
     this.syncModeToMainWorld();
@@ -512,17 +587,7 @@ class LinkInterceptor {
   }
 
   safeSendMessage(message) {
-    if (!chrome.runtime?.id) return;
-    try {
-      const chromeResult = chrome.runtime.sendMessage(message, () => {
-        void chrome.runtime.lastError;
-      });
-      if (chromeResult != null && typeof chromeResult.then === 'function') {
-        chromeResult.then(() => {}, () => {});
-      }
-    } catch {
-      // 扩展重载后静默释放失效上下文
-    }
+    sendRuntimeMessage(message);
   }
 
   handleMainWorldOpen(event) {
@@ -560,20 +625,8 @@ class LinkInterceptor {
   }
 
   async refreshRulesCache() {
-    if (!chrome.runtime?.id) return;
     try {
-      const response = await new Promise((resolve) => {
-        const chromeResult = chrome.runtime.sendMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT }, (result) => {
-          if (chrome.runtime.lastError) {
-            resolve(null);
-            return;
-          }
-          resolve(result);
-        });
-        if (chromeResult != null && typeof chromeResult.then === 'function') {
-          chromeResult.then(() => {}, () => {});
-        }
-      });
+      const response = await sendRuntimeMessage({ action: ActionTypes.GET_PAGE_LINK_CONTEXT });
       const data = response?.data || response;
       this.applyEffectiveMode(data?.effectiveMode || data);
       if (this.normalizeMode(this.effectiveMode)) return;

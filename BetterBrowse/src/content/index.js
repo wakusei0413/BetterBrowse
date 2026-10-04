@@ -9,20 +9,11 @@ import { LinkInterceptor } from './link-interceptor.js';
 import { FormDetector } from './form-detector.js';
 import { CountdownBanner } from './countdown-banner.js';
 import { installRuntimeLogger } from '../core/logging/runtime-logger.js';
+import { sendRuntimeMessage } from './runtime-message.js';
 
 installRuntimeLogger({
   context: 'content',
-  write: (entry) => new Promise((resolve) => {
-    try {
-      const result = chrome.runtime.sendMessage({ action: ActionTypes.APPEND_RUNTIME_LOG, payload: entry }, () => {
-        void chrome.runtime.lastError;
-        resolve();
-      });
-      if (result != null && typeof result.then === 'function') result.catch(() => {});
-    } catch {
-      resolve();
-    }
-  })
+  write: (entry) => sendRuntimeMessage({ action: ActionTypes.APPEND_RUNTIME_LOG, payload: entry }).then(() => {})
 });
 
 // 顶层页面使用完整能力；iframe 由 frame-content-bundle.js 独立承载轻量能力。

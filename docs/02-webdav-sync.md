@@ -56,6 +56,7 @@
   snapshotSha256,
   snapshotWatermarks: { [deviceId]: maxSequence },
   previousSnapshotId,
+  snapshotCreatedAt,      // 当前快照生成时间（快照计龄只看它，updatedAt 每次上传都会刷新）
   updatedAt,
   knownDevices: [{ deviceId, lastSeenAt, retired }],
   operationFiles: [{ deviceId, start, end, batchId, path, sha256 }],
@@ -86,7 +87,8 @@
 
 - 快照是某 generation 的**全量基线**（全部可同步实体 + 未过期墓碑），并写入 `snapshotWatermarks`。
 - 应用快照后，**只重放** `(deviceId, sequence) > watermark[deviceId]` 的操作；禁止重放快照已覆盖的批次。
-- 推进 generation：距上一次快照 ≥ 7 天，**或**未压缩操作 ≥ 200 条，且本机已完整 PUT 快照文件后再用 `If-Match` 更新清单。
+- 推进 generation：距上一次快照（`snapshotCreatedAt`，缺失视为从未生成）≥ 7 天，**或**当前快照 watermark 之后的操作 ≥ 200 条（只计未被快照覆盖的批次；按批次总数计会导致压缩受阻后每次同步都重传全量快照），且本机已完整 PUT 快照文件后再用 `If-Match` 更新清单。
+- 已有本地数据的设备以**合并模式**应用快照：带 `fieldRevs` 的字段按版本取胜，本机回收期内的墓碑阻止快照复活实体；本机自己的操作在 `operationLogs` 中会被补放跳过，因此不能整条覆盖本地记录。应用快照必须把快照内最大 lamport 并入本机 `seenLamport`。
 - 快照损坏 / 缺失：校验 `snapshotSha256` 失败则回退 `previousSnapshotId`；再失败则状态为「数据损坏」，**不**从零重建，除非用户在界面点「危险：从零重建」。
 - 新设备 / 退役回归：应用最新快照 → 重放 watermark 之后的操作 → 本机多出来的实体作为新 outbox 操作上传（配对合并）。`deviceId` 保持不变，`sequence` 从 `max(本地, watermark) + 1` 续写。
 
@@ -95,7 +97,7 @@
 上传顺序固定：
 
 1. PUT 不可变批次（不需要 If-Match；200 / 201 / 204 / 409 均视为成功）；
-2. PUT 快照文件（文件名含 generation，写完后本地记录 sha256）；
+2. PUT 快照文件（文件名 `gen-<代号>_<唯一后缀>.json`，代号只作排序提示，真正代数以清单 `generation` 为准；多台设备可能基于同一份清单同时生成下一代，同名会互相覆盖。写完后本地记录 sha256）；
 3. `If-Match` PUT `manifest.json`（必须带 `snapshotSha256` 与 `operationFiles`）；
 4. PUT `devices/<deviceId>.json` 确认本机已应用序列。
 
@@ -125,7 +127,7 @@
 - 新实体（不同 id）并存。
 - 不同字段独立按 `fieldRevs` 合并。
 - 同字段：`incoming.lamport > local` 则采纳；`incoming.lamport < local` 则忽略；**lamport 相等且 deviceId 不同** → 写入 `conflicts`，双方候选都保留。暂定展示值用 `(lamport, deviceId)` 字典序，保证多机暂定视图一致。
-- 「设置类采用云端值」的确定性含义：两机都离线改设置时，**先成功 `If-Match` 写入清单的那一侧**是已上云值，作为暂定值；后拉取的一侧生成冲突记录，丢弃值与来源一并保存，用户可在冲突列表改判。不是「后拉的叫云端」。
+- 设置类与实体字段同一规则：并列时暂定值取 deviceId 字典序较大的一侧，两侧都写入冲突记录，用户可在冲突列表改判。**禁止**「拉取方一律采用传入值」：两侧会互换取值、永久分叉。本机写设置与域名规则时，必须把本次操作的字段版本落到存储记录的 `fieldRevs`。
 - 删除 = `op: 'delete'` + 本地墓碑，`expiresAt = now + 30d`；回收期内拒绝复活同 id。
 - 活跃度按 `pageId`：`lastActivated` 取 max，时间戳取并集后再按 `frequencyHistoryMinutes` 裁窗。
 - `deviceEvent` 视为不可变新实体，不做字段冲突。
@@ -133,7 +135,11 @@
 ## 6. 日志治理（原 3.4）
 
 - 软上限约 50MB 时警告；约 100MB 时拒绝再传新快照，直到压缩成功。
-- 压缩条件：新快照已进清单，**且**所有未退役设备的确认序列 ≥ 该快照 watermark，**且**快照内墓碑均已过 30 天回收期 → 删除被 watermark 覆盖的 `operations/` 文件。
+- 压缩条件：新快照已进清单 → 删除被 watermark 覆盖的 `operations/` 文件（以最新远端清单重新判定）。快照自带回收期内的墓碑，落后设备会先应用快照再补放剩余批次，因此不等待墓碑过期或设备确认。
+- 远端快照只保留清单中的当前与上一份：生成新快照后经 PROPFIND 列出 `snapshots/`，删除代号比当前代至少小 2 且不被清单引用的文件（列目录失败则跳过）。本地 `snapshots` 缓存只保留最新 2 份。
+- 已应用的批次路径登记在 `syncMeta.appliedFiles`，不再重复下载；快照整体替换（新设备、回退、从零重建）后清空该登记。
+- 本地历史清理（每次同步收尾）：超过 30 天的 `operationLogs`、30 天前已裁决的冲突、已过期墓碑。
+- 活跃度为整值覆盖的高频写入：outbox 中同一页面只保留最新一条待上传操作，且不单独触发防抖同步。
 - 连续 90 天未同步 → 自动退役（可手动提前）。退役后不再阻塞压缩。
 - 退役回归：丢弃已压缩的旧日志；从最新快照重新配对。
 

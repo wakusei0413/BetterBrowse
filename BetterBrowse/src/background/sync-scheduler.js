@@ -61,8 +61,24 @@ export class SyncScheduler {
       }
       return;
     }
+    this._ensureAlarm().catch(() => {});
+  }
+
+  /**
+   * 仅在闹钟缺失或周期变化时才创建：同名重建会把周期计时清零，
+   * 而 SW 每次冷启动与每次配置保存都会走到这里，活跃用户的定时同步将永远等不到触发。
+   */
+  static async _ensureAlarm() {
+    if (!chrome.alarms?.create) return;
+    let existing = null;
     try {
-      chrome.alarms?.create?.(ALARM_NAME, { periodInMinutes: SYNC_ALARM_MINUTES });
+      existing = await chrome.alarms.get?.(ALARM_NAME);
+    } catch {
+      existing = null;
+    }
+    if (existing?.periodInMinutes === SYNC_ALARM_MINUTES) return;
+    try {
+      chrome.alarms.create(ALARM_NAME, { periodInMinutes: SYNC_ALARM_MINUTES });
     } catch {
       // 部分测试环境无 alarms
     }

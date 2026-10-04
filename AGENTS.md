@@ -10,7 +10,7 @@
 - **规范标准**：Chrome Extensions **Manifest V3**
 - **软件版本**：由 `manifest.json` 的 `version` / `version_name` 独立管理，面向安装包、发布和用户展示
 - **API 版本**：内部裸正整数；当前值以 `src/constants/api-version.js` 为唯一事实源
-- **开发运行时与工具链**：**纯 JavaScript (原生 ESM) + Deno 2.x 原生驱动**（彻底告别 Node.js/npm 体系）
+- **开发运行时与工具链**：扩展与宿主使用**纯 JavaScript（原生 ESM）+ Deno 2.x 原生驱动**（不使用 Node.js/npm）；BetterBrowse Skill 唯一客户端使用 **Python 3.9+ 标准库**
 - **API 版本规则**（⚠️ **内部跨组件契约编号**）：
   - `API_VERSION` 只允许在 `src/constants/api-version.js` 定义，采用裸正整数，不加 `v`、小数或 Milestone 名称。
   - 仅当扩展、宿主与桥接客户端之间发生不兼容的接口契约变化时，执行 `deno task api-version-bump`；普通软件发布、UI 更新和兼容性修复不递增 API 版本。
@@ -36,11 +36,11 @@ BetterBrowse/
 ├── .gitignore                     # Git 忽略配置
 ├── deno.json                      # 根工作区 Deno 配置文件
 │
-├── skills/                        # AI Agent 技能库（阶段三：better-browse 技能 + 桥接 CLI 客户端）
-│   └── better-browse/
+├── skills/                        # AI Agent 技能库（阶段三：BetterBrowse 技能 + 桥接 CLI 客户端）
+│   └── BetterBrowse/
 │       ├── SKILL.md               # 技能入口（快速开始、安全规则、CDP 回退）
 │       ├── scripts/
-│       │   └── bb-bridge-client.js # Agent 命令行客户端 (NDJSON + 令牌握手 + 分块重组)
+│       │   └── betterbrowse_client.py # Python 3.9+ Agent 客户端（诊断、NDJSON、分块、文件/标准输入/批处理）
 │       └── references/
 │           └── protocol.md        # 线协议与排障参考
 │
@@ -59,7 +59,11 @@ BetterBrowse/
 │   ├── message-authorizer.test.js # 消息来源授权鉴权测试
 │   ├── runtime-log.test.js        # 运行时日志仓储与格式化测试
 │   ├── extension-url.test.js      # 扩展页面 URL 判定测试
+│   ├── pinned-tab-guard.test.js   # 常驻收纳箱按窗口唯一性、pendingUrl 与 newtab 隔离测试
+│   ├── sync-scheduler.test.js     # 同步周期闹钟不被 SW 重启重置测试
 │   ├── api-version.test.js        # 内部 API 版本契约测试
+│   ├── python-client.test.js      # Deno 驱动 Python unittest（纳入 deno task test / verify）
+│   ├── python/                    # Python 客户端 unittest（由 python-client.test.js 发现执行）
 │   └── webdav-two-device.test.js  # WebDAV 双设备端到端测试
 │
 └── BetterBrowse/                  # 📦 Chrome 扩展根目录 (纯原生扩展产物)
@@ -70,6 +74,7 @@ BetterBrowse/
     │   ├── bb_native_host.js      # 宿主主程序 (stdio 帧 ↔ 127.0.0.1 令牌侧信道、SW 保活 ping、串行转发)
     │   ├── run-host.cmd / run-host.sh # 平台启动包装 (Chrome 拉起入口)
     │   ├── install.js             # 安装器 (Windows 注册表 / macOS、Linux 目录, deno task ai-host-install)
+    │   ├── host-paths.js          # 安装/卸载共用路径与注册位置 (Chrome/Edge 清单分开)
     │   └── uninstall.js           # 卸载器 (deno task ai-host-uninstall)
     │
     ├── scripts/                   # Deno 原生驱动的辅助与校验工具 (纯 JS)
@@ -109,7 +114,9 @@ BetterBrowse/
     │   │   │   ├── stash-service.js # 收纳与恢复服务主调度
     │   │   │   ├── local-stash-repo.js # 收纳仓储门面 (IndexedDB 主库优先, chrome.storage 兜底)
     │   │   │   ├── indexed-stash-repo.js # IndexedDB 仓储实现 (页面实体+收纳记录两层模型、索引去重、分页检索)
-    │   │   │   └── onetab-converter.js # OneTab 双向数据转换器 (支持纯文本/内部 JSON 互导)
+    │   │   │   ├── onetab-converter.js # OneTab 双向数据转换器 (支持纯文本/内部 JSON 互导)
+    │   │   │   ├── group-title.js # 收纳时间与默认组标题的统一格式
+    │   │   │   └── stash-result.js # 收纳结果的统一用户提示文案 (弹窗/时间线共用)
     │   │   │
     │   │   ├── ai/                # AI 桥接能力层 (阶段三 M4, 协议见 docs/03-ai-skill-bridge.md)
     │   │   │   └── ai-capabilities.js # 能力自描述常量 (动作文档目录、确认位白名单、清单构建器)
@@ -142,12 +149,22 @@ BetterBrowse/
     │   ├── content/               # 网页端内容脚本 (双层世界防御体系、顶层/iframe 双产物)
     │   │   ├── main-world-bridge.js  # 主页面世界 (Main World) 脚本，拦截 SPA 框架路由
     │   │   ├── link-interceptor.js   # 隔离世界 (Isolated World) 拦截器
+    │   │   ├── runtime-message.js    # 内容脚本向后台发消息的统一安全封装 (吞 lastError、可超时)
     │   │   ├── form-detector.js      # 表单焦点与未保存输入探测器
     │   │   ├── countdown-banner.js   # 倒计时悬浮卡片 (Shadow DOM 样式彻底隔离)
     │   │   ├── content-bundle.js       # 顶层页面完整能力自包含产物
     │   │   ├── frame-content-bundle.js # iframe 轻量能力自包含产物
     │   │   ├── frame-index.js          # iframe 轻量入口（表单探测 + 点击拦截 + 模式同步）
     │   │   └── index.js                # 顶层内容脚本源码入口
+    │   │
+    │   ├── home/                  # 主页与新标签页共享核心模块 (原生 ESM/CSS，蓝色扁平主题)
+    │   │   ├── home-view.js           # 共享核心视图控制器 (聚合联想/分页检索/历史推荐/状态概览)
+    │   │   └── home.css               # 扁平深浅自适应样式
+    │   │
+    │   ├── newtab/                # 独立轻量新标签页 (接管 chrome_url_overrides.newtab，无侧栏)
+    │   │   ├── newtab.html
+    │   │   ├── newtab.css
+    │   │   └── newtab.js
     │   │
     │   ├── popup/                 # 弹出控制台 (极简扁平化 UI)
     │   │   ├── popup.html
@@ -157,8 +174,18 @@ BetterBrowse/
     │   ├── options/               # 选项与收纳管理中心仪表盘 (组件化设计)
     │   │   ├── options.html
     │   │   ├── options.css
-    │   │   ├── options.js
-    │   │   └── list-window.js     # 时间线虚拟窗口纯函数（组卡片/组内条目）
+    │   │   ├── options.js         # OptionsApp 主控制器与引导
+    │   │   ├── constants.js       # 选项页共享导航常量
+    │   │   ├── list-window.js     # 时间线虚拟窗口纯函数（组卡片/组内条目）
+    │   │   ├── components/        # 收纳、设置、同步、日志等页面组件
+    │   │   │   ├── stash-tab.js / stash-settings.js / rules-config.js
+    │   │   │   ├── stash-card.js / stash-favicons.js # 时间线卡片纯渲染函数与站点图标解析
+    │   │   │   ├── domain-rules.js / backup.js / webdav-sync.js
+    │   │   │   ├── ai-bridge.js / runtime-log.js / about.js
+    │   │   │   ├── search-home.js / toast.js
+    │   │   └── ui/                # 选项页纯 UI 与时间轴组件
+    │   │       ├── custom-select.js
+    │   │       └── time-tree.js
     │   │
     │   └── icons/                 # 高清图标资源 (16/32/48/128/256/512)
 ```
@@ -238,13 +265,18 @@ BetterBrowse/
   │   其余标签按"重要度评分"从低到高强制回收，直至降到阈值以下
   │
   ▼ 若硬性保护数量本身已超出目标剩余数
-【放弃】返回明确提示，绝不误关任何受保护标签页
+【能收的就收】收纳全部可安全回收的标签 (tierLevel: 'hardLimit', reachedTarget: false)
+  │   返回 hardProtectedCount / remainingOverThreshold，并弹出可见结果提示告知仍需手动整理的标签数
+  │
+  ▼ 若确实没有任何可回收标签
+【报告】success: false + noStashableTabs: true，返回明确提示，绝不误关任何受保护标签页
 ```
 
 **核心概念：**
 - **硬性保护**（永不降级）：系统/插件自身页面、正在播放媒体（P0）、正在输入表单（P0）、前台激活标签、固定标签（P3）。
 - **软性保护**（随阶梯逐级放宽）：最近访问（P1，窗口逐级缩短）、高频访问（P2，百分比下调 + 最低激活次数上调）。
 - **达标口径**：与阈值监控完全一致（`filterCountableTabs` 可计数标签），收纳后 `可计数数量 < 阈值` 即为达标。
+- **硬性保护超限不等于整体放弃**：只要还有可安全回收的标签就必须全部收掉，并通过通知告知用户剩余数量。若改为"整体放弃"，在表单探测普遍失败（内容脚本尚未注入）等场景下会出现"一个标签都收不掉"，用户看到的就是自动收纳完全不工作。
 - 配置项位于 `DefaultConfig.tieredStash`（`enabled` / `maxTiers` / `tierStepSeconds` / `ultimateFallback` / `targetSafetyMargin`）。
 
 ### 3.3 数据导入与 URL 容错清洗机制
@@ -309,8 +341,8 @@ BetterBrowse/
 ### 3.5 AI 桥接控制流 (阶段三 M4：人机能力对等)
 
 ```
-[本机 AI Agent] (skills/better-browse/scripts/bb-bridge-client.js)
-  │  读 bridge.json (端口+一次性令牌) → TCP 127.0.0.1 握手 → NDJSON {id, action, payload}
+[本机 AI Agent] (skills/BetterBrowse/scripts/betterbrowse_client.py，Python 3.9+)
+  │  读 bridge.json（端口+一次性令牌+API 版本）→ TCP 127.0.0.1 握手 → NDJSON {id, action, payload}
   ▼
 【本机宿主】(native-host/bb_native_host.js，Chrome 经 Native Messaging 按需拉起，非常驻)
   │  每 25s 内部 ping 保活 MV3 SW；请求串行转发；大消息 512KB 级自动分块
@@ -406,7 +438,7 @@ BetterBrowse/
 本项目完全由 **Deno 原生驱动**，无需安装 Node.js：
 
 ```bash
-# 1. 运行全套自动化测试 (Deno 原生测试)
+# 1. 运行全套自动化测试（含 tests/python-client.test.js 驱动的 Python unittest）
 deno task test
 
 # 定向运行单个测试文件或按关键词过滤测试用例
@@ -442,7 +474,10 @@ deno task ai-host-uninstall
 - [`docs/02-webdav-sync.md`](docs/02-webdav-sync.md): WebDAV 云端同步协议、outbox 事务模型、墓碑机制与冲突合并
 - [`docs/03-ai-skill-bridge.md`](docs/03-ai-skill-bridge.md): AI Native Messaging 桥接协议、人机能力对等（Parity）、确认位白名单与审计规范
 - [`docs/04-testing-verification.md`](docs/04-testing-verification.md): 自动化测试策略、覆盖矩阵与质量验收门禁
-- [`skills/better-browse/references/protocol.md`](skills/better-browse/references/protocol.md): AI Agent 桥接客户端与本机宿主线协议详细规范
+- [`docs/06-versioning.md`](docs/06-versioning.md): 五套版本号的事实源、迁移边界与递增规则
+- [`docs/07-content-scripts.md`](docs/07-content-scripts.md): 双 bundle、主世界/隔离世界与 iframe 维护约束
+- [`docs/08-subsystem-runbook.md`](docs/08-subsystem-runbook.md): AI 桥接与 WebDAV 子系统排障手册
+- [`skills/BetterBrowse/references/protocol.md`](skills/BetterBrowse/references/protocol.md): AI Agent 桥接客户端与本机宿主线协议详细规范
 
 ---
 
@@ -466,7 +501,7 @@ deno task ai-host-uninstall
    - `GET_PAGE_LINK_CONTEXT` 只向内容脚本返回 `{ effectiveMode }`；后台不得把整份域名规则表或完整配置复制到每个框架。
    - 后台读取模式时必须优先使用 `sender.url`（iframe 自身 URL），不要用 `sender.tab.url`，否则跨域 iframe 会继承顶层页面的跳转模式。
    - 域名规则变更只通知受影响的 `tabId + frameId`；全局规则、清空规则、重置/恢复配置与云端合并才更新全部 HTTP(S) 框架，并在通知里直接携带新的 `effectiveMode`。
-   - 表单保护必须聚合标签页所有 HTTP(S) 框架的 `CHECK_FORM_INPUT` 结果（任一框架有输入或探测失败即保留标签），不能只依赖一次不带 `frameId` 的 `chrome.tabs.sendMessage()`。
+   - 表单保护必须聚合标签页所有 HTTP(S) 框架的 `CHECK_FORM_INPUT` 结果：任一框架确认有输入即保留标签；**顶层框架**探测失败才 fail-closed 保留；子框架无接收端或超时必须跳过（广告/沙箱 iframe 普遍无法注入，不得把整页判为受保护）。不能只依赖一次不带 `frameId` 的 `chrome.tabs.sendMessage()`。
    - 收纳数据变更不再广播给普通网页，扩展页面统一以 `bb_stash_revision` 修订号为通知源。倒计时卡片只投递顶层框架（`frameId: 0`）。
 6. **IndexedDB 与旧存储双数据源**：
    - 收纳数据自本地数据修订 5 起、配置/规则/备份/活跃度自修订 7 起以 IndexedDB 为主库，**任何新功能严禁绕过 `LocalStashRepository` / `StorageAdapter` 门面直接读写 `bb_stash_groups`、`bb_user_config` 或 IndexedDB**；
@@ -483,7 +518,7 @@ deno task ai-host-uninstall
    - **倒计时确认/取消对内容脚本要求 nonce**：`SHOW_AUTO_STASH_COUNTDOWN` 下发一次性凭证，卡片用 closed Shadow 持有，不写进 DOM；内容脚本调用 `CONFIRM_AUTO_STASH` / `CANCEL_AUTO_STASH` 必须回传。AI / 扩展页面 / 通知按钮不走此约束。
 8. **编码要求**：
    - 任何新增文件必须以 **UTF-8** 格式保存，且代码注释与文本使用**简体中文**。
-9. **WebDAV 云端同步（阶段二 M3，协议见 docs/02-webdav-sync.md）**：
+9. **WebDAV 云端同步（阶段二 M3，协议见 docs/02-webdav-sync.md；排障见 docs/08-subsystem-runbook.md）**：
    - **outbox 同事务**：实体写入与 outbox / operationLogs / clock 更新必须在**同一个** `runTransaction` 事务内（`SyncOutbox.enqueueInTx`），拆开会出现"实体已写而操作丢失"的分叉；大组仍按 500 条分批，每批实体与操作同事务提交；
    - **严禁嵌套写锁**：`DeviceEventLog.append` 自行获取写锁，**不得**在已持锁的临界区内调用（倒计时回调、消息处理器均在锁外调用）；
    - **凭据排除**：`bb_webdav_credentials` 与 `bb_auto_backups` 被排除在 outbox、快照载荷与全量导出 JSON 之外，新增可同步键时必须维护 `StorageAdapter._shouldEnqueue` 与 `SyncSnapshot.buildPayload` 的排除表；
@@ -491,14 +526,15 @@ deno task ai-host-uninstall
    - **能力探测前置**：探测仅拒绝认证失败与写入失败；缺失 ETag / If-Match 的服务器进入**兼容模式**（如 123 云盘 WebDAV），清单更新必须经 `SyncEngine._updateManifest` 统一通道「读取最新远端清单 → 在最新内容上合并 → 条件写入 → 412 重试」，**严禁**基于运行开始时的缓存清单直接覆盖远端（会吞掉其他设备的并发写入）；
    - **远端不可变**：批次与快照文件唯一命名不可变，清单更新必须携带当前 ETag 的 `If-Match`，412 视为条件写入冲突而非覆盖理由。
    - **浏览器账号偏好镜像**：`chrome.storage.sync` 只允许写入 `bb_account_config`（阈值 / 规则开关 / 收纳箱设置 / WebDAV 地址）。**严禁**把收纳组、页面、条目、`bb_link_rules`、凭据、自动备份或 `fieldRevs` 写入 sync；`chrome.storage.sync` 缺失时直接跳过，**禁止**回退到 `chrome.storage.local`。
-10. **AI 桥接（阶段三 M4，协议见 docs/03-ai-skill-bridge.md）**：
-   - **同一处理路径**：人类 UI 消息与 AI 桥接指令共用 `action-handlers.js` 的同一份映射。**新增动作时**：在该映射挂 handler → 同步在 `src/core/ai/ai-capabilities.js` 的 `AI_ACTION_DOCS` 补参数文档 → 若属人类 UI 功能则更新 `tests/ai-bridge.test.js` 的 `HUMAN_UI_ACTIONS`（parity 断言强制"人类有的 AI 必有"，漏文档会直接挂测试）；
+10. **AI 桥接（阶段三 M4，协议见 docs/03-ai-skill-bridge.md；排障见 docs/08-subsystem-runbook.md）**：
+   - **同一处理路径**：人类 UI 消息与 AI 桥接指令共用 `action-handlers.js` 的同一份映射。**新增动作时**：在该映射挂 handler → 同步在 `src/core/ai/ai-capabilities.js` 的 `AI_ACTION_DOCS` 补参数文档 → 若属人类 UI 功能则更新 `tests/ai-bridge.test.js` 的 `HUMAN_UI_ACTIONS`（parity 断言强制"人类有的 AI 必有"，漏文档会直接挂测试）；若内容脚本调用还要更新 `message-authorizer.js` 白名单。`deno task verify` 已自动拦截这些漏项，但动作是否真的不可逆仍需人工判断；详见 `docs/05-action-contract.md`。
    - **确认位红线**：新增不可逆动作时必须加入 `AI_CONFIRM_REQUIRED_ACTIONS`（AI 调用需 `payload.confirm === true`，不受 UI"删除二次确认"设置影响，恒定要求）；
    - **凭据出口复查**：任何新接口的响应都不得包含 `bb_webdav_credentials` 内容或 `password` 字段（`AIBridgeManager._guardResponse` 序列化后复查，命中即拦截）；凭据类动作的审计摘要不得记录内容（`_buildAuditSummary` 白名单字段机制）；
    - **AI 请求串行**：桥接请求经 `AIBridgeManager` 队列串行派发（`sender=null`），handler 内**严禁**假设消息来自标签页或要求 `sender.tab` 存在；
    - **配置联动**：`aiBridge.enabled` 为设备本地偏好，**严禁**加入 `SYNC_CONFIG_NESTED_KEYS` 或 `AccountConfigSync.slice` 白名单；开关变化经 `UPDATE_CONFIG`/`RESET_CONFIG` handler 内的 `aiBridge.onConfigUpdated()` 钩子即时生效；
    - **API 版本唯一来源**：`src/constants/api-version.js` 的 `API_VERSION` 是唯一内部 API 契约编号；软件发布版本继续由 Manifest 独立管理。扩展与宿主直接导入 API 版本，客户端从 `bridge.json.apiVersion` 读取。新消息只写 `apiVersion`，接收端可兼容读取历史 `proto` / `protocol` / `v`；编号不一致必须明确报告本地与对端值并拒绝连接；
-   - **宿主协议**：`native-host/bb_native_host.js` 的 stdout 是 Native Messaging 协议通道，**任何日志必须走 stderr**；改动线协议（分块、握手、bridge.json 字段）必须同步更新 `docs/03-ai-skill-bridge.md`、`skills/better-browse/references/protocol.md` 与客户端；
+   - **Python 客户端门禁**：唯一客户端是 `skills/BetterBrowse/scripts/betterbrowse_client.py`（Python 3.9+ 标准库）；`deno task test` 通过 `tests/python-client.test.js` 驱动 Python unittest，`deno task verify` 会跑同一套测试，无需再单独手工跑 unittest 才能合入；verify 的静态检查覆盖存在性、无 BOM UTF-8、语法和 API 版本非硬编码，语法检查使用内存编译，禁止生成或提交 `__pycache__` / `.pyc`；
+   - **宿主协议**：`native-host/bb_native_host.js` 的 stdout 是 Native Messaging 协议通道，**任何日志必须走 stderr**；改动线协议（分块、握手、bridge.json 字段）必须同步更新 `docs/03-ai-skill-bridge.md`、`skills/BetterBrowse/references/protocol.md` 与客户端；
    - **启动包装必须纯 ASCII**：cmd.exe 按 ANSI 代码页解析批处理，UTF-8 中文注释会把行解析成乱码命令导致宿主秒退（"Native host has exited"）；中文文档写在 `bb_native_host.js` 文件头；
    - **扩展来源参数不是最后一个**：新版 Chrome 给宿主追加 `--parent-window=<句柄>` 等参数，宿主必须**扫描全部启动参数**寻找 `chrome-extension://<ID>/`，不能只看末位参数；
    - **启动器不依赖 PATH**：Chrome 是长驻进程，其子进程环境可能滞后于当前 shell（装完 deno 未重启 Chrome 时 `deno` 解析失败）；安装器把 `Deno.execPath()` 绝对路径烘焙进生成的启动器；
@@ -507,3 +543,42 @@ deno task ai-host-uninstall
    - **SW 定时器可能冻结**：经 Native Messaging 唤醒并保活的 Service Worker 存在 setTimeout 回调不触发的 Chrome 异常类行为——扩展侧与宿主侧的一切健壮性超时都不能只依赖 setTimeout（宿主侧看门狗闹钟 + 队列强制重置兜底），`AIBridgeManager._onWatchdog` 检测队列连续停滞会强制重置；
    - **审计绝不阻塞响应**：`_appendAudit` 为发射后不管（内部串行队列防丢条目），await 审计会在存储层挂起时饿死响应与整个请求队列；
    - **IDB 自愈**：`MigrationManager.repairMissingObjectStores` 在启动时重建"有库无表"的残留库并从旧存储回填；`INDEXED_DB_SCHEMA_REVISION` 只能单调递增（IndexedDB 拒绝用更低修订号打开），裸抬高修订号不建表会制造出需要再次提升修订号才能修复的空库。
+   - **五套版本号分工**：Manifest 软件版本、`API_VERSION`、`LOCAL_DATA_SCHEMA_REVISION`、`INDEXED_DB_SCHEMA_REVISION` 与备份/WebDAV 格式修订互不替代；新增 IndexedDB 仓储或索引必须同步 `onupgradeneeded`，详见 `docs/06-versioning.md`。`deno task verify` 已自动检查主要边界，但“这次变更是否真的不兼容”仍需人工判断。
+11. **主页与独立新标签页（Home & NewTab）约束**：
+   - **共享与独立边界**：核心控制器与展示由 `src/home/` 统一承载；独立新标签页 `src/newtab/` 仅含极简壳层（通过 `chrome_url_overrides.newtab` 直接接管），**绝不加载 OptionsApp 或侧边栏**；管理中心原 `search-home` 作为轻量宿主适配器挂载共享视图，导航更名为「主页」，路由兼容 `#search` 与 `#home`，且不改变默认 `#stash` 入口；
+   - **搜索唯一入口（主页收敛）**：全部检索（网页/收纳/浏览记录/外部联想）**只由主页 `HomeView` 承载**；时间线**严禁**再内置搜索输入框或本地关键词过滤（原 `stashSearchInput` / `searchItemFilter` / `getSearchQuery` 已移除）。时间线只保留「在主页搜索」跳转按钮，经 `StashTabComponent.onSearchInHome(scope)` → `OptionsApp.switchTab('home')` → `HomeView.focusSearch(scope)` 统一进入；`#home?scope=stash` 与 `#search?scope=...` 为兼容深链。新增检索能力必须加在主页，不得在时间线重建第二套搜索；
+   - **打开目标分流**：独立页中点击链接或结果在**当前标签页（current）**打开；管理中心内以**新标签页（new）**打开；收纳组跳转直接访问，**绝不删除已收纳条目**；
+   - **守护隔离与计数排除**：`extension-url.js` 中 `isOwnNewTabUrl` 必须与 `isOwnOptionsUrl` 严格分离；`pinned-tab-guard` 绝不能将 `newtab.html` 误认为 options 固定常驻或执行顺序重排；`isExcludedFromTabCounting` 必须剔除 `newtab.html`，防止被窗口关闭或自动阈值误收纳；
+   - **外部联想安全与隐私**：Google/Bing 外部联想默认关闭，必须经用户明确主动同意（`externalSuggestAgreed: true`）；请求限定白名单 URL 并使用 `credentials: 'omit'`，配置 3000ms 超时与 100 条/5分钟有界缓存；网络异常安全隔离；**严禁在审计日志中记录搜索词**；
+   - **同意状态本地隔离**：`externalSuggestAgreed` 属于敏感设备偏好，**严禁**被全量备份导出或进入 WebDAV 快照，也绝不进入 `chrome.storage.sync` 账号镜像；
+   - **可选权限与隐身保护**：浏览历史属于 `optional_permissions`（`history`），仅在用户点击交互时申请；真实权限以 `chrome.permissions.contains` 为准，随时支持撤销；隐身模式下严禁读取普通历史记录；历史推荐明确标注候选范围（近 7 天/近 30 天）与 `visitCount` 访问次数（非时长）。
+12. **自动收纳触发链（阈值 → 倒计时卡片 → 收口）约束**：
+   - **URL 口径唯一**：标签页目标 URL 一律走 `extension-url.js` 的 `getTabTargetUrl(tab)`（`pendingUrl || url`）。阈值计数（`filterCountableTabs`）、卡片广播（`broadcastBannerToTabs` / `sendBannerToTab`）、表单探测（`FormGuardRule.preload`）**三处必须共用**，任何一处单独退回 `tab.url` 都会造成"算得进阈值却拿不到卡片/探不到表单"的口径分裂；
+   - **卡片必须补播且不重复**：URL 晚提交（会话恢复、慢加载）的标签在首播时拿不到卡片，`tabs.onUpdated` 必须为其补播；`bannerTabIds` 保证同一轮倒计时内每个标签只投递一次（重复投递会把页面上的倒计时重置回整轮秒数），补播载荷必须携带**真实剩余秒数**（`getRemainingSeconds()`）；
+   - **到期即收口，不得当取消**：`checkTabCount` 在标签数回落到阈值以下时，只允许取消**仍在进行**的倒计时；已到期（`deadline <= now`）的倒计时必须走 `finalizeCountdown('expired-check')`，否则"倒计时中途关掉几个标签"会把这次收纳彻底丢弃；
+   - **兜底闹钟必须可持续**：`armBackupAlarm` 使用**重复**闹钟（`periodInMinutes`），由 `clearCountdownUI` 统一清除；**严禁**再引入"重挂次数预算"——预算耗尽叠加 SW 休眠带走进程内 `setTimeout` 会导致倒计时永不收口；
+   - **阈值检查入口三处齐备**：`chrome.runtime.onStartup`（浏览器启动）、`onInstalled`（扩展重载/更新）、SW 冷启动链都必须补检一次阈值。只挂 `onStartup` 会让"重载扩展后标签早已超标"一直静默到下一次标签事件；
+   - **空操作不等于已处理**：`commitCooldown` 按结果区分冷却——确实收掉了标签或用户主动确认才走完整冷却，空操作只写短暂 `noopCooldownUntil`（连续空操作按 1、2、4… 分钟翻倍退避，封顶为完整冷却；与 `lastActionTime` 一并写入会话状态，SW 重启不丢），且必须通过 `notifyStashOutcome` 给出可见提示（可见提示不得包含任何页面标题或搜索词）；
+   - **表单探测失败要区分"无接收端"与"超时"**：只有失败文本匹配 `NO_RECEIVER_PATTERN` 时才动态注入 `content-bundle.js` 后重探（镜像 `broadcastBannerToTabs` 的兜底）；超时说明接收端存在，**重复注入会重复注册监听器**。注入后仍探测不通才保持 fail-closed。
+   - **卡片投递失败必须撤销标记**：`sendBannerToTab` 投递失败时从 `bannerTabIds` 移除，`rebroadcastBannerToTab` 只补播倒计时所属窗口（`activeWindowId`）；收口进行中（`finalizePromise`）`checkTabCount` 不得再起第二轮倒计时。
+13. **收纳规则与活跃度约束（2026-10 排查确立）**：
+   - **活跃度冷启动投影**：`TabActivityTracker.syncCurrentTabs` 必须把持久化的 `pageStats[pageId]` 投影回 `stats[tabId]`；收纳入口一律用 `await activityTracker.getReadyStats()`，不得直接读 `getStats()`，否则 SW 重启后最近访问/高频保护全部失效；
+   - **前台标签属引擎硬保护**：`tab.active` 由 `RuleEngine.evaluateTabs` 直接保留（`matchedRuleId: 'activeTab'`），不受 `rulesEnabled.recentActive` 开关与阶梯降级影响；系统页判断统一走 `isProtectedSystemTab`；
+   - **表单预探测始终执行**：`evaluateTabs` 无论是否传入 `formResultsCache` 都必须调用 `FormGuardRule.preload`（它自行跳过已缓存标签），否则阶梯多轮评估会退化为逐个标签串行探测；已丢弃 / `status === 'unloaded'` 的标签视为无输入，不 fail-closed；
+   - **收纳路径统一**：保存→仅关闭已入库标签→确保常驻收纳箱→关闭，一律走 `StashService.stashAndClose`；标签转条目一律走 `StashService.tabToStashItem`（`getTabTargetUrl` 口径），不得再手写 `url: tab.url` 映射。
+14. **同步数据完整性与安全约束（2026-10 排查确立）**：
+   - **组派生计数**：任何不经 `createGroup/addTabItemToGroup/deleteTabItem` 直接写条目的路径（导入、同步合并、快照应用）写完后必须在同一或后续事务调用 `IndexedStashRepository.recountGroupsInTx`；导出与分页循环按 `hasMore`/`nextCursor` 结束，不得按 `total` 截断；
+   - **远端设置白名单**：`SyncMerge._applySettings` 与 `SyncSnapshot` 只接受 `isSyncableConfigPath` 白名单路径（`SYNC_CONFIG_SCALAR_KEYS` / `SYNC_CONFIG_NESTED_KEYS` 一级子字段），拒绝 `__proto__` / `constructor` / `prototype`；快照只携带 `pickSyncableConfig` 切片，应用时合并进本机配置而非整体覆盖；域名规则过 `isValidLinkRule`；
+   - **自愈回填门控**：`MigrationManager.repairMissingObjectStores` 只在 `IndexedDBManager.stashStoreRecreated`（本进程升级时新建了收纳组仓储）时才从旧快照回填；用户清空全部收纳组不得触发回填；
+   - **收纳修订号**：同步合并与快照应用后必须调用 `StorageAdapter.bumpStashRevision()`，否则其它设备同步来的收纳组要手动刷新才可见；
+   - **AI 不可逆动作**：`FALLBACK_PREVIOUS_SNAPSHOT`（非合并覆盖本地）与 `RETIRE_SYNC_DEVICE` 已列入 `AI_CONFIRM_REQUIRED_ACTIONS`。
+15. **AI 桥接宿主健壮性补充（2026-10 排查确立）**：
+   - stdout 与 Agent socket 写入一律经 `writeAll` 写满并串行化（ping 与业务响应不得交错写出半帧）；TCP 读取使用每连接独立的流式 `TextDecoder({ stream: true })`；
+   - `removeBridgeFile` 只删除 `pid` 等于自身的 `bridge.json`（多浏览器 / 多配置文件共用同一自发现文件）；
+   - Windows 安装器按浏览器分开清单（`com.betterbrowse.bridge.chrome.json` / `.edge.json`），`.cmd` 中非 ASCII 路径改写为环境变量前缀或 8.3 短路径；
+   - Python 客户端入口调用 `configure_stdio()` 统一 UTF-8 输出，`--stdin` 以 UTF-8 读取、`--file` 容忍 BOM；Windows 进程存活探测不得使用 `os.kill(pid, 0)`（会发送 CTRL_C_EVENT）。
+16. **主库丢失防护（2026-10 事故复盘确立）**：
+   - IndexedDB 主库可能被浏览器整体删除重建（数据库损坏、清除站点数据），且常发生在扩展运行中途——下一次写入会静默建出空库。`IndexedDBManager` 在 `oldVersion === 0` 且本地数据修订 ≥ 5 时把 `bb_idb_recreated_at` 写入 chrome.storage（不能只用进程内标记，SW 休眠即丢失），并经 `onRecreated` 钩子立即触发自愈；
+   - 自愈回填只认"主库确实被重建"（持久化标记或本进程升级标记），从旧版收纳数组与灾备副本 `bb_recovery_snapshot` 按组 ID 幂等导入，**不得**以"主库组数为 0"作为条件（重建后用户往往已经新建了组）；
+   - **灾备副本必须放在主库之外**：自动备份本身存于 IndexedDB，会与数据同生共死。`bb_recovery_snapshot` 写在 chrome.storage.local，绝不进入 WebDAV 同步、快照与导出；主库重建、回填未完成期间禁止覆盖它；
+   - 存在未完成回填的重建标记时，30 天保留期清理**不得**删除旧版副本。

@@ -1,0 +1,10 @@
+# 统一行尾：仓库内一律存 LF，检出时不由 Git 改写
+# 目的：Deno 打包产物（content-bundle.js 等）以 LF 写出，
+# 与 core.autocrlf=true 的 CRLF 检出互斗，导致每次 git status 都提示变更。
+* text=auto eol=lf
+
+# 二进制资源不参与行尾转换
+*.png binary
+*.ico binary
+*.zip binary
+*.crx binary

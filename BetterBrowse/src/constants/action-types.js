@@ -49,6 +49,7 @@ export const ActionTypes = {
   RESTORE_FULL_BACKUP: 'RESTORE_FULL_BACKUP', // 恢复全量备份 (还原标签页 + 插件全局配置 + 域名规则)
   IMPORT_THIRD_PARTY_DATA: 'IMPORT_THIRD_PARTY_DATA', // 从第三方工具导入标签页 (如 OneTab 文本/JSON)
   EXPORT_ONETAB_TEXT: 'EXPORT_ONETAB_TEXT',   // 导出为 OneTab 兼容纯文本 (URL | Title)
+  RESOLVE_FAVICON_DATA_URL: 'RESOLVE_FAVICON_DATA_URL', // 后台代取站点图标并转为 data URL，避免扩展页直连第三方触发 PNA/CORS 与归档历史泄露
 
   // === 配置与状态同步相关 ===
   GET_CONFIG: 'GET_CONFIG',                   // 获取插件配置
@@ -62,7 +63,7 @@ export const ActionTypes = {
   // === 即时同步广播事件 ===
   NOTIFY_RULE_UPDATED: 'NOTIFY_RULE_UPDATED', // 广播通知各页面规则已变更，即时刷新内存
   NOTIFY_CONFIG_UPDATED: 'NOTIFY_CONFIG_UPDATED', // 广播通知各页面配置已变更
-  NOTIFY_STASH_UPDATED: 'NOTIFY_STASH_UPDATED',   // 广播通知收纳数据已变更
+  SWITCH_OPTIONS_TAB: 'SWITCH_OPTIONS_TAB',       // 后台定向通知某个选项页切换到指定视图
   NOTIFY_SYNC_UPDATED: 'NOTIFY_SYNC_UPDATED',     // 广播云端同步状态变更
 
   // === WebDAV 云端同步 ===
@@ -94,5 +95,12 @@ export const ActionTypes = {
   // === 云端同步损坏恢复 ===
   GET_SYNC_RECOVERY_INFO: 'GET_SYNC_RECOVERY_INFO',         // 读取损坏状态与本机快照可用性
   FALLBACK_PREVIOUS_SNAPSHOT: 'FALLBACK_PREVIOUS_SNAPSHOT', // 回退上一份远端/本地快照
-  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH'    // 从本机快照重建同步 { confirm: true }
+  REBUILD_SYNC_FROM_SCRATCH: 'REBUILD_SYNC_FROM_SCRATCH',   // 从本机快照重建同步 { confirm: true }
+
+  // === 主页与新标签页 ===
+  GET_SEARCH_SUGGESTIONS: 'GET_SEARCH_SUGGESTIONS',         // 获取搜索引擎联想建议（Google/Bing，需主动同意）
+  GET_BROWSER_HISTORY: 'GET_BROWSER_HISTORY',               // 搜索本地浏览历史（需 optional history 权限）
+  GET_HISTORY_RECOMMENDATIONS: 'GET_HISTORY_RECOMMENDATIONS', // 获取历史推荐（最近/常访，标注候选范围和visitCount）
+  GET_HOME_STATS: 'GET_HOME_STATS',                         // 获取主页统计（当前窗口标签/阈值/收纳总计）
+  CHECK_HISTORY_PERMISSION: 'CHECK_HISTORY_PERMISSION'       // 检查 optional history 权限真实状态
 };

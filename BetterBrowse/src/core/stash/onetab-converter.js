@@ -1,8 +1,10 @@
 /**
  * @file onetab-converter.js
- * @description OneTab 数据格式双向转换器（智能解析 OneTab 纯文本、OneTab 内部数据与 Better Browse 数据）
+ * @description OneTab 数据格式双向转换器（智能解析 OneTab 纯文本、OneTab 内部数据与 BetterBrowse 数据）
  * @encoding UTF-8
  */
+
+import { defaultGroupTitle } from './group-title.js';
 
 export class OneTabConverter {
   /**
@@ -36,6 +38,7 @@ export class OneTabConverter {
         'http:',
         'https:',
         'chrome:',
+        'chrome-extension:', // 其他扩展的页面（如 PDF 阅读器）：收纳时能存进来，导入/恢复时也必须保留
         'edge:',
         'about:',
         'file:',
@@ -54,7 +57,7 @@ export class OneTabConverter {
   }
 
   /**
-   * 将 OneTab 导出的纯文本（每行 "URL | Title"，空行分隔不同组）解析为 Better Browse 标签组结构
+   * 将 OneTab 导出的纯文本（每行 "URL | Title"，空行分隔不同组）解析为 BetterBrowse 标签组结构
    * @param {string} rawText - OneTab 导出文本
    * @returns {Array<{ id: string, createdAt: number, title: string, locked: boolean, starred: boolean, tabs: Array<{ id: string, url: string, title: string, favIconUrl: string, pinned: boolean }> }>}
    */
@@ -81,7 +84,12 @@ export class OneTabConverter {
       let url = '';
       let title = '';
 
-      if (line.includes('|')) {
+      // OneTab 以 " | " 分隔地址与标题；URL 本身可能含 "|"（如查询参数），不能按第一个竖线切
+      const separatorIndex = line.indexOf(' | ');
+      if (separatorIndex >= 0) {
+        url = line.slice(0, separatorIndex).trim();
+        title = line.slice(separatorIndex + 3).trim();
+      } else if (/\s\|/.test(line) || /\|\s/.test(line)) {
         const parts = line.split('|');
         url = parts[0].trim();
         title = parts.slice(1).join('|').trim();
@@ -119,7 +127,7 @@ export class OneTabConverter {
   }
 
   /**
-   * 将 Better Browse 标签组列表导出为 OneTab 兼容的纯文本格式（URL | Title）
+   * 将 BetterBrowse 标签组列表导出为 OneTab 兼容的纯文本格式（URL | Title）
    * @param {Array<any>} groups - 标签组列表
    * @returns {string}
    */
@@ -140,19 +148,11 @@ export class OneTabConverter {
    * @param {number} [timestamp]
    */
   static createGroupFromTabs(tabs, timestamp = Date.now()) {
-    const dateStr = new Intl.DateTimeFormat('zh-CN', {
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    }).format(new Date(timestamp));
 
     return {
       id: `stash_grp_${timestamp}_${Math.random().toString(36).substring(2, 7)}`,
       createdAt: timestamp,
-      title: `${dateStr} 收纳 (${tabs.length} 个标签页)`,
+      title: defaultGroupTitle(timestamp, tabs.length),
       locked: false,
       starred: false,
       tabs: tabs
@@ -160,7 +160,7 @@ export class OneTabConverter {
   }
 
   /**
-   * 智能多格式自动识别与解析器（自动兼容：OneTab 纯文本、OneTab 内部 JSON、Better Browse JSON）
+   * 智能多格式自动识别与解析器（自动兼容：OneTab 纯文本、OneTab 内部 JSON、BetterBrowse JSON）
    * @param {string} inputString - 待解析的文本或 JSON 字符串
    * @returns {{ success: boolean, groups: Array<any>, totalTabs: number, formatName: string, error?: string }}
    */
@@ -218,19 +218,11 @@ export class OneTabConverter {
             }));
 
             const realTimestamp = typeof grp.createDate === 'number' ? grp.createDate : Date.now();
-            const dateStr = new Intl.DateTimeFormat('zh-CN', {
-              year: 'numeric',
-              month: 'numeric',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-              hour12: false
-            }).format(new Date(realTimestamp));
 
             return {
               id: `stash_grp_${realTimestamp}_${Math.random().toString(36).substring(2, 7)}`,
               createdAt: realTimestamp,
-              title: grp.label || `${dateStr} 收纳 (${tabs.length} 个标签页)`,
+              title: grp.label || defaultGroupTitle(realTimestamp, tabs.length),
               locked: Boolean(grp.locked),
               starred: Boolean(grp.starred),
               tabs: tabs

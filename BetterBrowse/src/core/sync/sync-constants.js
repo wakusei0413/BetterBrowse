@@ -91,6 +91,63 @@ export const SYNC_CONFIG_NESTED_KEYS = [
   'accountConfigSync'
 ];
 
+const UNSAFE_PATH_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * 远端配置补丁的点分路径是否允许落地：只接受同步白名单内的标量键与嵌套键的一级子字段。
+ * 远端载荷来自 WebDAV 服务器，可被伪造；放行任意路径会让远端打开 AI 桥接等设备本地开关，
+ * 或经 __proto__ 污染 Service Worker 的原型链。
+ * @param {string} path
+ * @returns {boolean}
+ */
+export function isSyncableConfigPath(path) {
+  if (typeof path !== 'string' || !path) return false;
+  const parts = path.split('.');
+  if (parts.some((part) => !part || UNSAFE_PATH_SEGMENTS.has(part))) return false;
+  if (parts.length === 1) return SYNC_CONFIG_SCALAR_KEYS.includes(parts[0]);
+  return parts.length === 2 && SYNC_CONFIG_NESTED_KEYS.includes(parts[0]) && parts[1] !== 'fieldRevs';
+}
+
+/**
+ * 域名跳转规则条目是否合法（与备份恢复同一口径）
+ * @param {string} domain
+ * @param {unknown} mode
+ * @returns {boolean}
+ */
+export function isValidLinkRule(domain, mode) {
+  return typeof domain === 'string'
+    && /^[a-z0-9.-]+$/i.test(domain)
+    && ['auto', 'current', 'new'].includes(String(mode));
+}
+
+/**
+ * 从完整用户配置切出可同步部分（白名单键 + 对应字段版本），供快照生成与应用复用
+ * @param {Record<string, any>} config
+ * @returns {Record<string, any>}
+ */
+export function pickSyncableConfig(config) {
+  const source = config && typeof config === 'object' ? config : {};
+  const picked = {};
+  for (const key of SYNC_CONFIG_SCALAR_KEYS) {
+    if (source[key] !== undefined) picked[key] = source[key];
+  }
+  for (const key of SYNC_CONFIG_NESTED_KEYS) {
+    const nested = source[key];
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) continue;
+    const copy = {};
+    for (const [sub, value] of Object.entries(nested)) {
+      if (isSyncableConfigPath(`${key}.${sub}`)) copy[sub] = value;
+    }
+    picked[key] = copy;
+  }
+  const revs = source.fieldRevs && typeof source.fieldRevs === 'object' ? source.fieldRevs : {};
+  picked.fieldRevs = {};
+  for (const [path, rev] of Object.entries(revs)) {
+    if (isSyncableConfigPath(path)) picked.fieldRevs[path] = rev;
+  }
+  return picked;
+}
+
 /** 浏览器账号偏好镜像的格式修订号 */
 export const ACCOUNT_CONFIG_FORMAT_REVISION = 1;
 
