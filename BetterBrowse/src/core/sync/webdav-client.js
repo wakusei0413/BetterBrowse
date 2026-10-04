@@ -1,6 +1,6 @@
 /**
  * @file webdav-client.js
- * @description HTTPS WebDAV 客户端（GET / PUT / HEAD / MKCOL / DELETE，条件写入与 ETag 能力探测）
+ * @description HTTPS WebDAV 客户端（GET / PUT / HEAD / MKCOL / DELETE / PROPFIND，条件写入与 ETag 能力探测）
  * @encoding UTF-8
  */
 
@@ -55,7 +55,7 @@ export class WebdavClient {
    * 发起 WebDAV 请求
    * @param {string} method
    * @param {string} relPath
-   * @param {{ body?: string, ifMatch?: string, ifNoneMatch?: string, contentType?: string }} [options]
+   * @param {{ body?: string, ifMatch?: string, ifNoneMatch?: string, contentType?: string, depth?: string }} [options]
    * @returns {Promise<WebdavResponse>}
    */
   async request(method, relPath, options = {}) {
@@ -70,6 +70,7 @@ export class WebdavClient {
     }
     if (options.ifMatch) headers['If-Match'] = options.ifMatch;
     if (options.ifNoneMatch) headers['If-None-Match'] = options.ifNoneMatch;
+    if (options.depth !== undefined) headers.Depth = options.depth;
 
     let response;
     try {
@@ -128,6 +129,33 @@ export class WebdavClient {
    */
   async delete(relPath) {
     return await this.request('DELETE', relPath);
+  }
+
+  /**
+   * 列出远端目录下的直接子项文件名（PROPFIND Depth: 1）
+   * Service Worker 无 DOMParser，按 href 元素做宽松正则提取；不支持或失败时抛错，由调用方降级
+   * @param {string} relDir
+   * @returns {Promise<string[]>}
+   */
+  async list(relDir) {
+    const res = await this.request('PROPFIND', `${String(relDir || '').replace(/\/+$/, '')}/`, { depth: '1' });
+    if (res.status !== 207 && res.status !== 200) {
+      throw new Error(`列出远端目录失败（HTTP ${res.status}）`);
+    }
+    const names = [];
+    const pattern = /<(?:[a-z0-9_-]+:)?href>([^<]+)<\/(?:[a-z0-9_-]+:)?href>/gi;
+    let match;
+    while ((match = pattern.exec(res.body)) !== null) {
+      let href = match[1].trim();
+      try {
+        href = decodeURIComponent(href);
+      } catch {
+        // 保留原始 href
+      }
+      const name = href.replace(/\/+$/, '').split('/').pop();
+      if (name && !href.endsWith('/')) names.push(name);
+    }
+    return names;
   }
 
   /**

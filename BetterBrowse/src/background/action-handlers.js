@@ -759,6 +759,7 @@ export function createActionHandlers(deps) {
       await IndexedDBManager.withWriteLock(async () => {
         await SyncSnapshot.applyPayload(payload, { merge: false });
       });
+      await SyncEngine.resetAppliedFiles();
       await SyncEngine._setStatus(SyncStatus.IDLE, '已回退上一份快照', { appliedSnapshotId: previousId });
       return { success: true, source: 'previous-snapshot', message: '已回退上一份快照' };
     },

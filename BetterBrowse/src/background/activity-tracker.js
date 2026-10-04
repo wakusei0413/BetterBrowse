@@ -158,6 +158,9 @@ export class TabActivityTracker {
             entityType: SyncEntityTypes.ACTIVITY,
             entityId: pageId,
             op: SyncOps.UPSERT,
+            // 每次切换标签都会写一次：只保留最新一条待上传，且不单独触发同步
+            coalesce: true,
+            quiet: true,
             fields: {
               url: record.url || '',
               lastActivated: Number(record.lastActivated) || 0,

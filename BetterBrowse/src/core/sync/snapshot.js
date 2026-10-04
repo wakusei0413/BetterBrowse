@@ -12,6 +12,10 @@ import { AccountConfigSync } from './account-config-sync.js';
 import { DeviceEventLog } from './device-events.js';
 import { IndexedStashRepository } from '../stash/indexed-stash-repo.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
+import { SyncMerge } from './merge.js';
+
+/** 本地快照缓存保留份数 */
+const LOCAL_SNAPSHOT_KEEP = 2;
 
 export class SyncSnapshot {
   /**
@@ -112,7 +116,8 @@ export class SyncSnapshot {
         IDBStores.SETTINGS,
         IDBStores.ACTIVITY_STATS,
         IDBStores.DEVICE_EVENTS,
-        IDBStores.TOMBSTONES
+        IDBStores.TOMBSTONES,
+        IDBStores.SYNC_META
       ],
       'readwrite',
       async (tx) => {
@@ -125,14 +130,35 @@ export class SyncSnapshot {
           tx.objectStore(IDBStores.ACTIVITY_STATS).clear();
         }
 
+        // 合并模式：快照可能由尚未看到本机最新修改的设备生成。
+        // 逐字段按版本取胜，本机墓碑期内已删除的实体不得被快照复活。
+        // （本机自己的操作已在 operationLogs 中，补放阶段会被跳过，不能指望它把值改回来）
+        const localTombs = new Set();
+        if (merge) {
+          const tombs = await IndexedDBManager.requestToPromise(tx.objectStore(IDBStores.TOMBSTONES).getAll());
+          for (const tomb of tombs || []) {
+            if (Number(tomb?.expiresAt) > Date.now()) localTombs.add(tomb.tombstoneId);
+          }
+        }
+        const putEntity = async (storeName, entityType, record, id) => {
+          const store = tx.objectStore(storeName);
+          if (!merge) {
+            store.put(record);
+            return;
+          }
+          if (localTombs.has(`${entityType}::${id}`)) return;
+          const local = await IndexedDBManager.requestToPromise(store.get(id));
+          store.put(this._mergeRecord(local, record));
+        };
+
         for (const page of payload.pages || []) {
-          if (page?.pageId) tx.objectStore(IDBStores.PAGES).put(page);
+          if (page?.pageId) await putEntity(IDBStores.PAGES, SyncEntityTypes.PAGE, page, page.pageId);
         }
         for (const group of payload.stashGroups || []) {
-          if (group?.groupId) tx.objectStore(IDBStores.STASH_GROUPS).put(group);
+          if (group?.groupId) await putEntity(IDBStores.STASH_GROUPS, SyncEntityTypes.STASH_GROUP, group, group.groupId);
         }
         for (const entry of payload.stashEntries || []) {
-          if (entry?.entryId) tx.objectStore(IDBStores.STASH_ENTRIES).put(entry);
+          if (entry?.entryId) await putEntity(IDBStores.STASH_ENTRIES, SyncEntityTypes.STASH_ENTRY, entry, entry.entryId);
         }
         for (const event of payload.deviceEvents || []) {
           if (event?.eventId) tx.objectStore(IDBStores.DEVICE_EVENTS).put(event);
@@ -160,24 +186,61 @@ export class SyncSnapshot {
           const record = await IndexedDBManager.requestToPromise(settingsStore.get(StorageKeys.USER_CONFIG));
           const local = record?.value && typeof record.value === 'object' ? record.value : {};
           const synced = pickSyncableConfig(incomingConfig);
+          const localRevs = local.fieldRevs && typeof local.fieldRevs === 'object' ? local.fieldRevs : {};
+          const incomingRevs = synced.fieldRevs || {};
           const next = { ...local };
+          const nextRevs = { ...localRevs };
           for (const [key, value] of Object.entries(synced)) {
             if (key === 'fieldRevs') continue;
-            next[key] = value && typeof value === 'object' && !Array.isArray(value)
-              ? { ...(local[key] && typeof local[key] === 'object' ? local[key] : {}), ...value }
-              : value;
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+              const nested = { ...(local[key] && typeof local[key] === 'object' ? local[key] : {}) };
+              for (const [sub, subValue] of Object.entries(value)) {
+                const path = `${key}.${sub}`;
+                if (merge && !this._incomingWins(localRevs[path], incomingRevs[path])) continue;
+                nested[sub] = subValue;
+                if (incomingRevs[path]) nextRevs[path] = incomingRevs[path];
+              }
+              next[key] = nested;
+            } else {
+              if (merge && !this._incomingWins(localRevs[key], incomingRevs[key])) continue;
+              next[key] = value;
+              if (incomingRevs[key]) nextRevs[key] = incomingRevs[key];
+            }
           }
-          next.fieldRevs = { ...(local.fieldRevs && typeof local.fieldRevs === 'object' ? local.fieldRevs : {}), ...synced.fieldRevs };
+          next.fieldRevs = nextRevs;
           settingsStore.put({ key: StorageKeys.USER_CONFIG, value: next, updatedAt: Date.now() });
         }
         const incomingRules = incomingSettings[StorageKeys.LINK_RULES];
         if (incomingRules && typeof incomingRules === 'object') {
-          const safeRules = {};
+          const incomingRuleRevs = incomingRules.fieldRevs && typeof incomingRules.fieldRevs === 'object'
+            ? incomingRules.fieldRevs
+            : {};
+          const record = merge
+            ? await IndexedDBManager.requestToPromise(settingsStore.get(StorageKeys.LINK_RULES))
+            : null;
+          const localRules = record?.value && typeof record.value === 'object' ? record.value : {};
+          const localRuleRevs = localRules.fieldRevs && typeof localRules.fieldRevs === 'object' ? localRules.fieldRevs : {};
+          const safeRules = merge ? { ...localRules, fieldRevs: { ...localRuleRevs } } : { fieldRevs: { ...incomingRuleRevs } };
           for (const [domain, mode] of Object.entries(incomingRules)) {
-            if (domain === 'fieldRevs' && mode && typeof mode === 'object') safeRules.fieldRevs = mode;
-            else if (isValidLinkRule(domain, mode)) safeRules[domain.toLowerCase()] = mode;
+            if (domain === 'fieldRevs' || !isValidLinkRule(domain, mode)) continue;
+            const key = domain.toLowerCase();
+            if (merge && !this._incomingWins(localRuleRevs[key], incomingRuleRevs[domain])) continue;
+            safeRules[key] = mode;
+            if (merge && incomingRuleRevs[domain]) safeRules.fieldRevs[key] = incomingRuleRevs[domain];
           }
           settingsStore.put({ key: StorageKeys.LINK_RULES, value: safeRules, updatedAt: Date.now() });
+        }
+
+        // 快照内实体的版本必须计入本机已见 lamport：仅靠快照入网的设备（watermark 之内的操作不再补放）
+        // 若从很小的 lamport 起步，其后续修改会在所有老设备上被判为"更旧"而静默丢弃
+        const maxLamport = this._maxLamport(payload);
+        if (maxLamport > 0) {
+          const meta = tx.objectStore(IDBStores.SYNC_META);
+          const clockRecord = await IndexedDBManager.requestToPromise(meta.get(SYNC_CLOCK_KEY));
+          if (clockRecord?.value && (Number(clockRecord.value.seenLamport) || 0) < maxLamport) {
+            clockRecord.value.seenLamport = maxLamport;
+            meta.put({ key: SYNC_CLOCK_KEY, value: clockRecord.value, updatedAt: Date.now() });
+          }
         }
 
         const activityStore = tx.objectStore(IDBStores.ACTIVITY_STATS);
@@ -188,15 +251,18 @@ export class SyncSnapshot {
           : {};
         for (const [pageId, pageValue] of Object.entries(incomingActivity)) {
           if (!/^page_/.test(pageId) || !pageValue || typeof pageValue !== 'object') continue;
+          const incoming = {
+            url: typeof pageValue.url === 'string' ? pageValue.url : '',
+            lastActivated: Number(pageValue.lastActivated) || 0,
+            activationTimestamps: Array.isArray(pageValue.activationTimestamps)
+              ? pageValue.activationTimestamps.filter((ts) => Number.isFinite(ts))
+              : []
+          };
+          // 合并模式与操作补放同一口径：时间戳并集、lastActivated 取最大
+          const existing = merge ? await IndexedDBManager.requestToPromise(activityStore.get(pageId)) : null;
           activityStore.put({
             key: pageId,
-            value: {
-              url: typeof pageValue.url === 'string' ? pageValue.url : '',
-              lastActivated: Number(pageValue.lastActivated) || 0,
-              activationTimestamps: Array.isArray(pageValue.activationTimestamps)
-                ? pageValue.activationTimestamps.filter((ts) => Number.isFinite(ts))
-                : []
-            },
+            value: existing?.value ? SyncMerge._mergeActivityRecord(existing.value, incoming) : incoming,
             updatedAt: Date.now()
           });
         }
@@ -212,6 +278,62 @@ export class SyncSnapshot {
   }
 
   /**
+   * 远端字段版本是否胜过本地（无远端版本时仅在本地也无版本时采纳，保持旧数据兼容）
+   * @param {{ lamport?: number, deviceId?: string } | undefined} localRev
+   * @param {{ lamport?: number, deviceId?: string } | undefined} incomingRev
+   * @returns {boolean}
+   */
+  static _incomingWins(localRev, incomingRev) {
+    if (!incomingRev) return !localRev;
+    if (!localRev) return true;
+    return SyncMerge.preferredRev(localRev, incomingRev) === incomingRev;
+  }
+
+  /**
+   * 字段级合并一条实体记录：带版本的字段按版本取胜，无版本字段（派生计数、本地元数据）保留本地
+   * @param {object | undefined} local
+   * @param {object} incoming
+   * @returns {object}
+   */
+  static _mergeRecord(local, incoming) {
+    if (!local) return incoming;
+    const localRevs = local.fieldRevs && typeof local.fieldRevs === 'object' ? local.fieldRevs : {};
+    const incomingRevs = incoming.fieldRevs && typeof incoming.fieldRevs === 'object' ? incoming.fieldRevs : {};
+    const merged = { ...incoming, ...local };
+    const revs = { ...localRevs };
+    for (const [field, rev] of Object.entries(incomingRevs)) {
+      if (!this._incomingWins(localRevs[field], rev)) continue;
+      merged[field] = incoming[field];
+      revs[field] = rev;
+    }
+    merged.fieldRevs = revs;
+    return merged;
+  }
+
+  /**
+   * 快照内出现过的最大 lamport（实体修订号与各字段版本）
+   * @param {object} payload
+   * @returns {number}
+   */
+  static _maxLamport(payload) {
+    let max = 0;
+    const visitRevs = (revs) => {
+      if (!revs || typeof revs !== 'object') return;
+      for (const rev of Object.values(revs)) max = Math.max(max, Number(rev?.lamport) || 0);
+    };
+    for (const list of [payload.pages, payload.stashGroups, payload.stashEntries]) {
+      for (const record of Array.isArray(list) ? list : []) {
+        max = Math.max(max, Number(record?.revision) || 0);
+        visitRevs(record?.fieldRevs);
+      }
+    }
+    for (const value of Object.values(payload.settings && typeof payload.settings === 'object' ? payload.settings : {})) {
+      visitRevs(value?.fieldRevs);
+    }
+    return max;
+  }
+
+  /**
    * 缓存一份已校验的快照到本地 SNAPSHOTS 仓储（供损坏回退）
    * @param {string} snapshotId
    * @param {object} payload
@@ -222,13 +344,21 @@ export class SyncSnapshot {
     const match = String(snapshotId).match(/(\d+)/);
     const generation = match ? Number(match[1]) : 0;
     await IndexedDBManager.runTransaction([IDBStores.SNAPSHOTS], 'readwrite', async (tx) => {
-      tx.objectStore(IDBStores.SNAPSHOTS).put({
+      const store = tx.objectStore(IDBStores.SNAPSHOTS);
+      store.put({
         snapshotId,
         generation,
         createdAt: Number(payload.createdAt) || Date.now(),
         sha256: sha256 || '',
         payload
       });
+      // 每份缓存都是完整载荷：只保留最新的若干份（当前 + 上一份即可满足损坏回退）
+      const all = await IndexedDBManager.requestToPromise(store.getAll());
+      const stale = (all || [])
+        .filter((item) => item.snapshotId !== snapshotId)
+        .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+        .slice(LOCAL_SNAPSHOT_KEEP - 1);
+      for (const item of stale) store.delete(item.snapshotId);
     });
   }
 

@@ -263,17 +263,19 @@ Deno.test("SyncEngine: 首次同步上传批次并生成快照基线，凭据与
 
     const manifest = server.getManifest();
     assertEquals(manifest.generation, 1);
-    assertEquals(manifest.operationFiles.length, 1);
-    assertEquals(manifest.snapshotId, 'gen-0001');
+    // 首个快照已覆盖本机全部操作：被 watermark 覆盖的批次随即压缩删除
+    assertEquals(manifest.operationFiles.length, 0, "被快照覆盖的批次应已压缩");
+    assertEquals(Object.values(manifest.snapshotWatermarks || {}).some((seq) => seq > 0), true, "快照 watermark 应覆盖已上传的操作");
+    assertEquals(manifest.snapshotId.startsWith('gen-0001'), true, "快照代号以代数开头");
     assertEquals(manifest.knownDevices.length, 1);
-    assertEquals(server.files.has('snapshots/gen-0001.json'), true);
+    assertEquals(server.files.has(`snapshots/${manifest.snapshotId}.json`), true);
     assertEquals(server.files.has(`devices/${manifest.knownDevices[0].deviceId}.json`), true);
 
     // 上传完成后 outbox 清空
     assertEquals((await SyncOutbox.listPending()).length, 0);
 
     // 快照包含页面与设置，但绝不包含凭据与本地自动备份
-    const snapshot = JSON.parse(server.files.get('snapshots/gen-0001.json').body);
+    const snapshot = JSON.parse(server.files.get(`snapshots/${manifest.snapshotId}.json`).body);
     assertEquals(snapshot.pages.length, 2);
     assertEquals(snapshot.stashGroups.length, 1);
     assertEquals(snapshot.settings[StorageKeys.WEBDAV_CREDENTIALS], undefined);
@@ -333,10 +335,11 @@ Deno.test("SyncEngine: 拉取其他设备操作，同字段并发修改写入冲
     assertEquals(conflicts[0].incomingValue, 'B 端改名');
     assertEquals(conflicts[0].resolved, false);
 
-    // 暂定值采纳了 (lamport, deviceId) 字典序较大的一方（devB-offline > 本机 dev）
+    // 暂定值采纳 deviceId 字典序较大的一方：所有设备按同一规则取值才能收敛
     const merged = await readRecord(IDBStores.STASH_GROUPS, groupId);
-    assertEquals(merged.fieldRevs.title.deviceId !== localDevice || merged.title === 'B 端改名', true);
-    assertEquals(merged.title, 'B 端改名');
+    const expected = 'devB-offline' > localDevice ? 'B 端改名' : groupRecord.title;
+    assertEquals(merged.title, expected);
+    assertEquals(merged.fieldRevs.title.deviceId, 'devB-offline' > localDevice ? 'devB-offline' : localDevice);
 
     // 本机再次同步不会重复应用 B 的操作（operationLogs 去重）
     const again = await SyncEngine.run({ manual: true });
@@ -425,7 +428,9 @@ Deno.test("SyncEngine: 无 ETag 服务器以兼容模式完成完整同步", asy
     assertEquals(result.status, SyncStatus.SYNCED);
     // 批次与清单均已写入远端，outbox 清空
     const manifest = server.getManifest();
-    assertEquals(manifest.operationFiles.length, 1);
+    // 首个快照已覆盖本机全部操作：被 watermark 覆盖的批次随即压缩删除
+    assertEquals(manifest.operationFiles.length, 0, "被快照覆盖的批次应已压缩");
+    assertEquals(Object.values(manifest.snapshotWatermarks || {}).some((seq) => seq > 0), true, "快照 watermark 应覆盖已上传的操作");
     assertEquals(server.files.has(`snapshots/${manifest.snapshotId}.json`), true);
     assertEquals((await SyncOutbox.listPending()).length, 0);
   } finally {
@@ -450,7 +455,9 @@ Deno.test("SyncEngine: 忽略 If-Match 的网盘服务器（如 123 云盘）兼
     assertEquals(result.success, true);
     assertEquals(result.status, SyncStatus.SYNCED);
     const manifest = server.getManifest();
-    assertEquals(manifest.operationFiles.length, 1);
+    // 首个快照已覆盖本机全部操作：被 watermark 覆盖的批次随即压缩删除
+    assertEquals(manifest.operationFiles.length, 0, "被快照覆盖的批次应已压缩");
+    assertEquals(Object.values(manifest.snapshotWatermarks || {}).some((seq) => seq > 0), true, "快照 watermark 应覆盖已上传的操作");
     assertEquals(manifest.snapshotId.startsWith('gen-0001'), true);
     assertEquals((await SyncOutbox.listPending()).length, 0);
   } finally {
@@ -837,7 +844,11 @@ Deno.test("同步安全：快照不携带设备本地偏好，应用时只合并
     assertEquals(payload.settings[StorageKeys.USER_CONFIG].tabThreshold, 21);
 
     // 伪造快照试图关闭本机桥接并写入凭据
-    payload.settings[StorageKeys.USER_CONFIG] = { aiBridge: { enabled: false }, tabThreshold: 44 };
+    payload.settings[StorageKeys.USER_CONFIG] = {
+      aiBridge: { enabled: false },
+      tabThreshold: 44,
+      fieldRevs: { tabThreshold: { lamport: 9999, deviceId: 'dev_remote' } }
+    };
     payload.settings[StorageKeys.WEBDAV_CREDENTIALS] = { password: 'x' };
     await IndexedDBManager.withWriteLock(() => SyncSnapshot.applyPayload(payload, { merge: true }));
     const config = await StorageAdapter.getUserConfig();

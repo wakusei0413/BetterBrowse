@@ -72,7 +72,9 @@ export class SyncOutbox {
   /**
    * 在当前写事务中追加一条操作（调用方事务必须包含 outbox 与 syncMeta）
    * @param {IDBTransaction} tx
-   * @param {{ entityType: string, entityId: string, op?: string, fields?: Record<string, any>, fieldNames?: string[] }} spec
+   * @param {{ entityType: string, entityId: string, op?: string, fields?: Record<string, any>, fieldNames?: string[], coalesce?: boolean, quiet?: boolean }} spec
+   *   coalesce：同一实体尚未上传的旧操作直接被本条取代（用于整值覆盖的高频写入，如活跃度）；
+   *   quiet：不触发防抖同步，随下一次定时或其他变更一并上传
    * @returns {Promise<object | null>}
    */
   static async enqueueInTx(tx, spec) {
@@ -81,6 +83,16 @@ export class SyncOutbox {
     const outboxStore = tx.objectStore(IDBStores.OUTBOX);
     // 契约：调用方事务必须已包含 OPERATION_LOGS（见各写路径的 stores 组装）
     const logStore = tx.objectStore(IDBStores.OPERATION_LOGS);
+
+    if (spec.coalesce === true) {
+      const pending = await IndexedDBManager.requestToPromise(outboxStore.getAll());
+      for (const old of pending || []) {
+        if (old.entityType === spec.entityType && old.entityId === String(spec.entityId)) {
+          outboxStore.delete(old.operationId);
+          logStore.delete(old.operationId);
+        }
+      }
+    }
 
     let clockRecord = await IndexedDBManager.requestToPromise(metaStore.get(SYNC_CLOCK_KEY));
     const clock = clockRecord?.value || this._newClock();
@@ -121,7 +133,7 @@ export class SyncOutbox {
     outboxStore.put(operation);
     logStore.put({ ...operation, logId: operation.operationId });
     metaStore.put({ key: SYNC_CLOCK_KEY, value: clock, updatedAt: Date.now() });
-    this._pendingDirty = true;
+    if (spec.quiet !== true) this._pendingDirty = true;
     return operation;
   }
 
