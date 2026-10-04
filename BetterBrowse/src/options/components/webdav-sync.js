@@ -98,6 +98,7 @@ export class WebdavSyncComponent {
       synced: '已同步',
       pending: '离线待上传',
       auth_failed: '认证失败',
+      server_rejected: '服务器拒绝请求',
       capability_missing: '服务器能力不足',
       conflict: '条件写入冲突',
       corrupt: '数据损坏',

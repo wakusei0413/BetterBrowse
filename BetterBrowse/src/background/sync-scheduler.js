@@ -7,7 +7,7 @@
 import { StorageAdapter } from '../core/storage/storage-adapter.js';
 import { SyncEngine } from '../core/sync/sync-engine.js';
 import { SyncOutbox } from '../core/sync/outbox.js';
-import { SYNC_ALARM_MINUTES, SYNC_DEBOUNCE_MS } from '../core/sync/sync-constants.js';
+import { SYNC_ALARM_MINUTES, SYNC_DEBOUNCE_MS, SYNC_MIN_INTERVAL_MS } from '../core/sync/sync-constants.js';
 import { ActionTypes } from '../constants/action-types.js';
 
 const ALARM_NAME = 'better-browse-webdav-sync';
@@ -18,6 +18,8 @@ export class SyncScheduler {
   static _alarmHandler = null;
   static _initialized = false;
   static _autoSyncEnabled = null;
+  /** 上次自动同步开始时刻（进程内；SW 重启后最多多同步一次） */
+  static _lastAutoRunAt = 0;
 
   /**
    * 同步注册长期事件监听，并按当前配置维护定时闹钟。
@@ -102,10 +104,13 @@ export class SyncScheduler {
   static scheduleDebounced() {
     if (this._autoSyncEnabled === false) return;
     clearTimeout(this._timer);
+    // 距上次自动同步不足最小间隔时顺延，连续修改只触发一次同步
+    const sinceLast = Date.now() - this._lastAutoRunAt;
+    const delay = Math.max(SYNC_DEBOUNCE_MS, SYNC_MIN_INTERVAL_MS - sinceLast);
     this._timer = setTimeout(() => {
       this._timer = null;
       this.runSafe({ reason: 'debounce' });
-    }, SYNC_DEBOUNCE_MS);
+    }, delay);
   }
 
   static async runNow() {
@@ -119,6 +124,7 @@ export class SyncScheduler {
       if (config.webdavSync?.autoSync === false && context.reason !== 'manual') {
         return { success: false, skipped: true };
       }
+      if (context.reason !== 'manual') this._lastAutoRunAt = Date.now();
       const result = await SyncEngine.run({ manual: context.reason === 'manual' });
       this._broadcast(result);
       return result;

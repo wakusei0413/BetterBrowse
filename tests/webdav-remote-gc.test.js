@@ -246,3 +246,91 @@ Deno.test("远端回收：按时间预算分段删除，返回剩余数量供续
   assertEquals(rest.remaining, 0);
   assertEquals(deleted.length, 50);
 });
+
+Deno.test("服务器拒绝（403）与认证失败（401）分开报告，自动同步按失败退避，手动同步成功后清除退避", async () => {
+  await withServer(async (server) => {
+    await bootDevice('a');
+    await sync('A1');
+
+    // 模拟 123 云盘限流：所有请求 403 {"code":1010}
+    const realFetch = server.fetch.bind(server);
+    let mode = 403;
+    SyncEngine.fetchImpl = (url, options) => (mode
+      ? Promise.resolve(new Response(mode === 403 ? '{"code":1010,"message":"s err"}' : '', { status: mode }))
+      : realFetch(url, options));
+
+    const rejected = await SyncEngine.run({ manual: true });
+    assertEquals(rejected.status, 'server_rejected');
+    assert(/拒绝请求（HTTP 403/.test(rejected.error), rejected.error);
+    assert(!/认证失败/.test(rejected.error), "403 不得误报为认证失败");
+
+    const auto = await SyncEngine.run({});
+    assertEquals(auto.skipped, true, "退避期内自动同步直接跳过，不再请求服务器");
+    assert(/自动同步暂停至/.test(auto.error));
+
+    mode = 401;
+    const unauthorized = await SyncEngine.run({ manual: true });
+    assertEquals(unauthorized.status, 'auth_failed');
+    assert(/请检查账号与密码/.test(unauthorized.error));
+
+    mode = 0;
+    await sync('恢复后手动同步');
+    const resumed = await SyncEngine.run({});
+    assertEquals(resumed.success, true, "手动同步成功后退避清除，自动同步恢复");
+  });
+});
+
+Deno.test("远端读取错误分类：限流期间读快照或批次返回 403/503 不得判为数据损坏，只有 404 才算缺失", async () => {
+  await withServer(async (server) => {
+    await bootDevice('a');
+    await LocalStashRepository.createGroup([{ url: "https://t.example/1", title: "页" }], "组");
+    await sync('A1');
+    const B = await bootDevice('b');
+    const snapshotPath = `snapshots/${server.getManifest().snapshotId}.json`;
+
+    const realFetch = server.fetch.bind(server);
+    let failStatus = 403;
+    SyncEngine.fetchImpl = (url, options) => {
+      const method = (options?.method || 'GET').toUpperCase();
+      if (failStatus && method === 'GET' && decodeURIComponent(url).endsWith(snapshotPath)) {
+        return Promise.resolve(new Response('{"code":1010,"message":"s err"}', { status: failStatus }));
+      }
+      return realFetch(url, options);
+    };
+
+    const throttled = await SyncEngine.run({ manual: true });
+    assertEquals(throttled.status, 'server_rejected', `403 应判为服务器拒绝：${throttled.error}`);
+
+    failStatus = 503;
+    const unavailable = await SyncEngine.run({ manual: true });
+    assertEquals(unavailable.status, 'unknown');
+    assert(/暂时失败（HTTP 503）/.test(unavailable.error), unavailable.error);
+
+    failStatus = 404;
+    const missing = await SyncEngine.run({ manual: true });
+    assertEquals(missing.status, 'corrupt', "快照确实不存在才是数据损坏");
+
+    failStatus = 0;
+    await useDevice(B.factory, B.store);
+    await sync('恢复后 B 正常配对');
+    assertEquals((await LocalStashRepository.getAllGroups()).length, 1);
+  });
+});
+
+Deno.test("请求节流：无变化的同步只读一次清单，不重复下载已应用快照、不重写设备确认", async () => {
+  await withServer(async (server) => {
+    await bootDevice('a');
+    await LocalStashRepository.createGroup([{ url: "https://t.example/1", title: "页" }], "组");
+    await sync('A1');
+    await sync('A2'); // 写入设备确认缓存
+
+    const log = [];
+    const realFetch = server.fetch.bind(server);
+    SyncEngine.fetchImpl = (url, options) => {
+      log.push(`${(options?.method || 'GET').toUpperCase()} ${decodeURIComponent(new URL(url).pathname).replace(/^.*\/BetterBrowse\/?/, '')}`);
+      return realFetch(url, options);
+    };
+    await sync('A3');
+    assertEquals(log, ['GET manifest.json'], `无变化同步应只有一次清单读取，实际：${log.join('，')}`);
+  });
+});

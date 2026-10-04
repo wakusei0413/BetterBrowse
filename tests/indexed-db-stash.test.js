@@ -234,6 +234,14 @@ Deno.test("IndexedStashRepository: getGroupPage 分页与 searchEntries 关键�
 
     // 无命中
     assertEquals((await IndexedStashRepository.searchEntries("不存在的关键字xyz")).length, 0);
+
+    // 非分页调用：命中项排在第一个扫描窗口之后也必须找到（页面数超过窗口上限时曾静默返回空）
+    for (const name of ["alpha", "beta", "gamma", "delta", "epsilon"]) {
+      const hits = await IndexedStashRepository.searchEntries(`search-${name}`, { scanLimit: 1, limit: 1 });
+      assertEquals(hits.length, 1, `窗口为 1 时也应找到 search-${name}`);
+    }
+    const all = await IndexedStashRepository.searchEntries("页面", { scanLimit: 2, limit: 4 });
+    assertEquals(all.length, 4, "跨窗口累计到 limit 为止");
   } finally {
     await idb.restore();
   }

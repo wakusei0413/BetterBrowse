@@ -13,6 +13,22 @@ import { CAPABILITY_PROBE_NAME, SYNC_ROOT_DIR } from './sync-constants.js';
  * @property {string} etag
  */
 
+/**
+ * 认证类失败的说明：带上状态码与服务器返回的简短原因。
+ * 401 是账号或密码错误；403 多为权限不足或网盘限流（如 123 云盘返回 {"code":1010}），不一定是密码问题，
+ * 措辞上必须区分，否则用户会反复重填密码。
+ * @param {{ status: number, body?: string }} res
+ * @returns {string}
+ */
+export function describeAuthFailure(res) {
+  const status = Number(res?.status) || 0;
+  const detail = String(res?.body || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const head = status === 403
+    ? 'WebDAV 服务器拒绝请求（HTTP 403，可能是网盘限流或权限不足，稍后会自动重试）'
+    : `WebDAV 认证失败（HTTP ${status}，请检查账号与密码）`;
+  return `${head}${detail ? `：${detail}` : ''}`;
+}
+
 /** 单次 WebDAV 请求超时（大快照上传留足余量） */
 const WEBDAV_REQUEST_TIMEOUT_MS = 60000;
 
@@ -191,7 +207,7 @@ export class WebdavClient {
       const res = await this.mkcol(dir);
       if (![201, 204, 405, 409, 301, 200].includes(res.status) && res.status >= 400) {
         if (res.status === 401 || res.status === 403) {
-          throw Object.assign(new Error('WebDAV 认证失败'), { code: 'AUTH_FAILED', status: res.status });
+          throw Object.assign(new Error(describeAuthFailure(res)), { code: 'AUTH_FAILED', status: res.status });
         }
         throw Object.assign(new Error(`创建远端目录失败（HTTP ${res.status}）`), { status: res.status });
       }
@@ -211,7 +227,7 @@ export class WebdavClient {
       contentType: 'application/json'
     });
     if (first.status === 401 || first.status === 403) {
-      return { ok: false, reason: '认证失败' };
+      return { ok: false, reason: describeAuthFailure(first), httpStatus: first.status };
     }
     if (first.status >= 400 && first.status !== 409) {
       return { ok: false, reason: `写入探测文件失败（HTTP ${first.status}）` };

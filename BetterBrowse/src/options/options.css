@@ -2813,7 +2813,8 @@ input:checked + .slider:before {
 .sync-status-dot[data-status="auth_failed"],
 .sync-status-dot[data-status="corrupt"],
 .sync-status-dot[data-status="unknown"] { background: var(--danger-color); }
-.sync-status-dot[data-status="capability_missing"] { background: var(--warning-color); }
+.sync-status-dot[data-status="capability_missing"],
+.sync-status-dot[data-status="server_rejected"] { background: var(--warning-color); }
 
 .sync-status-badge {
   font-weight: 600;

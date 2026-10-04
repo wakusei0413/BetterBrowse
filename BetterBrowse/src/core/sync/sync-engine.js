@@ -7,7 +7,7 @@
 import { IndexedDBManager, IDBStores } from '../storage/indexed-db.js';
 import { StorageAdapter } from '../storage/storage-adapter.js';
 import { WebdavCredentials } from './credentials.js';
-import { WebdavClient } from './webdav-client.js';
+import { WebdavClient, describeAuthFailure } from './webdav-client.js';
 import { SyncOutbox } from './outbox.js';
 import { SyncMerge } from './merge.js';
 import { SyncSnapshot } from './snapshot.js';
@@ -33,6 +33,12 @@ const OWN_UPLOADS_KEY = 'ownUploads';
 /** 能力探测缓存：探测本身要 7 个请求，不必每次同步都做 */
 const PROBE_CACHE_KEY = 'probeCache';
 const PROBE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+/** 自动同步失败退避：被服务器拒绝、认证失败或网络失败后暂停自动同步，避免限流期间持续请求 */
+const BACKOFF_KEY = 'backoff';
+/** 上次写入的设备确认（内容未变时不重复 PUT） */
+const ACK_CACHE_KEY = 'ackCache';
+const BACKOFF_BASE_MS = 5 * 60 * 1000;
+const BACKOFF_MAX_MS = 60 * 60 * 1000;
 /** 远端自动回收记录 */
 const REMOTE_GC_KEY = 'remoteGc';
 /** 兼容模式写清单后回读校验前的等待（让并发写入方的 PUT 先落地） */
@@ -143,9 +149,11 @@ export class SyncEngine {
       const client = this._client(creds);
       const probe = await client.probeCapability();
       if (!probe.ok) {
-        await this._setStatus(SyncStatus.CAPABILITY_MISSING, probe.reason || '服务器能力不足');
-        return { success: false, error: probe.reason, status: SyncStatus.CAPABILITY_MISSING };
+        const status = this._statusForHttp(probe.httpStatus) || SyncStatus.CAPABILITY_MISSING;
+        await this._setStatus(status, probe.reason || '服务器能力不足');
+        return { success: false, error: probe.reason, status };
       }
+      await this._setMeta(BACKOFF_KEY, null);
       await this._setMeta(PROBE_CACHE_KEY, { serverUrl: creds.serverUrl, at: Date.now(), probe });
       if (probe.etagSupport === 'full') {
         await this._setStatus(SyncStatus.IDLE, '连接与条件写入探测通过');
@@ -158,10 +166,78 @@ export class SyncEngine {
         message: `连接成功（兼容模式：${probe.reason}）。清单更新将采用"读取最新-合并-写入"保护，可正常同步`
       };
     } catch (err) {
-      const status = /认证/.test(err.message) ? SyncStatus.AUTH_FAILED : SyncStatus.UNKNOWN;
+      const status = this._statusForError(err);
       await this._setStatus(status, err.message);
       return { success: false, error: err.message, status };
     }
+  }
+
+  /**
+   * @param {number | undefined} httpStatus
+   * @returns {string | null}
+   */
+  static _statusForHttp(httpStatus) {
+    if (httpStatus === 403 || httpStatus === 429) return SyncStatus.SERVER_REJECTED;
+    if (httpStatus === 401) return SyncStatus.AUTH_FAILED;
+    return null;
+  }
+
+  /**
+   * @param {any} err
+   * @returns {string}
+   */
+  static _statusForError(err) {
+    if (err?.code === 'CORRUPT') return SyncStatus.CORRUPT;
+    return this._statusForHttp(Number(err?.status))
+      || (err?.code === 'AUTH_FAILED' || /认证/.test(err?.message || '') ? SyncStatus.AUTH_FAILED : SyncStatus.UNKNOWN);
+  }
+
+  /**
+   * 失败是否应触发自动同步退避（服务器拒绝、认证失败、网络不可达）
+   * @param {{ success?: boolean, status?: string, error?: string }} result
+   */
+  static _shouldBackoff(result) {
+    if (!result || result.success || result.skipped) return false;
+    if ([SyncStatus.SERVER_REJECTED, SyncStatus.AUTH_FAILED].includes(result.status)) return true;
+    return result.status === SyncStatus.UNKNOWN && /请求失败|暂时失败|超时|timed out|network/i.test(result.error || '');
+  }
+
+  /**
+   * 远端读取结果是否表示「文件确实不存在」
+   * @param {{ status: number }} res
+   */
+  static _isMissing(res) {
+    return res.status === 404 || res.status === 410;
+  }
+
+  /**
+   * 读取失败但不是「文件不存在」时抛出分类错误：认证失败 / 服务器拒绝（限流）/ 服务器暂时故障。
+   * 网盘限流期间 GET 会返回 403，若一律视为缺失，会把完好的远端误判为数据损坏，诱导用户执行从零重建。
+   * @param {{ status: number, body?: string }} res
+   * @param {string} path
+   */
+  static _throwIfUnreadable(res, path) {
+    if (res.status < 400 || this._isMissing(res)) return;
+    if (res.status === 401 || res.status === 403) {
+      throw Object.assign(new Error(describeAuthFailure(res)), { code: 'AUTH_FAILED', status: res.status });
+    }
+    if (res.status === 429) {
+      throw Object.assign(new Error(`WebDAV 服务器拒绝请求（HTTP 429，请求过于频繁，稍后会自动重试）：${path}`), { status: 429 });
+    }
+    throw Object.assign(new Error(`读取 ${path} 暂时失败（HTTP ${res.status}），稍后重试`), { status: res.status });
+  }
+
+  static async _updateBackoff(result) {
+    if (result?.success) {
+      if (await this._getMeta(BACKOFF_KEY)) await this._setMeta(BACKOFF_KEY, null);
+      return;
+    }
+    if (!this._shouldBackoff(result)) return;
+    const prev = (await this._getMeta(BACKOFF_KEY)) || {};
+    const level = (Number(prev.level) || 0) + 1;
+    const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (level - 1));
+    await this._setMeta(BACKOFF_KEY, { level, until: Date.now() + delay, status: result.status, error: result.error || '' });
+    console.warn(`[SyncEngine] 自动同步暂停 ${Math.round(delay / 60000)} 分钟（连续第 ${level} 次失败）：${result.error || result.status}`);
   }
 
   static _client(creds) {
@@ -174,11 +250,28 @@ export class SyncEngine {
   }
 
   /**
-   * 执行一次完整同步
+   * 执行一次完整同步。自动同步在退避期内直接跳过；手动同步不受退避限制，成功后清除退避。
    * @param {{ manual?: boolean }} [options]
    */
   static async run(options = {}) {
-    if (this._running) return { success: false, error: '同步正在进行' };
+    if (options.manual !== true) {
+      const backoff = await this._getMeta(BACKOFF_KEY);
+      if (Number(backoff?.until) > Date.now()) {
+        return {
+          success: false,
+          skipped: true,
+          status: backoff.status,
+          error: `自动同步暂停至 ${new Date(backoff.until).toLocaleTimeString('zh-CN')}（上次失败：${backoff.error || backoff.status}）`
+        };
+      }
+    }
+    const result = await this._runOnce(options);
+    await this._updateBackoff(result).catch(() => {});
+    return result;
+  }
+
+  static async _runOnce(options = {}) {
+    if (this._running) return { success: false, skipped: true, error: '同步正在进行' };
     this._running = true;
     try {
       const config = await StorageAdapter.getUserConfig();
@@ -194,8 +287,9 @@ export class SyncEngine {
       const startedAt = Date.now();
       const probe = await this._probeWithCache(client, creds.serverUrl);
       if (!probe.ok) {
-        await this._setStatus(SyncStatus.CAPABILITY_MISSING, probe.reason || '服务器能力不足');
-        return { success: false, error: probe.reason, status: SyncStatus.CAPABILITY_MISSING };
+        const status = this._statusForHttp(probe.httpStatus) || SyncStatus.CAPABILITY_MISSING;
+        await this._setStatus(status, probe.reason || '服务器能力不足');
+        return { success: false, error: probe.reason, status };
       }
       // 兼容模式：服务器不支持条件写入（如部分网盘 WebDAV），
       // 清单更新退化为"读取最新-合并-写入"，并发保护较弱但可正常同步
@@ -287,7 +381,7 @@ export class SyncEngine {
       );
       return { success: true, status, pendingCount: leftover.length, ...(gc ? { remoteGc: gc } : {}) };
     } catch (err) {
-      const status = /认证/.test(err.message || '') ? SyncStatus.AUTH_FAILED : SyncStatus.UNKNOWN;
+      const status = this._statusForError(err);
       await this._setStatus(status, err.message || '未知错误');
       console.warn('[SyncEngine] 同步失败:', err.message || err);
       return { success: false, error: err.message, status };
@@ -312,9 +406,7 @@ export class SyncEngine {
     if (res.status === 404) {
       return { manifest: null, etag: '', missing: true };
     }
-    if (res.status === 401 || res.status === 403) {
-      throw Object.assign(new Error('WebDAV 认证失败'), { code: 'AUTH_FAILED' });
-    }
+    this._throwIfUnreadable(res, 'manifest.json');
     if (res.status >= 400) {
       return { corrupt: true, error: `读取清单失败（HTTP ${res.status}）` };
     }
@@ -389,7 +481,7 @@ export class SyncEngine {
         continue;
       }
       if (put.status === 401 || put.status === 403) {
-        return { ok: false, error: 'WebDAV 认证失败', status: SyncStatus.AUTH_FAILED };
+        return { ok: false, error: describeAuthFailure(put), status: this._statusForHttp(put.status) };
       }
     }
     return {
@@ -412,7 +504,7 @@ export class SyncEngine {
     const put = await client.put(path, body, { contentType: 'application/x-ndjson' });
     if (![200, 201, 204].includes(put.status)) {
       if (put.status === 401 || put.status === 403) {
-        return { success: false, error: 'WebDAV 认证失败', status: SyncStatus.AUTH_FAILED };
+        return { success: false, error: describeAuthFailure(put), status: this._statusForHttp(put.status) };
       }
       return { success: false, error: `上传批次失败（HTTP ${put.status}）`, status: SyncStatus.UNKNOWN };
     }
@@ -643,9 +735,24 @@ export class SyncEngine {
       }
     }
 
+    const replay = async (watermarks) => {
+      const { operations, paths } = await this._downloadOperations(client, manifest);
+      const pending = watermarks ? SyncSnapshot.filterAfterWatermark(operations, watermarks) : operations;
+      const result = await IndexedDBManager.withWriteLock(async () => await SyncMerge.applyOperations(pending));
+      await this._markFilesApplied(paths, manifest);
+      return { success: true, manifest, etag: remote.etag, downloadedFiles: paths.length, ...result };
+    };
+
     if (manifest.snapshotId && manifest.snapshotSha256) {
+      // 本机已应用当前快照：不必每次同步都把整份快照（可达数 MB）重新下载一遍，
+      // 网盘 WebDAV 普遍限流，这是同步被拒的主要诱因之一
+      const appliedBefore = (await this._getMeta(STATUS_KEY))?.appliedSnapshotId;
+      if (appliedBefore === manifest.snapshotId) {
+        return await replay(manifest.snapshotWatermarks || {});
+      }
       const snapPath = `snapshots/${manifest.snapshotId}.json`;
       const snapRes = await client.get(snapPath);
+      this._throwIfUnreadable(snapRes, snapPath);
       let payload = null;
       let appliedSnapshotId = manifest.snapshotId;
       let watermarks = manifest.snapshotWatermarks || {};
@@ -693,16 +800,9 @@ export class SyncEngine {
           appliedSnapshotId
         });
       }
-      const { operations, paths } = await this._downloadOperations(client, manifest);
-      const replay = SyncSnapshot.filterAfterWatermark(operations, watermarks);
-      const result = await IndexedDBManager.withWriteLock(async () => await SyncMerge.applyOperations(replay));
-      await this._markFilesApplied(paths, manifest);
-      return { success: true, manifest, etag: remote.etag, downloadedFiles: paths.length, ...result };
+      return await replay(watermarks);
     }
-    const { operations, paths } = await this._downloadOperations(client, manifest);
-    const result = await IndexedDBManager.withWriteLock(async () => await SyncMerge.applyOperations(operations));
-    await this._markFilesApplied(paths, manifest);
-    return { success: true, manifest, etag: remote.etag, downloadedFiles: paths.length, ...result };
+    return await replay(null);
   }
 
   /**
@@ -737,6 +837,7 @@ export class SyncEngine {
     for (const file of files) {
       paths.push(file.path);
       const res = await client.get(file.path);
+      this._throwIfUnreadable(res, file.path);
       if (res.status >= 400) {
         throw Object.assign(new Error(`批次文件缺失：${file.path}`), { code: 'CORRUPT' });
       }
@@ -900,19 +1001,32 @@ export class SyncEngine {
     return { manifest: res.manifest, etag: res.etag };
   }
 
+  /**
+   * 写设备确认文件：序号与代数都没变化时跳过（每次同步省一次 PUT）；
+   * 回收会删除未被清单引用的设备文件，所以首次与清单代数变化时一定会写
+   */
   static async _ackDevice(client, manifest) {
     const clock = await SyncOutbox.getClock();
-    const body = JSON.stringify({
-      deviceId: clock.deviceId,
-      confirmedSequence: clock.sequence,
-      generation: manifest?.generation || 0,
-      updatedAt: Date.now()
-    });
-    await client.put(`devices/${clock.deviceId}.json`, body);
+    const ack = { confirmedSequence: clock.sequence, generation: manifest?.generation || 0 };
+    const last = await this._getMeta(ACK_CACHE_KEY);
+    if (last?.deviceId === clock.deviceId
+      && last.confirmedSequence === ack.confirmedSequence
+      && last.generation === ack.generation) {
+      return;
+    }
+    const body = JSON.stringify({ deviceId: clock.deviceId, ...ack, updatedAt: Date.now() });
+    const res = await client.put(`devices/${clock.deviceId}.json`, body);
+    if ([200, 201, 204].includes(res.status)) {
+      await this._setMeta(ACK_CACHE_KEY, { deviceId: clock.deviceId, ...ack });
+    }
   }
 
   static async _retireStaleDevices(client, manifest, etag) {
     const now = Date.now();
+    // 绝大多数同步没有到期设备：用本次同步已有的清单先判断，避免每次多读一次远端清单
+    const anyStale = (manifest?.knownDevices || [])
+      .some((d) => !d.retired && now - (Number(d.lastSeenAt) || 0) >= DEVICE_RETIRE_AFTER_MS);
+    if (!anyStale) return;
     await this._updateManifest(client, (fresh) => {
       if (!fresh) return null;
       let changed = false;
@@ -941,6 +1055,7 @@ export class SyncEngine {
     const local = await SyncSnapshot.getLocal(previousSnapshotId);
     if (local?.payload && typeof local.payload === 'object') return local.payload;
     const res = await client.get(`snapshots/${previousSnapshotId}.json`);
+    this._throwIfUnreadable(res, `snapshots/${previousSnapshotId}.json`);
     if (res.status >= 400) return null;
     try {
       const payload = JSON.parse(res.body);
