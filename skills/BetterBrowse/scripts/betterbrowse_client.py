@@ -658,6 +658,12 @@ def build_request(
         return {"action": "RUN_SYNC_NOW", "payload": None}
     if command == "sync-status":
         return {"action": "GET_SYNC_STATUS", "payload": None}
+    if command == "sync-usage":
+        return {"action": "GET_SYNC_REMOTE_USAGE", "payload": None}
+    if command == "sync-clean":
+        return {"action": "CLEAN_SYNC_REMOTE", "payload": {"confirm": flags.get("confirm") is True}, "repeatUntilDone": True}
+    if command == "reload":
+        return {"action": "RELOAD_EXTENSION", "payload": {"confirm": flags.get("confirm") is True}, "waitReconnect": True}
     if command == "sync-credentials":
         return {"action": "SAVE_WEBDAV_CREDENTIALS", "payload": parse_json_input(positional, 0, flags, "凭据 JSON")}
     if command == "eval-tabs":
@@ -709,6 +715,11 @@ HELP_TEXT = """BetterBrowse AI 桥接客户端
   config-get / config-set [JSON|--file 文件|--stdin] / config-reset --confirm
   rules-get / rule-set <域名> <auto|current|new> / rule-remove <域名>
   sync-status / sync-now / sync-credentials [JSON|--file 文件|--stdin]
+  sync-usage                      统计远端文件占用与可清理量
+  sync-clean --confirm            清理远端未被清单引用的文件（自动分段续跑直到完成）
+
+开发调试：
+  reload --confirm [--wait=秒]    重载扩展加载最新代码，并等待桥接重新连上（默认最多 60 秒）
   eval-tabs / tab-count
 
 成功退出码为 0，传输失败或业务失败为 1。WebDAV 凭据只写不可读；
@@ -964,6 +975,39 @@ def process_alive(pid: Any) -> bool | None:
         return None
 
 
+def execute_repeat(session: BridgeSession, built: Mapping[str, Any]) -> dict[str, Any]:
+    """分段动作：remaining > 0 时继续调用，汇总删除数量；某一轮没有进展即停止，防止空转。"""
+    totals = {"deleted": 0, "freedBytes": 0, "failed": 0, "rounds": 0}
+    last: dict[str, Any] = {}
+    for _ in range(100):
+        response = normalize_response(session.request(str(built["action"]), built.get("payload")))
+        if response_failed(response):
+            if totals["rounds"] == 0:
+                return response
+            return {"success": False, "code": response.get("code", "PARTIAL"), "error": response.get("error"), "data": {**totals, "last": last}}
+        last = response.get("data") or {}
+        totals["rounds"] += 1
+        for key in ("deleted", "freedBytes", "failed"):
+            totals[key] += int(last.get(key) or 0)
+        if not last.get("remaining") or not last.get("deleted"):
+            break
+    return {"success": True, "data": {**totals, "remaining": int(last.get("remaining") or 0)}}
+
+
+def wait_for_reconnect(started_at_ms: int, timeout_s: float) -> dict[str, Any]:
+    """重载后轮询诊断，直到扩展以新实例重新连上宿主（lastConnectedAt 晚于重载时刻）。"""
+    deadline = time.monotonic() + timeout_s
+    last: dict[str, Any] = {}
+    time.sleep(1.5)
+    while time.monotonic() < deadline:
+        last = run_doctor()
+        extension = (last.get("data") or {}).get("extension") or {}
+        if not response_failed(last) and extension.get("state") == "connected" and int(extension.get("lastConnectedAt") or 0) >= started_at_ms:
+            return {"success": True, "data": {"reloaded": True, "softwareVersion": extension.get("softwareVersion"), "lastConnectedAt": extension.get("lastConnectedAt")}}
+        time.sleep(1.0)
+    return {"success": False, "code": "RELOAD_RECONNECT_TIMEOUT", "error": "扩展已请求重载，但在等待时间内未重新连上桥接", "data": {"lastDoctor": last}}
+
+
 def run_doctor() -> dict[str, Any]:
     path = bridge_file_path()
     checks: dict[str, Any] = {
@@ -1055,11 +1099,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise BridgeClientError("COMMAND_UNKNOWN", f"未知命令：{command}（运行 help 查看用法）")
 
         info = load_bridge_info()
+        if built.get("waitReconnect"):
+            started_at_ms = int(time.time() * 1000)
+            with BridgeSession(info) as session:
+                response = normalize_response(session.request(str(built["action"]), built.get("payload")))
+            if not response_failed(response):
+                wait_s = float(parse_int(flags.get("wait", 60), "wait", minimum=5, maximum=600))
+                response = wait_for_reconnect(started_at_ms, wait_s)
+            print_json(response)
+            return 1 if response_failed(response) else 0
+
         with BridgeSession(info) as session:
             if built.get("paginate"):
                 response = execute_paginated(session, built)
             elif built.get("streamExport"):
                 response = execute_export(session, built)
+            elif built.get("repeatUntilDone"):
+                response = execute_repeat(session, built)
             else:
                 response = session.request(str(built["action"]), built.get("payload"))
                 response = filter_capabilities(response, built.get("filter"))

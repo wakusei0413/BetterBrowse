@@ -8,6 +8,18 @@ import { ActionTypes } from '../../constants/action-types.js';
 import { MessageBus } from '../../core/bus/message-bus.js';
 import { Toast } from './toast.js';
 
+/**
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
 export class WebdavSyncComponent {
   constructor() {
     this.$serverUrl = document.getElementById('webdavServerUrl');
@@ -34,6 +46,9 @@ export class WebdavSyncComponent {
     this.$recoveryMessage = document.getElementById('syncRecoveryMessage');
     this.$btnFallbackSnapshot = document.getElementById('btnSyncFallbackSnapshot');
     this.$btnRebuildFromScratch = document.getElementById('btnSyncRebuildFromScratch');
+    this.$remoteUsage = document.getElementById('syncRemoteUsage');
+    this.$btnRemoteUsage = document.getElementById('btnSyncRemoteUsage');
+    this.$btnCleanRemote = document.getElementById('btnSyncCleanRemote');
     this.deviceCount = 0;
     this.recoveryNeedsAttention = false;
     this.init();
@@ -48,6 +63,8 @@ export class WebdavSyncComponent {
     this.$accountConfigSync?.addEventListener('change', () => this.saveAccountConfigSync());
     this.$btnFallbackSnapshot?.addEventListener('click', () => this.fallbackPreviousSnapshot());
     this.$btnRebuildFromScratch?.addEventListener('click', () => this.rebuildFromScratch());
+    this.$btnRemoteUsage?.addEventListener('click', () => this.loadRemoteUsage());
+    this.$btnCleanRemote?.addEventListener('click', () => this.cleanRemote());
     this.loadAll();
   }
 
@@ -81,6 +98,7 @@ export class WebdavSyncComponent {
       synced: '已同步',
       pending: '离线待上传',
       auth_failed: '认证失败',
+      server_rejected: '服务器拒绝请求',
       capability_missing: '服务器能力不足',
       conflict: '条件写入冲突',
       corrupt: '数据损坏',
@@ -152,6 +170,55 @@ export class WebdavSyncComponent {
       Toast.show(data.error || res?.error || '同步失败');
     }
     await this.loadAll();
+  }
+
+  /**
+   * 统计远端占用（PROPFIND 逐目录列出，文件很多时需要几秒）
+   */
+  async loadRemoteUsage() {
+    if (this.$remoteUsage) this.$remoteUsage.textContent = '正在统计远端文件…';
+    const res = await MessageBus.sendToBackground(ActionTypes.GET_SYNC_REMOTE_USAGE);
+    const data = res?.data || {};
+    if (!res?.success || data.success === false) {
+      if (this.$remoteUsage) this.$remoteUsage.textContent = data.error || res?.error || '统计失败';
+      return null;
+    }
+    const lastCleanup = data.lastCleanupAt ? new Date(data.lastCleanupAt).toLocaleString('zh-CN') : '尚未清理';
+    if (this.$remoteUsage) {
+      this.$remoteUsage.textContent = `共 ${data.totalFiles} 个文件，${formatBytes(data.totalBytes)}；`
+        + `其中可清理 ${data.garbageFiles} 个，${formatBytes(data.garbageBytes)}。上次清理：${lastCleanup}`;
+    }
+    return data;
+  }
+
+  async cleanRemote() {
+    const usage = await this.loadRemoteUsage();
+    if (!usage) return;
+    if (usage.garbageFiles === 0) {
+      Toast.show('远端没有可清理的文件');
+      return;
+    }
+    if (!window.confirm(`将删除远端 ${usage.garbageFiles} 个不再被同步清单引用的文件（${formatBytes(usage.garbageBytes)}），当前数据不受影响。确定继续？`)) return;
+    // 后台单次最多清理约 40 秒，剩余部分自动续跑
+    const total = { deleted: 0, freedBytes: 0, failed: 0 };
+    let error = '';
+    for (let round = 0; round < 100; round += 1) {
+      if (this.$remoteUsage) {
+        this.$remoteUsage.textContent = `正在清理远端文件…已删除 ${total.deleted} 个（${formatBytes(total.freedBytes)}）`;
+      }
+      const res = await MessageBus.sendToBackground(ActionTypes.CLEAN_SYNC_REMOTE, { confirm: true });
+      const data = res?.data || {};
+      if (!res?.success || data.success === false) {
+        error = data.error || res?.error || '清理失败';
+        break;
+      }
+      total.deleted += data.deleted || 0;
+      total.freedBytes += data.freedBytes || 0;
+      total.failed += data.failed || 0;
+      if (!data.remaining || (data.deleted || 0) === 0) break;
+    }
+    Toast.show(error || `已清理 ${total.deleted} 个文件，释放 ${formatBytes(total.freedBytes)}${total.failed ? `，${total.failed} 个删除失败` : ''}`);
+    await this.loadRemoteUsage();
   }
 
   async loadConflicts() {

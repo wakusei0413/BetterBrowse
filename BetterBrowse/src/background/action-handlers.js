@@ -737,6 +737,14 @@ export function createActionHandlers(deps) {
       return await SyncEngine.retireDevice(payload?.deviceId);
     },
 
+    [ActionTypes.GET_SYNC_REMOTE_USAGE]: async () => {
+      return await SyncEngine.getRemoteUsage();
+    },
+
+    [ActionTypes.CLEAN_SYNC_REMOTE]: async (payload) => {
+      return await SyncEngine.cleanRemote({ confirm: payload?.confirm === true });
+    },
+
     [ActionTypes.GET_SYNC_RECOVERY_INFO]: async () => {
       return await SyncEngine.getRecoveryInfo();
     },
@@ -775,6 +783,17 @@ export function createActionHandlers(deps) {
         softwareVersion: manifest.version_name || manifest.version || '',
         availableActions: Object.keys(handlers)
       });
+    },
+
+    [ActionTypes.RELOAD_EXTENSION]: async (payload) => {
+      if (payload?.confirm !== true) return { success: false, error: '需显式确认' };
+      if (typeof chrome.runtime?.reload !== 'function') return { success: false, error: '当前环境不支持重载' };
+      // 先让响应送达，再重载（重载会断开桥接，宿主随之退出并由新扩展实例重新拉起）
+      setTimeout(() => {
+        console.info('[ServiceWorker] 按请求重载扩展');
+        chrome.runtime.reload();
+      }, 500);
+      return { success: true, reloading: true };
     },
 
     [ActionTypes.GET_AI_BRIDGE_STATUS]: async () => {

@@ -19,6 +19,8 @@ export const SyncStatus = {
   SYNCED: 'synced',
   PENDING: 'pending',
   AUTH_FAILED: 'auth_failed',
+  /** 服务器拒绝请求（HTTP 403）：权限不足或网盘限流，不一定是密码错误 */
+  SERVER_REJECTED: 'server_rejected',
   CAPABILITY_MISSING: 'capability_missing',
   CONFLICT: 'conflict',
   CORRUPT: 'corrupt',
@@ -61,6 +63,9 @@ export const REMOTE_HARD_QUOTA_BYTES = 100 * 1024 * 1024;
 
 /** 本地变更防抖（毫秒） */
 export const SYNC_DEBOUNCE_MS = 3000;
+
+/** 两次自动同步的最小间隔：网盘 WebDAV 普遍限流，连续修改合并为一次同步 */
+export const SYNC_MIN_INTERVAL_MS = 60000;
 
 /** 定时拉取间隔（分钟） */
 export const SYNC_ALARM_MINUTES = 15;

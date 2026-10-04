@@ -55,6 +55,14 @@ export class FakeWebdavServer {
     this.counter = 0;
     /** @type {((path: string, body: string) => void | Promise<void>) | null} PUT 成功后的钩子（响应前等待） */
     this.onPut = null;
+    /** 严格服务器：父目录不存在时 PUT / MKCOL 返回 409（Nextcloud、坚果云行为） */
+    this.strictParents = false;
+    /** 网盘兼容模式：忽略 If-Match / If-None-Match，总是写入（123 云盘行为） */
+    this.ignoreConditions = false;
+    /** 非空时 PROPFIND 直接返回该状态码（模拟不支持列目录） */
+    this.propfindStatus = 0;
+    /** 请求计数（按方法） */
+    this.requestCounts = {};
   }
 
   etag() {
@@ -64,7 +72,8 @@ export class FakeWebdavServer {
   _response(status, body = '', etag = undefined) {
     const headers = {};
     if (etag !== undefined) headers['ETag'] = etag;
-    return new Response(body, { status, headers });
+    // 204 / 304 不允许携带响应体（Response 构造会抛错）
+    return new Response(status === 204 || status === 304 ? null : body, { status, headers });
   }
 
   async fetch(url, options = {}) {
@@ -72,9 +81,13 @@ export class FakeWebdavServer {
     const path = decodeURIComponent(new URL(url).pathname).replace(/^.*\/BetterBrowse\/?/, '');
     const headers = options.headers || {};
     const file = this.files.get(path);
+    this.requestCounts[method] = (this.requestCounts[method] || 0) + 1;
+    const parent = path.replace(/\/+$/, '').split('/').slice(0, -1).join('/');
+    const parentMissing = this.strictParents && parent && !this.files.get(parent)?.dir;
 
     if (method === 'MKCOL') {
       if (this.files.has(path)) return this._response(405);
+      if (parentMissing) return this._response(409);
       this.files.set(path, { body: '', etag: this.etag(), dir: true });
       return this._response(201);
     }
@@ -88,18 +101,35 @@ export class FakeWebdavServer {
       return this._response(204);
     }
     if (method === 'PROPFIND') {
-      const prefix = path ? `${path.replace(/\/+$/, '')}/` : '';
-      const hrefs = [...this.files.keys()]
-        .filter((key) => key.startsWith(prefix) && !key.slice(prefix.length).includes('/') && key !== prefix)
-        .map((key) => `<d:response><d:href>/dav/BetterBrowse/${encodeURI(key)}</d:href></d:response>`);
+      if (this.propfindStatus) return this._response(this.propfindStatus);
+      const dir = path.replace(/\/+$/, '');
+      const prefix = dir ? `${dir}/` : '';
+      // 直接子文件 + 由更深路径推出的隐式子目录（部分服务器 PUT 时自动建目录）
+      const children = new Map();
+      for (const [key, value] of this.files) {
+        if (!key.startsWith(prefix) || key === dir) continue;
+        const rest = key.slice(prefix.length);
+        if (!rest) continue;
+        const [head, ...tail] = rest.split('/');
+        if (tail.length > 0 || value.dir) children.set(head, { dir: true });
+        else children.set(head, { dir: false, size: new TextEncoder().encode(value.body).length });
+      }
+      const node = (href, info) => `<d:response><d:href>${href}</d:href><d:propstat><d:prop>`
+        + (info.dir ? '<d:resourcetype><d:collection/></d:resourcetype>' : `<d:resourcetype/><d:getcontentlength>${info.size}</d:getcontentlength>`)
+        + '</d:prop></d:propstat></d:response>';
+      const base = '/dav/BetterBrowse/';
       const body = `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">`
-        + `<d:response><d:href>/dav/BetterBrowse/${encodeURI(prefix)}</d:href></d:response>`
-        + `${hrefs.join('')}</d:multistatus>`;
+        + node(`${base}${encodeURI(prefix)}`, { dir: true })
+        + [...children].map(([name, info]) => node(`${base}${encodeURI(prefix + name)}${info.dir ? '/' : ''}`, info)).join('')
+        + '</d:multistatus>';
       return this._response(207, body);
     }
     if (method === 'PUT') {
-      if (headers['If-Match'] && (!file || file.etag !== headers['If-Match'])) return this._response(412);
-      if (headers['If-None-Match'] === '*' && file) return this._response(412);
+      if (parentMissing) return this._response(409);
+      if (!this.ignoreConditions) {
+        if (headers['If-Match'] && (!file || file.etag !== headers['If-Match'])) return this._response(412);
+        if (headers['If-None-Match'] === '*' && file) return this._response(412);
+      }
       const etag = this.etag();
       const body = options.body ?? '';
       this.files.set(path, { body, etag });

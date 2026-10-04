@@ -1402,6 +1402,20 @@ export class IndexedStashRepository {
   static async searchEntries(keyword, { limit = 100, cursor = null, paginated = false, scanLimit = DEFAULT_SEARCH_SCAN_LIMIT } = {}) {
     const kw = String(keyword || '').trim().toLowerCase();
     if (!kw) return paginated ? { items: [], nextCursor: null, hasMore: false } : [];
+    if (!paginated) {
+      // 非分页调用方拿不到 hasMore：必须逐窗口续扫到凑够条数或扫完，
+      // 否则页面超过单窗口上限时，排在后面的命中会被静默漏掉（pageId 为 URL 指纹，顺序与收纳时间无关）
+      const wanted = Math.min(500, Math.max(1, Math.floor(Number(limit) || 100)));
+      const collected = [];
+      let next = cursor;
+      for (;;) {
+        const page = await this.searchEntries(keyword, { limit: wanted - collected.length, cursor: next, paginated: true, scanLimit });
+        collected.push(...page.items);
+        if (!page.hasMore || !page.nextCursor || collected.length >= wanted) break;
+        next = page.nextCursor;
+      }
+      return collected;
+    }
     const safeLimit = Math.min(500, Math.max(1, Math.floor(Number(limit) || 100)));
     const maxScan = Math.max(safeLimit, Math.floor(Number(scanLimit) || DEFAULT_SEARCH_SCAN_LIMIT));
     const startKey = this._decodeCursor(cursor);

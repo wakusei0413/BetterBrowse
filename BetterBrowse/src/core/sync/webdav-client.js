@@ -13,6 +13,22 @@ import { CAPABILITY_PROBE_NAME, SYNC_ROOT_DIR } from './sync-constants.js';
  * @property {string} etag
  */
 
+/**
+ * 认证类失败的说明：带上状态码与服务器返回的简短原因。
+ * 401 是账号或密码错误；403 多为权限不足或网盘限流（如 123 云盘返回 {"code":1010}），不一定是密码问题，
+ * 措辞上必须区分，否则用户会反复重填密码。
+ * @param {{ status: number, body?: string }} res
+ * @returns {string}
+ */
+export function describeAuthFailure(res) {
+  const status = Number(res?.status) || 0;
+  const detail = String(res?.body || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const head = status === 403
+    ? 'WebDAV 服务器拒绝请求（HTTP 403，可能是网盘限流或权限不足，稍后会自动重试）'
+    : `WebDAV 认证失败（HTTP ${status}，请检查账号与密码）`;
+  return `${head}${detail ? `：${detail}` : ''}`;
+}
+
 /** 单次 WebDAV 请求超时（大快照上传留足余量） */
 const WEBDAV_REQUEST_TIMEOUT_MS = 60000;
 
@@ -132,30 +148,54 @@ export class WebdavClient {
   }
 
   /**
-   * 列出远端目录下的直接子项文件名（PROPFIND Depth: 1）
-   * Service Worker 无 DOMParser，按 href 元素做宽松正则提取；不支持或失败时抛错，由调用方降级
+   * 列出远端目录的直接子项（PROPFIND Depth: 1），含大小与是否为目录
+   * Service Worker 无 DOMParser，按 response 元素做宽松正则提取；不支持或失败时抛错，由调用方降级
    * @param {string} relDir
-   * @returns {Promise<string[]>}
+   * @returns {Promise<Array<{ name: string, size: number, isDir: boolean }>>}
    */
-  async list(relDir) {
-    const res = await this.request('PROPFIND', `${String(relDir || '').replace(/\/+$/, '')}/`, { depth: '1' });
+  async listDetailed(relDir) {
+    const dir = String(relDir || '').replace(/^\/+|\/+$/g, '');
+    const res = await this.request('PROPFIND', dir ? `${dir}/` : '', { depth: '1' });
     if (res.status !== 207 && res.status !== 200) {
       throw new Error(`列出远端目录失败（HTTP ${res.status}）`);
     }
-    const names = [];
-    const pattern = /<(?:[a-z0-9_-]+:)?href>([^<]+)<\/(?:[a-z0-9_-]+:)?href>/gi;
-    let match;
-    while ((match = pattern.exec(res.body)) !== null) {
-      let href = match[1].trim();
+    const selfPath = (() => {
+      try {
+        return decodeURIComponent(new URL(this.resolve(dir)).pathname).replace(/\/+$/, '');
+      } catch {
+        return '';
+      }
+    })();
+    const items = [];
+    const blocks = String(res.body || '').match(/<(?:[a-z0-9_-]+:)?response[\s>][\s\S]*?<\/(?:[a-z0-9_-]+:)?response>/gi) || [];
+    for (const block of blocks) {
+      const hrefMatch = /<(?:[a-z0-9_-]+:)?href>([^<]+)<\/(?:[a-z0-9_-]+:)?href>/i.exec(block);
+      if (!hrefMatch) continue;
+      let href = hrefMatch[1].trim();
       try {
         href = decodeURIComponent(href);
       } catch {
         // 保留原始 href
       }
-      const name = href.replace(/\/+$/, '').split('/').pop();
-      if (name && !href.endsWith('/')) names.push(name);
+      const isDir = href.endsWith('/') || /<(?:[a-z0-9_-]+:)?collection\s*\/?>/i.test(block);
+      // href 可能是绝对 URL 或绝对路径；目录自身（Depth: 1 的 response 之一）不算子项
+      const hrefPath = href.replace(/^[a-z]+:\/\/[^/]+/i, '').replace(/\/+$/, '');
+      if (selfPath && hrefPath === selfPath) continue;
+      const name = hrefPath.split('/').pop();
+      if (!name) continue;
+      const sizeMatch = /<(?:[a-z0-9_-]+:)?getcontentlength>\s*(\d+)\s*</i.exec(block);
+      items.push({ name, size: sizeMatch ? Number(sizeMatch[1]) : 0, isDir });
     }
-    return names;
+    return items;
+  }
+
+  /**
+   * 列出远端目录下的直接子文件名
+   * @param {string} relDir
+   * @returns {Promise<string[]>}
+   */
+  async list(relDir) {
+    return (await this.listDetailed(relDir)).filter((item) => !item.isDir).map((item) => item.name);
   }
 
   /**
@@ -167,7 +207,7 @@ export class WebdavClient {
       const res = await this.mkcol(dir);
       if (![201, 204, 405, 409, 301, 200].includes(res.status) && res.status >= 400) {
         if (res.status === 401 || res.status === 403) {
-          throw Object.assign(new Error('WebDAV 认证失败'), { code: 'AUTH_FAILED', status: res.status });
+          throw Object.assign(new Error(describeAuthFailure(res)), { code: 'AUTH_FAILED', status: res.status });
         }
         throw Object.assign(new Error(`创建远端目录失败（HTTP ${res.status}）`), { status: res.status });
       }
@@ -187,7 +227,7 @@ export class WebdavClient {
       contentType: 'application/json'
     });
     if (first.status === 401 || first.status === 403) {
-      return { ok: false, reason: '认证失败' };
+      return { ok: false, reason: describeAuthFailure(first), httpStatus: first.status };
     }
     if (first.status >= 400 && first.status !== 409) {
       return { ok: false, reason: `写入探测文件失败（HTTP ${first.status}）` };

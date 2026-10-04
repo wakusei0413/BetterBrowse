@@ -2,7 +2,7 @@
  * @file frame-content-bundle.js
  * @description BetterBrowse iframe 轻量内容脚本打包产物
  * @encoding UTF-8
- * @betterbrowse-sources src/constants/action-types.js=09a234ed;src/constants/config.js=8c03a32d;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=5130ff18;src/content/frame-index.js=ecaaf4df
+ * @betterbrowse-sources src/constants/action-types.js=082bafad;src/constants/config.js=8c03a32d;src/core/link/link-matcher.js=25202d73;src/content/runtime-message.js=500d88f9;src/content/form-detector.js=ac1a1c56;src/content/link-interceptor.js=5130ff18;src/content/frame-index.js=ecaaf4df
  */
 (function() {
   'use strict';
@@ -87,6 +87,8 @@ const ActionTypes = {
   RESOLVE_SYNC_CONFLICT: 'RESOLVE_SYNC_CONFLICT',
   LIST_SYNC_DEVICES: 'LIST_SYNC_DEVICES',
   RETIRE_SYNC_DEVICE: 'RETIRE_SYNC_DEVICE',
+  GET_SYNC_REMOTE_USAGE: 'GET_SYNC_REMOTE_USAGE', // 统计远端文件占用与可清理量
+  CLEAN_SYNC_REMOTE: 'CLEAN_SYNC_REMOTE',         // 删除远端未被清单引用的文件 { confirm: true }
 
   // === AI 桥接与增强读写（阶段三：人类 UI 与 AI Agent 共用同一处理路径）===
   ADD_STASH_ITEM: 'ADD_STASH_ITEM',           // 向既有收纳组添加条目（AI 增强：URL 自动清洗、按设置去重）
@@ -98,6 +100,7 @@ const ActionTypes = {
   DELETE_AUTO_BACKUP: 'DELETE_AUTO_BACKUP',   // 删除指定自动备份快照（需 confirm）
   GET_AI_CAPABILITIES: 'GET_AI_CAPABILITIES', // AI 能力自描述清单（动作、参数、确认位要求与版本）
   GET_AI_BRIDGE_STATUS: 'GET_AI_BRIDGE_STATUS', // AI 桥接连接状态（选项页与 AI 共用）
+  RELOAD_EXTENSION: 'RELOAD_EXTENSION',       // 重载扩展以加载磁盘上的最新代码（开发调试，需 confirm）
 
   // === 统一运行日志 ===
   APPEND_RUNTIME_LOG: 'APPEND_RUNTIME_LOG',      // 扩展内部上下文向后台追加运行日志（不暴露给 AI）

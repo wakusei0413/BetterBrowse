@@ -1114,6 +1114,16 @@
             </div>
           </div>
 
+          <div class="card" id="syncRemoteUsageCard">
+            <h3 class="card-title">远端空间</h3>
+            <p class="card-desc">同步每天会自动清理一次不再被清单引用的旧快照、批次与设备文件；也可以在此立即统计或清理。</p>
+            <p id="syncRemoteUsage" class="sync-recovery-message" aria-live="polite">尚未统计</p>
+            <div class="btn-group">
+              <button id="btnSyncRemoteUsage" class="btn btn-secondary" type="button">统计占用</button>
+              <button id="btnSyncCleanRemote" class="btn btn-secondary" type="button">清理未引用文件</button>
+            </div>
+          </div>
+
           <div class="card danger-zone" id="syncRecoveryCard">
             <div class="danger-header">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="danger-icon" aria-hidden="true">
