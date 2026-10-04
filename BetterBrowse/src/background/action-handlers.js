@@ -737,6 +737,14 @@ export function createActionHandlers(deps) {
       return await SyncEngine.retireDevice(payload?.deviceId);
     },
 
+    [ActionTypes.GET_SYNC_REMOTE_USAGE]: async () => {
+      return await SyncEngine.getRemoteUsage();
+    },
+
+    [ActionTypes.CLEAN_SYNC_REMOTE]: async (payload) => {
+      return await SyncEngine.cleanRemote({ confirm: payload?.confirm === true });
+    },
+
     [ActionTypes.GET_SYNC_RECOVERY_INFO]: async () => {
       return await SyncEngine.getRecoveryInfo();
     },

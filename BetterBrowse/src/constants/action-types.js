@@ -75,6 +75,8 @@ export const ActionTypes = {
   RESOLVE_SYNC_CONFLICT: 'RESOLVE_SYNC_CONFLICT',
   LIST_SYNC_DEVICES: 'LIST_SYNC_DEVICES',
   RETIRE_SYNC_DEVICE: 'RETIRE_SYNC_DEVICE',
+  GET_SYNC_REMOTE_USAGE: 'GET_SYNC_REMOTE_USAGE', // 统计远端文件占用与可清理量
+  CLEAN_SYNC_REMOTE: 'CLEAN_SYNC_REMOTE',         // 删除远端未被清单引用的文件 { confirm: true }
 
   // === AI 桥接与增强读写（阶段三：人类 UI 与 AI Agent 共用同一处理路径）===
   ADD_STASH_ITEM: 'ADD_STASH_ITEM',           // 向既有收纳组添加条目（AI 增强：URL 自动清洗、按设置去重）

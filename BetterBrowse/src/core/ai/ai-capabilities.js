@@ -35,6 +35,7 @@ export const AI_CONFIRM_REQUIRED_ACTIONS = new Set([
   ActionTypes.REBUILD_SYNC_FROM_SCRATCH, // 从本机快照重建同步
   ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT, // 回退上一份快照（非合并应用，覆盖本地收纳数据）
   ActionTypes.RETIRE_SYNC_DEVICE,     // 退役同步设备（从远端清单移除）
+  ActionTypes.CLEAN_SYNC_REMOTE,      // 删除远端未被清单引用的文件
   ActionTypes.RESTORE_STASH_GROUP_DATA // 恢复组快照（写入任意 URL 载荷）
 ]);
 
@@ -264,6 +265,13 @@ export const AI_ACTION_DOCS = {
   [ActionTypes.RETIRE_SYNC_DEVICE]: {
     summary: '退役指定同步设备',
     params: { deviceId: 'string' }
+  },
+  [ActionTypes.GET_SYNC_REMOTE_USAGE]: {
+    summary: '统计远端文件数、体积与可清理量（PROPFIND 逐目录列出，以最新清单的引用关系判定）'
+  },
+  [ActionTypes.CLEAN_SYNC_REMOTE]: {
+    summary: '删除远端未被清单引用的旧快照、批次、设备文件与探测残留；15 分钟内新写的文件保留',
+    note: '需 confirm'
   },
   [ActionTypes.GET_SYNC_RECOVERY_INFO]: { summary: '读取同步损坏状态与本机快照可用性' },
   [ActionTypes.FALLBACK_PREVIOUS_SNAPSHOT]: { summary: '回退上一份远端或本机快照' },

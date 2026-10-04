@@ -12,6 +12,7 @@ import { SyncOutbox } from './outbox.js';
 import { SyncMerge } from './merge.js';
 import { SyncSnapshot } from './snapshot.js';
 import { sha256Hex } from './crypto-util.js';
+import { REMOTE_GC_INTERVAL_MS, RemoteGarbageCollector } from './remote-gc.js';
 import {
   DEVICE_RETIRE_AFTER_MS,
   REMOTE_HARD_QUOTA_BYTES,
@@ -27,12 +28,36 @@ const STATUS_KEY = 'status';
 const MANIFEST_CACHE_KEY = 'manifestCache';
 /** 已应用过的远端批次路径：批次文件不可变，应用过的不必每次同步重新下载 */
 const APPLIED_FILES_KEY = 'appliedFiles';
+/** 本机已上传、尚未被快照覆盖的批次：清单在无条件写入的服务器上可能被并发覆盖丢失，据此补登记 */
+const OWN_UPLOADS_KEY = 'ownUploads';
+/** 能力探测缓存：探测本身要 7 个请求，不必每次同步都做 */
+const PROBE_CACHE_KEY = 'probeCache';
+const PROBE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+/** 远端自动回收记录 */
+const REMOTE_GC_KEY = 'remoteGc';
+/** 兼容模式写清单后回读校验前的等待（让并发写入方的 PUT 先落地） */
+const COMPAT_VERIFY_DELAY_MS = 1500;
+
+/**
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+}
 
 export class SyncEngine {
   /** 测试可注入的 fetch */
   static fetchImpl = null;
 
   static _running = false;
+
+  /** 兼容模式写后回读等待（测试可调小） */
+  static compatVerifyDelayMs = COMPAT_VERIFY_DELAY_MS;
 
   /**
    * 读取同步状态快照（供选项页）
@@ -117,6 +142,7 @@ export class SyncEngine {
         await this._setStatus(SyncStatus.CAPABILITY_MISSING, probe.reason || '服务器能力不足');
         return { success: false, error: probe.reason, status: SyncStatus.CAPABILITY_MISSING };
       }
+      await this._setMeta(PROBE_CACHE_KEY, { serverUrl: creds.serverUrl, at: Date.now(), probe });
       if (probe.etagSupport === 'full') {
         await this._setStatus(SyncStatus.IDLE, '连接与条件写入探测通过');
         return { success: true, message: '连接与 ETag 条件写入探测通过' };
@@ -161,18 +187,8 @@ export class SyncEngine {
         return { success: false, error: '未配置 WebDAV' };
       }
       const client = this._client(creds);
-      let probe;
-      let lastNetworkError;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          probe = await client.probeCapability();
-          lastNetworkError = null;
-          break;
-        } catch (err) {
-          lastNetworkError = err;
-        }
-      }
-      if (lastNetworkError) throw lastNetworkError;
+      const startedAt = Date.now();
+      const probe = await this._probeWithCache(client, creds.serverUrl);
       if (!probe.ok) {
         await this._setStatus(SyncStatus.CAPABILITY_MISSING, probe.reason || '服务器能力不足');
         return { success: false, error: probe.reason, status: SyncStatus.CAPABILITY_MISSING };
@@ -219,6 +235,11 @@ export class SyncEngine {
         }
       }
 
+      if (current.manifest) {
+        const healed = await this._healOwnUploads(client, current.manifest);
+        if (healed.manifest) current = { manifest: healed.manifest, etag: healed.etag };
+      }
+
       const pending = await SyncOutbox.listPending();
       if (pending.length > 0) {
         const uploaded = await this._uploadPending(client, pending, current.manifest);
@@ -242,6 +263,10 @@ export class SyncEngine {
       await this._retireStaleDevices(client, finalManifest, finalEtag);
 
       await IndexedDBManager.withWriteLock(() => SyncMerge.pruneHistory()).catch(() => {});
+      const gc = await this._maybeCollectRemote(client).catch((err) => {
+        console.warn('[SyncEngine] 远端自动回收失败:', err?.message || err);
+        return null;
+      });
 
       const leftover = await SyncOutbox.listPending();
       const status = leftover.length > 0 ? SyncStatus.PENDING : SyncStatus.SYNCED;
@@ -250,10 +275,17 @@ export class SyncEngine {
         generation: finalManifest?.generation || 0
       });
       await this._setMeta(MANIFEST_CACHE_KEY, { manifest: finalManifest, etag: finalEtag });
-      return { success: true, status, pendingCount: leftover.length };
+      console.info(
+        `[SyncEngine] 同步完成：上传 ${pending.length} 条操作，下载 ${pull.downloadedFiles || 0} 个批次，`
+        + `应用 ${pull.applied || 0} 条，冲突 ${pull.conflicts || 0} 条，第 ${finalManifest?.generation || 0} 代，`
+        + `耗时 ${Date.now() - startedAt}ms`
+        + (gc ? `，远端回收 ${gc.deleted} 个文件（${formatBytes(gc.freedBytes)}）` : '')
+      );
+      return { success: true, status, pendingCount: leftover.length, ...(gc ? { remoteGc: gc } : {}) };
     } catch (err) {
       const status = /认证/.test(err.message || '') ? SyncStatus.AUTH_FAILED : SyncStatus.UNKNOWN;
       await this._setStatus(status, err.message || '未知错误');
+      console.warn('[SyncEngine] 同步失败:', err.message || err);
       return { success: false, error: err.message, status };
     } finally {
       this._running = false;
@@ -313,10 +345,11 @@ export class SyncEngine {
    * @param {{ conditionWrites?: boolean }} client
    * @param {(freshManifest: object | null, freshEtag: string) => Promise<object | null> | object | null} buildNext
    *   基于最新远端清单计算下一版本；返回 null 表示放弃本次写入（非错误）
-   * @param {{ maxAttempts?: number }} [options]
+   * @param {{ maxAttempts?: number, verify?: (manifest: object | null) => boolean }} [options]
+   *   verify：兼容模式下写入后等待片刻回读，确认本次变更仍在（未被并发写入方覆盖），否则重新合并写入
    * @returns {Promise<{ ok: boolean, aborted?: boolean, manifest?: object | null, etag?: string, error?: string, status?: string }>}
    */
-  static async _updateManifest(client, buildNext, { maxAttempts = 3 } = {}) {
+  static async _updateManifest(client, buildNext, { maxAttempts = 3, verify = null } = {}) {
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const fresh = await this._loadManifest(client);
       if (fresh.corrupt) {
@@ -340,7 +373,16 @@ export class SyncEngine {
         : (fresh.etag ? { ifMatch: fresh.etag } : { ifNoneMatch: '*' });
       const put = await client.put('manifest.json', JSON.stringify(next, null, 2), condition);
       if ([200, 201, 204].includes(put.status)) {
-        return { ok: true, manifest: next, etag: put.etag };
+        if (client.conditionWrites !== false || typeof verify !== 'function') {
+          return { ok: true, manifest: next, etag: put.etag };
+        }
+        await new Promise((resolve) => setTimeout(resolve, this.compatVerifyDelayMs));
+        const check = await this._loadManifest(client);
+        if (!check.corrupt && verify(check.manifest)) {
+          return { ok: true, manifest: check.manifest, etag: check.etag };
+        }
+        console.warn('[SyncEngine] 兼容模式下清单被并发写入覆盖，重新合并写入');
+        continue;
       }
       if (put.status === 401 || put.status === 403) {
         return { ok: false, error: 'WebDAV 认证失败', status: SyncStatus.AUTH_FAILED };
@@ -361,8 +403,10 @@ export class SyncEngine {
     const path = `operations/${clock.deviceId}/${start}-${end}-${batchId}.ndjson`;
     const body = pending.map((op) => JSON.stringify(op)).join('\n') + '\n';
     const sha256 = await sha256Hex(body);
+    // 严格服务器（Nextcloud、坚果云等）不会自动创建父目录，PUT 返回 409 表示"没写进去"，不是成功
+    await client.mkcol(`operations/${clock.deviceId}`).catch(() => {});
     const put = await client.put(path, body, { contentType: 'application/x-ndjson' });
-    if (![200, 201, 204, 409].includes(put.status)) {
+    if (![200, 201, 204].includes(put.status)) {
       if (put.status === 401 || put.status === 403) {
         return { success: false, error: 'WebDAV 认证失败', status: SyncStatus.AUTH_FAILED };
       }
@@ -371,6 +415,9 @@ export class SyncEngine {
 
     // 清单必须合并进"当前最新"的远端清单：批次上传期间其他设备可能已写入
     // 新批次或新设备记录，基于运行开始时的缓存覆盖会造成静默丢数据
+    const fileEntry = { deviceId: clock.deviceId, start, end, batchId, path, sha256 };
+    // 先登记：即使随后清单写入失败或被并发覆盖，下次同步也能把这个批次补回清单
+    await this._recordOwnUpload(fileEntry);
     const res = await this._updateManifest(client, (fresh) => {
       if (fresh && fresh.datasetId && fresh.datasetId !== clock.datasetId && (fresh.generation || 0) > 0) {
         throw Object.assign(new Error('远端数据集与本机不一致，请检查是否连错目录'), { code: 'CORRUPT' });
@@ -383,11 +430,11 @@ export class SyncEngine {
         updatedAt: Date.now(),
         operationFiles: [
           ...(base.operationFiles || []).filter((file) => file.path !== path),
-          { deviceId: clock.deviceId, start, end, batchId, path, sha256 }
+          fileEntry
         ],
         knownDevices: this._upsertKnownDevice(base.knownDevices, clock.deviceId)
       };
-    });
+    }, { verify: (manifest) => (manifest?.operationFiles || []).some((file) => file.path === path) });
     if (!res.ok) {
       return { success: false, error: res.error, status: res.status || SyncStatus.UNKNOWN };
     }
@@ -395,6 +442,164 @@ export class SyncEngine {
     await this._markFilesApplied([path]);
     await this._setMeta(MANIFEST_CACHE_KEY, { manifest: res.manifest, etag: res.etag });
     return { success: true, manifest: res.manifest, etag: res.etag };
+  }
+
+  /**
+   * 能力探测（24 小时缓存，按服务器地址区分；测试连接会刷新缓存）
+   * @param {WebdavClient} client
+   * @param {string} serverUrl
+   */
+  static async _probeWithCache(client, serverUrl) {
+    const cached = await this._getMeta(PROBE_CACHE_KEY);
+    if (cached?.serverUrl === serverUrl && cached.probe?.ok && Date.now() - (Number(cached.at) || 0) < PROBE_CACHE_TTL_MS) {
+      return cached.probe;
+    }
+    let lastNetworkError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const probe = await client.probeCapability();
+        if (probe.ok) await this._setMeta(PROBE_CACHE_KEY, { serverUrl, at: Date.now(), probe });
+        return probe;
+      } catch (err) {
+        lastNetworkError = err;
+      }
+    }
+    throw lastNetworkError;
+  }
+
+  static async _recordOwnUpload(fileEntry) {
+    const list = (await this._getMeta(OWN_UPLOADS_KEY))?.files || [];
+    await this._setMeta(OWN_UPLOADS_KEY, {
+      files: [...list.filter((file) => file.path !== fileEntry.path), fileEntry]
+    });
+  }
+
+  /**
+   * 补登记：本机已上传、未被快照覆盖、却不在最新清单里的批次（无条件写入服务器上的并发覆盖），重新写回清单。
+   * 同时剔除已被快照 watermark 覆盖的登记，保持集合有界。
+   * @param {WebdavClient} client
+   * @param {object} manifest
+   */
+  static async _healOwnUploads(client, manifest) {
+    const clock = await SyncOutbox.getClock();
+    const mark = Number(manifest?.snapshotWatermarks?.[clock.deviceId]) || 0;
+    const list = ((await this._getMeta(OWN_UPLOADS_KEY))?.files || [])
+      .filter((file) => file.deviceId === clock.deviceId && Number(file.end) > mark);
+    await this._setMeta(OWN_UPLOADS_KEY, { files: list });
+    const referenced = new Set((manifest.operationFiles || []).map((file) => file.path));
+    const missing = list.filter((file) => !referenced.has(file.path));
+    if (missing.length === 0) return {};
+    // 文件本身也可能没写进去（上传中断），只补登记远端确实存在的
+    const existing = [];
+    for (const file of missing) {
+      const res = await client.head(file.path).catch(() => ({ status: 0 }));
+      if (res.status > 0 && res.status < 400) existing.push(file);
+    }
+    if (existing.length === 0) return {};
+    console.warn(`[SyncEngine] 发现 ${existing.length} 个本机批次未登记在远端清单中（可能被并发覆盖），正在补登记`);
+    const paths = existing.map((file) => file.path);
+    const res = await this._updateManifest(client, (fresh) => {
+      if (!fresh) return null;
+      const freshMark = Number(fresh.snapshotWatermarks?.[clock.deviceId]) || 0;
+      const have = new Set((fresh.operationFiles || []).map((file) => file.path));
+      const add = existing.filter((file) => !have.has(file.path) && Number(file.end) > freshMark);
+      if (add.length === 0) return null;
+      return { ...fresh, operationFiles: [...(fresh.operationFiles || []), ...add], updatedAt: Date.now() };
+    }, { verify: (m) => paths.every((path) => (m?.operationFiles || []).some((file) => file.path === path)) });
+    return res.ok && res.manifest ? { manifest: res.manifest, etag: res.etag } : {};
+  }
+
+  /**
+   * 盘点远端占用（只读）
+   * @returns {Promise<object>}
+   */
+  static async getRemoteUsage() {
+    const creds = await WebdavCredentials.get();
+    if (!creds.serverUrl) return { success: false, error: '未配置 WebDAV' };
+    const client = this._client(creds);
+    const loaded = await this._loadManifest(client);
+    if (loaded.corrupt || !loaded.manifest) {
+      return { success: false, error: loaded.error || '远端没有清单，无法判断哪些文件仍被引用' };
+    }
+    try {
+      const usage = await RemoteGarbageCollector.inventory(client, loaded.manifest, {
+        protect: await this._protectedPaths()
+      });
+      const lastGc = await this._getMeta(REMOTE_GC_KEY);
+      return {
+        success: true,
+        generation: loaded.manifest.generation || 0,
+        totalFiles: usage.totalFiles,
+        totalBytes: usage.totalBytes,
+        byDir: usage.byDir,
+        garbageFiles: usage.garbage.length,
+        garbageBytes: usage.garbageBytes,
+        skippedRecent: usage.skippedRecent,
+        lastCleanupAt: Number(lastGc?.at) || 0
+      };
+    } catch (err) {
+      return { success: false, error: `服务器不支持列出目录（PROPFIND）：${err.message}` };
+    }
+  }
+
+  /**
+   * 清理远端未被清单引用的文件（快照、批次、设备文件与探测残留）
+   * @param {{ confirm?: boolean }} [options]
+   */
+  static async cleanRemote({ confirm } = {}) {
+    if (confirm !== true) return { success: false, error: '需显式确认' };
+    if (this._running) return { success: false, error: '同步正在进行，请稍后再试' };
+    this._running = true;
+    try {
+      const creds = await WebdavCredentials.get();
+      if (!creds.serverUrl) return { success: false, error: '未配置 WebDAV' };
+      const result = await this._collectRemote(this._client(creds));
+      return result ? { success: true, ...result } : { success: false, error: '远端没有清单，拒绝清理' };
+    } catch (err) {
+      return { success: false, error: err.message };
+    } finally {
+      this._running = false;
+    }
+  }
+
+  /** 本机仍可能补登记的批次，回收时不得删除 */
+  static async _protectedPaths() {
+    return new Set(((await this._getMeta(OWN_UPLOADS_KEY))?.files || []).map((file) => file.path));
+  }
+
+  /**
+   * 以最新清单为准执行一次回收；没有清单时拒绝（无法判断引用关系）
+   * @param {WebdavClient} client
+   * @returns {Promise<{ deleted: number, freedBytes: number, failed: number, scannedFiles: number, totalBytes: number } | null>}
+   */
+  static async _collectRemote(client) {
+    const loaded = await this._loadManifest(client);
+    if (loaded.corrupt || !loaded.manifest) return null;
+    const usage = await RemoteGarbageCollector.inventory(client, loaded.manifest, {
+      protect: await this._protectedPaths()
+    });
+    const result = await RemoteGarbageCollector.collect(client, usage.garbage);
+    const summary = { ...result, scannedFiles: usage.totalFiles, totalBytes: usage.totalBytes };
+    await this._setMeta(REMOTE_GC_KEY, { at: Date.now(), ...summary });
+    if (result.deleted > 0 || result.failed > 0) {
+      console.info(
+        `[SyncEngine] 远端回收：扫描 ${usage.totalFiles} 个文件（${formatBytes(usage.totalBytes)}），`
+        + `删除 ${result.deleted} 个（${formatBytes(result.freedBytes)}），失败 ${result.failed} 个`
+      );
+    }
+    return summary;
+  }
+
+  static async _maybeCollectRemote(client) {
+    const last = await this._getMeta(REMOTE_GC_KEY);
+    if (Date.now() - (Number(last?.at) || 0) < REMOTE_GC_INTERVAL_MS) return null;
+    try {
+      return await this._collectRemote(client);
+    } catch (err) {
+      // 不支持 PROPFIND 的服务器：记下时间，避免每次同步都重试
+      await this._setMeta(REMOTE_GC_KEY, { at: Date.now(), error: err.message });
+      throw err;
+    }
   }
 
   static _upsertKnownDevice(list, deviceId) {
@@ -481,18 +686,14 @@ export class SyncEngine {
       }
       const { operations, paths } = await this._downloadOperations(client, manifest);
       const replay = SyncSnapshot.filterAfterWatermark(operations, watermarks);
-      await IndexedDBManager.withWriteLock(async () => {
-        await SyncMerge.applyOperations(replay);
-      });
+      const result = await IndexedDBManager.withWriteLock(async () => await SyncMerge.applyOperations(replay));
       await this._markFilesApplied(paths, manifest);
-    } else {
-      const { operations, paths } = await this._downloadOperations(client, manifest);
-      await IndexedDBManager.withWriteLock(async () => {
-        await SyncMerge.applyOperations(operations);
-      });
-      await this._markFilesApplied(paths, manifest);
+      return { success: true, manifest, etag: remote.etag, downloadedFiles: paths.length, ...result };
     }
-    return { success: true, manifest, etag: remote.etag };
+    const { operations, paths } = await this._downloadOperations(client, manifest);
+    const result = await IndexedDBManager.withWriteLock(async () => await SyncMerge.applyOperations(operations));
+    await this._markFilesApplied(paths, manifest);
+    return { success: true, manifest, etag: remote.etag, downloadedFiles: paths.length, ...result };
   }
 
   /**
@@ -605,7 +806,7 @@ export class SyncEngine {
       return { manifest, etag };
     }
     const putSnap = await client.put(`snapshots/${snapshotId}.json`, body);
-    if (![200, 201, 204, 409].includes(putSnap.status)) {
+    if (![200, 201, 204].includes(putSnap.status)) {
       return { manifest, etag };
     }
     await SyncSnapshot.cacheLocal(snapshotId, payload, sha256);
@@ -634,7 +835,8 @@ export class SyncEngine {
       await this._setStatus(SyncStatus.SYNCED, '远端体积已超过软上限，建议尽快压缩');
     }
     const compacted = await this._compactIfPossible(client, res.manifest, res.etag);
-    await this._pruneRemoteSnapshots(client, compacted.manifest || res.manifest);
+    // 新快照生成后旧快照即成垃圾：下次同步立即回收，不等 24 小时
+    await this._setMeta(REMOTE_GC_KEY, { at: 0 });
     return { manifest: compacted.manifest || res.manifest, etag: compacted.etag || res.etag };
   }
 
@@ -650,33 +852,6 @@ export class SyncEngine {
   static _filesAfterWatermark(files, watermarks) {
     const marks = watermarks && typeof watermarks === 'object' ? watermarks : {};
     return (files || []).filter((file) => Number(file.end) > (Number(marks[file.deviceId]) || 0));
-  }
-
-  /**
-   * 删除远端不再被引用的旧快照，只保留清单中的当前与上一份。
-   * 仅删除代号比当前代至少小 2 的文件：其他设备若正基于稍旧清单上传新快照，其代号不会落在删除区间内。
-   * 列目录失败时退化为只删除刚被挤出的那一份。
-   * @param {WebdavClient} client
-   * @param {object} manifest
-   */
-  static async _pruneRemoteSnapshots(client, manifest) {
-    const keep = new Set([manifest?.snapshotId, manifest?.previousSnapshotId].filter(Boolean));
-    const generation = Number(manifest?.generation) || 0;
-    let names = null;
-    try {
-      names = await client.list('snapshots');
-    } catch {
-      names = null;
-    }
-    const candidates = Array.isArray(names)
-      ? names.filter((name) => /\.json$/.test(name)).map((name) => name.replace(/\.json$/, ''))
-      : [];
-    for (const id of candidates) {
-      if (keep.has(id)) continue;
-      const match = /^gen-(\d+)/.exec(id);
-      if (!match || Number(match[1]) > generation - 2) continue;
-      await client.delete(`snapshots/${id}.json`).catch(() => {});
-    }
   }
 
   /**

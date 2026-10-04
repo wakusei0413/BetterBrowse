@@ -132,30 +132,54 @@ export class WebdavClient {
   }
 
   /**
-   * 列出远端目录下的直接子项文件名（PROPFIND Depth: 1）
-   * Service Worker 无 DOMParser，按 href 元素做宽松正则提取；不支持或失败时抛错，由调用方降级
+   * 列出远端目录的直接子项（PROPFIND Depth: 1），含大小与是否为目录
+   * Service Worker 无 DOMParser，按 response 元素做宽松正则提取；不支持或失败时抛错，由调用方降级
    * @param {string} relDir
-   * @returns {Promise<string[]>}
+   * @returns {Promise<Array<{ name: string, size: number, isDir: boolean }>>}
    */
-  async list(relDir) {
-    const res = await this.request('PROPFIND', `${String(relDir || '').replace(/\/+$/, '')}/`, { depth: '1' });
+  async listDetailed(relDir) {
+    const dir = String(relDir || '').replace(/^\/+|\/+$/g, '');
+    const res = await this.request('PROPFIND', dir ? `${dir}/` : '', { depth: '1' });
     if (res.status !== 207 && res.status !== 200) {
       throw new Error(`列出远端目录失败（HTTP ${res.status}）`);
     }
-    const names = [];
-    const pattern = /<(?:[a-z0-9_-]+:)?href>([^<]+)<\/(?:[a-z0-9_-]+:)?href>/gi;
-    let match;
-    while ((match = pattern.exec(res.body)) !== null) {
-      let href = match[1].trim();
+    const selfPath = (() => {
+      try {
+        return decodeURIComponent(new URL(this.resolve(dir)).pathname).replace(/\/+$/, '');
+      } catch {
+        return '';
+      }
+    })();
+    const items = [];
+    const blocks = String(res.body || '').match(/<(?:[a-z0-9_-]+:)?response[\s>][\s\S]*?<\/(?:[a-z0-9_-]+:)?response>/gi) || [];
+    for (const block of blocks) {
+      const hrefMatch = /<(?:[a-z0-9_-]+:)?href>([^<]+)<\/(?:[a-z0-9_-]+:)?href>/i.exec(block);
+      if (!hrefMatch) continue;
+      let href = hrefMatch[1].trim();
       try {
         href = decodeURIComponent(href);
       } catch {
         // 保留原始 href
       }
-      const name = href.replace(/\/+$/, '').split('/').pop();
-      if (name && !href.endsWith('/')) names.push(name);
+      const isDir = href.endsWith('/') || /<(?:[a-z0-9_-]+:)?collection\s*\/?>/i.test(block);
+      // href 可能是绝对 URL 或绝对路径；目录自身（Depth: 1 的 response 之一）不算子项
+      const hrefPath = href.replace(/^[a-z]+:\/\/[^/]+/i, '').replace(/\/+$/, '');
+      if (selfPath && hrefPath === selfPath) continue;
+      const name = hrefPath.split('/').pop();
+      if (!name) continue;
+      const sizeMatch = /<(?:[a-z0-9_-]+:)?getcontentlength>\s*(\d+)\s*</i.exec(block);
+      items.push({ name, size: sizeMatch ? Number(sizeMatch[1]) : 0, isDir });
     }
-    return names;
+    return items;
+  }
+
+  /**
+   * 列出远端目录下的直接子文件名
+   * @param {string} relDir
+   * @returns {Promise<string[]>}
+   */
+  async list(relDir) {
+    return (await this.listDetailed(relDir)).filter((item) => !item.isDir).map((item) => item.name);
   }
 
   /**
